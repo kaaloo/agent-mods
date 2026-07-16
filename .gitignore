@@ -1,0 +1,7 @@
+node_modules/
+*.log
+dist/
+.letta/
+.env
+.env.local
+.DS_Store
