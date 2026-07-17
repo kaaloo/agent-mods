@@ -1,50 +1,104 @@
 // Minimal type declarations for the Letta Code mod runtime.
-// The real types are injected by the Letta Code mod engine at runtime.
+// These are inferred from first-party mods; the real types are injected by the runtime.
 
 export interface LettaToolContext {
+  args: Record<string, unknown>;
+  cwd?: string;
+  workingDirectory?: string;
+  conversation?: { id?: string };
+  [key: string]: unknown;
+}
+
+export interface LettaToolDefinition {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
-  handler: (args: Record<string, unknown>) => Promise<unknown> | unknown;
+  approvalPolicy?: "auto" | "alwaysAsk" | "ask" | string;
+  parallelSafe?: boolean;
+  run(ctx: LettaToolContext): unknown;
 }
 
 export interface LettaCommandContext {
-  name: string;
-  description: string;
-  runWhenBusy?: boolean;
-  handler: (args: Record<string, unknown>) => Promise<unknown> | unknown;
+  args?: string | Record<string, unknown>;
+  cwd?: string;
+  workingDirectory?: string;
+  conversation?: { id?: string };
+  [key: string]: unknown;
 }
 
-export interface LettaPanelContext {
+export interface LettaCommandDefinition {
   id: string;
-  title: string;
+  description: string;
+  args?: string;
+  runWhenBusy?: boolean;
+  run(ctx: LettaCommandContext): unknown;
+}
+
+export interface LettaPanelRenderContext {
+  width?: number;
+  cwd?: string;
+  workingDirectory?: string;
+  conversation?: { id?: string };
+  [key: string]: unknown;
+}
+
+export interface LettaPanelDefinition {
+  id: string;
   order?: number;
-  content: string | string[] | (() => string | string[]);
+  render(ctx: LettaPanelRenderContext): string | string[];
+}
+
+export interface LettaEvent {
+  toolName?: string;
+  tool_call_id?: string;
+  toolCallId?: string;
+  args?: Record<string, unknown>;
+  arguments?: Record<string, unknown>;
+  result?: unknown;
+  status?: string;
+  reason?: string;
+  [key: string]: unknown;
+}
+
+export interface LettaEventHandlerContext {
+  cwd?: string;
+  workingDirectory?: string;
+  conversation?: { id?: string };
+  [key: string]: unknown;
+}
+
+export interface LettaCapabilities {
+  tools?: boolean;
+  commands?: boolean;
+  permissions?: boolean;
+  events?: {
+    lifecycle?: boolean;
+    turns?: boolean;
+    tools?: boolean;
+    llm?: boolean;
+    compact?: boolean;
+  };
+  ui?: {
+    panels?: boolean;
+  };
 }
 
 export interface LettaModContext {
+  capabilities?: LettaCapabilities;
   tools: {
-    register: (tool: LettaToolContext) => void;
+    register: (tool: LettaToolDefinition) => (() => void);
   };
   commands: {
-    register: (command: LettaCommandContext) => void;
+    register: (command: LettaCommandDefinition) => (() => void);
   };
   events: {
-    on: (event: string, handler: (event: Record<string, unknown>) => Promise<void> | void) => void;
+    on: (event: string, handler: (event: LettaEvent, ctx: LettaEventHandlerContext) => void) => (() => void);
   };
-  panels: {
-    register: (panel: LettaPanelContext) => void;
-    update: (id: string, content: string | string[]) => void;
+  permissions?: {
+    register: (permission: unknown) => (() => void);
   };
-  conversation: {
-    fork: (options?: { hidden?: boolean }) => Promise<{ sendMessageStream: (messages: Array<{ role: string; content: string }>) => Promise<unknown> }>;
-    sendMessageStream: (options?: { background?: boolean; messages?: Array<{ role: string; content: string }> }) => Promise<unknown>;
+  ui?: {
+    openPanel: (panel: LettaPanelDefinition) => { update: () => void; close: () => void };
   };
-}
-
-export interface ToolCallEndEvent {
-  tool_name?: string;
-  result?: unknown;
-  // biome-ignore lint/suspicious/noExplicitAny: runtime shape is opaque
-  [key: string]: any;
+  client?: unknown;
 }
