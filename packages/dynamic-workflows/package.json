@@ -1,0 +1,53 @@
+{
+  "name": "@kaaloo/dynamic-workflows",
+  "version": "0.1.0",
+  "description": "A Letta-native mod for authoring and running multi-agent dynamic workflows.",
+  "author": "Luis Arias",
+  "license": "Apache-2.0",
+  "type": "module",
+  "keywords": [
+    "letta-package",
+    "letta-mod",
+    "letta-code",
+    "dynamic-workflows",
+    "multi-agent",
+    "orchestration"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kaaloo/agent-mods.git",
+    "directory": "packages/dynamic-workflows"
+  },
+  "files": [
+    "README.md",
+    "MOD.md",
+    "mods"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run test"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0",
+    "@types/node": "^20.0.0"
+  },
+  "letta": {
+    "manifestVersion": 1,
+    "mods": [
+      "./mods/index.ts"
+    ],
+    "capabilities": [
+      "tools",
+      "commands",
+      "events.tools",
+      "events.lifecycle",
+      "events.turns",
+      "ui.panels"
+    ],
+    "engines": {
+      "lettaCodeCli": ">=0.28.4"
+    }
+  }
+}
