@@ -24,9 +24,12 @@
     "mods"
   ],
   "scripts": {
+    "build": "bun build mods/index.ts --target node --outfile mods/index.bundled.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm run test"
+    "check": "npm run build && npm run typecheck && npm run test",
+    "verify:bundle": "bun build mods/index.ts --target node --outfile /tmp/dynamic-workflows-bundle-drift-check.mjs && cmp -s /tmp/dynamic-workflows-bundle-drift-check.mjs mods/index.bundled.mjs && echo 'bundle matches source' || (echo 'BUNDLE DRIFT: mods/index.bundled.mjs does not match source — run npm run build and commit the bundle' && exit 1)",
+    "verify": "npm run verify:bundle && npm run typecheck && npm run test"
   },
   "devDependencies": {
     "typescript": "^5.5.0",
@@ -36,7 +39,7 @@
   "letta": {
     "manifestVersion": 1,
     "mods": [
-      "./mods/index.ts"
+      "./mods/index.bundled.mjs"
     ],
     "capabilities": [
       "tools",
