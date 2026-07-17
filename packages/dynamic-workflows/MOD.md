@@ -43,11 +43,29 @@ Lists saved workflows and bundled example templates.
 
 Starts an inline run of the named workflow. In v0.1, the model dispatches subagents and the mod tracks completion via events.
 
-### `/workflow`
+### `/workflow` (alias `/wf`)
 
-Shows or hides the progress panel.
+Shows or refreshes the progress panel.
 
-## Tools
+### `/workflow-author <task>` (alias `/wf-author`)
+
+Returns a structured prompt for the model to author a JSON workflow definition.
+
+### `/workflow-save <name>` (alias `/wf-save`)
+
+Saves the most recently authored workflow to the library. In practice, call the `workflow_save` tool directly.
+
+### `/workflow-list` (alias `/wf-list`)
+
+Lists saved workflows and bundled templates.
+
+### `/workflow-run <name>` (alias `/wf-run`)
+
+Starts an inline run of the named workflow. In practice, the agent should call the `workflow_run` tool.
+
+### `/ultracode on|off` (alias `/uc`)
+
+Toggles ultracode mode.
 
 ### `workflow_author`
 

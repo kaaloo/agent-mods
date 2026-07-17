@@ -33,18 +33,40 @@ Author a workflow:
 
 ```text
 /workflow-author "scan this codebase for bugs"
+# or
+/wf-author "scan this codebase for bugs"
 ```
 
 Save it:
 
 ```text
 /workflow-save bug-sweep
+# or
+/wf-save bug-sweep
 ```
 
 Run it:
 
 ```text
 /workflow-run bug-sweep
+# or
+/wf-run bug-sweep
+```
+
+List workflows:
+
+```text
+/workflow-list
+# or
+/wf-list
+```
+
+Show the panel:
+
+```text
+/workflow
+# or
+/wf
 ```
 
 ## v0.1 status

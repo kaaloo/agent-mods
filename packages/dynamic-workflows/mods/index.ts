@@ -238,44 +238,54 @@ export default function activate(letta: LettaModContext): (() => void) {
 
   // ── Commands ──
   if (letta.capabilities?.commands) {
-    disposers.push(letta.commands.register({
+    function registerCommandWithAlias(cmd: { id: string; alias: string; description: string; args?: string; runWhenBusy?: boolean; run: (ctx: LettaCommandContext) => unknown }) {
+      const { alias, ...base } = cmd;
+      disposers.push(letta.commands.register(base));
+      disposers.push(letta.commands.register({ ...base, id: alias, description: `Alias for /${cmd.id}. ${cmd.description}` }));
+    }
+
+    registerCommandWithAlias({
       id: "workflow",
+      alias: "wf",
       description: "Show or refresh the Dynamic Workflows progress panel.",
       run: () => {
         refreshPanel();
         return { type: "output", output: activeRunId ? `Workflow panel active. Run ID: ${activeRunId}` : "No active workflow." };
       },
-    }));
+    });
 
-    disposers.push(letta.commands.register({
+    registerCommandWithAlias({
       id: "workflow-author",
+      alias: "wf-author",
       description: "Author a new workflow for the given task.",
       args: "<task>",
       run: (ctx: LettaCommandContext) => {
         const args = normalizeCommandArgs(ctx.args);
         if (!args) {
-          return { type: "output", output: "Usage: /workflow-author <task>" };
+          return { type: "output", output: "Usage: /workflow-author <task> or /wf-author <task>" };
         }
         const { prompt } = authorWorkflow({ task: args });
         return { type: "output", output: prompt };
       },
-    }));
+    });
 
-    disposers.push(letta.commands.register({
+    registerCommandWithAlias({
       id: "workflow-save",
+      alias: "wf-save",
       description: "Save the most recently authored workflow to the library.",
       args: "<name>",
       run: (ctx: LettaCommandContext) => {
         const name = normalizeCommandArgs(ctx.args);
         if (!name) {
-          return { type: "output", output: "Usage: /workflow-save <name>" };
+          return { type: "output", output: "Usage: /workflow-save <name> or /wf-save <name>" };
         }
         return { type: "output", output: `To save a workflow, call the workflow_save tool with name="${name}" and the workflow JSON.` };
       },
-    }));
+    });
 
-    disposers.push(letta.commands.register({
+    registerCommandWithAlias({
       id: "workflow-list",
+      alias: "wf-list",
       description: "List saved workflows and bundled templates.",
       run: () => {
         const entries = listLibrary();
@@ -288,17 +298,18 @@ export default function activate(letta: LettaModContext): (() => void) {
         ];
         return { type: "output", output: lines.join("\n") };
       },
-    }));
+    });
 
-    disposers.push(letta.commands.register({
+    registerCommandWithAlias({
       id: "workflow-run",
+      alias: "wf-run",
       description: "Run a saved workflow inline.",
       args: "<name>",
       runWhenBusy: true,
       run: (ctx: LettaCommandContext) => {
         const name = normalizeCommandArgs(ctx.args);
         if (!name) {
-          return { type: "output", output: "Usage: /workflow-run <name>" };
+          return { type: "output", output: "Usage: /workflow-run <name> or /wf-run <name>" };
         }
         const entry = loadLibraryEntry(name);
         const workflow = entry?.workflow ?? loadTemplate(TEMPLATE_DIR, name);
@@ -312,10 +323,11 @@ export default function activate(letta: LettaModContext): (() => void) {
         const step = stepInlineRun(run.runId);
         return { type: "output", output: formatStep(step) };
       },
-    }));
+    });
 
-    disposers.push(letta.commands.register({
+    registerCommandWithAlias({
       id: "ultracode",
+      alias: "uc",
       description: "Toggle ultracode mode.",
       args: "on|off",
       run: (ctx: LettaCommandContext) => {
@@ -324,7 +336,7 @@ export default function activate(letta: LettaModContext): (() => void) {
         setUltracode(value);
         return { type: "output", output: `Ultracode ${value ? "enabled" : "disabled"}.` };
       },
-    }));
+    });
   }
 
   // ── Events ──
