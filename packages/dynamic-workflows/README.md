@@ -32,41 +32,41 @@ Reload mods in Letta Code:
 Author a workflow:
 
 ```text
-/workflow-author "scan this codebase for bugs"
+/flow-author "scan this codebase for bugs"
 # or
-/wf-author "scan this codebase for bugs"
+/fl-author "scan this codebase for bugs"
 ```
 
 Save it:
 
 ```text
-/workflow-save bug-sweep
+/flow-save bug-sweep
 # or
-/wf-save bug-sweep
+/fl-save bug-sweep
 ```
 
 Run it:
 
 ```text
-/workflow-run bug-sweep
+/flow-run bug-sweep
 # or
-/wf-run bug-sweep
+/fl-run bug-sweep
 ```
 
 List workflows:
 
 ```text
-/workflow-list
+/flow-list
 # or
-/wf-list
+/fl-list
 ```
 
 Show the panel:
 
 ```text
-/workflow
+/flow
 # or
-/wf
+/fl
 ```
 
 ## v0.1 status

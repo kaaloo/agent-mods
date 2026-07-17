@@ -12,8 +12,6 @@ import {
   loadRun,
   saveAgentResult,
   loadAgentResult,
-  setUltracode,
-  getUltracode,
   getLettaHome,
   getRunDir,
   getStatePath,
@@ -72,10 +70,10 @@ describe("readState and writeState", () => {
 
   test("round-trips state", () => {
     const state = readState();
-    state.ultracode = true;
+    state.library = { test: { name: "test", description: "", workflow: sampleWorkflow, savedAt: new Date().toISOString() } };
     writeState(state);
     const reloaded = readState();
-    expect(reloaded.ultracode).toBe(true);
+    expect(reloaded.library.test).toBeTruthy();
   });
 });
 
@@ -117,14 +115,6 @@ describe("runs", () => {
     });
     const loaded = loadAgentResult(run.runId, "scan", "a1");
     expect(loaded?.output).toBe("found nothing");
-  });
-});
-
-describe("ultracode", () => {
-  test("toggles", () => {
-    expect(getUltracode()).toBe(false);
-    setUltracode(true);
-    expect(getUltracode()).toBe(true);
   });
 });
 

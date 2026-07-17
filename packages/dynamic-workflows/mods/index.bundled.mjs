@@ -263,8 +263,7 @@ function emptyState() {
   return {
     version: 1,
     library: {},
-    runs: {},
-    ultracode: false
+    runs: {}
   };
 }
 function readState() {
@@ -279,8 +278,7 @@ function readState() {
     return {
       version: 1,
       library: typeof parsed.library === "object" ? parsed.library : {},
-      runs: typeof parsed.runs === "object" ? parsed.runs : {},
-      ultracode: Boolean(parsed.ultracode)
+      runs: typeof parsed.runs === "object" ? parsed.runs : {}
     };
   } catch {
     return emptyState();
@@ -415,12 +413,6 @@ function saveRunResult(runId, result) {
 }
 function loadRunResult(runId) {
   return readTextFile(getRunResultPath(runId));
-}
-function setUltracode(enabled) {
-  const state = readState();
-  state.ultracode = enabled;
-  writeState(state);
-  return state.ultracode;
 }
 
 // mods/lib/utils.ts
@@ -864,21 +856,6 @@ function activate(letta) {
         return { status: "success", run, step };
       }
     }));
-    disposers.push(letta.tools.register({
-      name: "workflow_set_ultracode",
-      description: "Toggle ultracode mode (v0.2: propose workflows on turn start).",
-      parameters: {
-        type: "object",
-        properties: { enabled: { type: "boolean" } },
-        required: ["enabled"]
-      },
-      approvalPolicy: "auto",
-      parallelSafe: false,
-      run(ctx) {
-        const enabled = ctx.args?.enabled;
-        return { status: "success", ultracode: setUltracode(Boolean(enabled)) };
-      }
-    }));
   }
   if (letta.capabilities?.commands) {
     let registerCommandWithAlias = function(cmd) {
@@ -887,8 +864,8 @@ function activate(letta) {
       disposers.push(letta.commands.register({ ...base, id: alias, description: `Alias for /${cmd.id}. ${cmd.description}` }));
     };
     registerCommandWithAlias({
-      id: "workflow",
-      alias: "wf",
+      id: "flow",
+      alias: "fl",
       description: "Show or refresh the Dynamic Workflows progress panel.",
       run: () => {
         refreshPanel();
@@ -896,35 +873,35 @@ function activate(letta) {
       }
     });
     registerCommandWithAlias({
-      id: "workflow-author",
-      alias: "wf-author",
+      id: "flow-author",
+      alias: "fl-author",
       description: "Author a new workflow for the given task.",
       args: "<task>",
       run: (ctx) => {
         const args = normalizeCommandArgs(ctx.args);
         if (!args) {
-          return { type: "output", output: "Usage: /workflow-author <task> or /wf-author <task>" };
+          return { type: "output", output: "Usage: /flow-author <task> or /fl-author <task>" };
         }
         const { prompt } = authorWorkflow({ task: args });
         return { type: "output", output: prompt };
       }
     });
     registerCommandWithAlias({
-      id: "workflow-save",
-      alias: "wf-save",
+      id: "flow-save",
+      alias: "fl-save",
       description: "Save the most recently authored workflow to the library.",
       args: "<name>",
       run: (ctx) => {
         const name = normalizeCommandArgs(ctx.args);
         if (!name) {
-          return { type: "output", output: "Usage: /workflow-save <name> or /wf-save <name>" };
+          return { type: "output", output: "Usage: /flow-save <name> or /fl-save <name>" };
         }
         return { type: "output", output: `To save a workflow, call the workflow_save tool with name="${name}" and the workflow JSON.` };
       }
     });
     registerCommandWithAlias({
-      id: "workflow-list",
-      alias: "wf-list",
+      id: "flow-list",
+      alias: "fl-list",
       description: "List saved workflows and bundled templates.",
       run: () => {
         const entries = listLibrary();
@@ -940,15 +917,15 @@ function activate(letta) {
       }
     });
     registerCommandWithAlias({
-      id: "workflow-run",
-      alias: "wf-run",
+      id: "flow-run",
+      alias: "fl-run",
       description: "Run a saved workflow inline.",
       args: "<name>",
       runWhenBusy: true,
       run: (ctx) => {
         const name = normalizeCommandArgs(ctx.args);
         if (!name) {
-          return { type: "output", output: "Usage: /workflow-run <name> or /wf-run <name>" };
+          return { type: "output", output: "Usage: /flow-run <name> or /fl-run <name>" };
         }
         const entry = loadLibraryEntry(name);
         const workflow = entry?.workflow ?? loadTemplate(TEMPLATE_DIR, name);
@@ -961,18 +938,6 @@ function activate(letta) {
         refreshPanel();
         const step = stepInlineRun(run.runId);
         return { type: "output", output: formatStep(step) };
-      }
-    });
-    registerCommandWithAlias({
-      id: "ultracode",
-      alias: "uc",
-      description: "Toggle ultracode mode.",
-      args: "on|off",
-      run: (ctx) => {
-        const arg = normalizeCommandArgs(ctx.args);
-        const value = arg === "on" || arg === "true" || arg === "enabled";
-        setUltracode(value);
-        return { type: "output", output: `Ultracode ${value ? "enabled" : "disabled"}.` };
       }
     });
   }

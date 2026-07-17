@@ -27,51 +27,29 @@ When a workflow is active, the agent should:
 
 ## Commands
 
-### `/workflow-author <task>`
-
-Prompts the agent to call `workflow_author` for the described task. The result is a validated JSON workflow definition.
-
-### `/workflow-save <name>`
-
-Saves the most recently authored workflow to the local library.
-
-### `/workflow-list`
-
-Lists saved workflows and bundled example templates.
-
-### `/workflow-run <name> [inputs...]`
-
-Starts an inline run of the named workflow. In v0.1, the model dispatches subagents and the mod tracks completion via events.
-
-### `/workflow` (alias `/wf`)
+### `/flow` (alias `/fl`)
 
 Shows or refreshes the progress panel.
 
-### `/workflow-author <task>` (alias `/wf-author`)
+### `/flow-author <task>` (alias `/fl-author`)
 
 Returns a structured prompt for the model to author a JSON workflow definition.
 
-### `/workflow-save <name>` (alias `/wf-save`)
+### `/flow-save <name>` (alias `/fl-save`)
 
 Saves the most recently authored workflow to the library. In practice, call the `workflow_save` tool directly.
 
-### `/workflow-list` (alias `/wf-list`)
+### `/flow-list` (alias `/fl-list`)
 
 Lists saved workflows and bundled templates.
 
-### `/workflow-run <name>` (alias `/wf-run`)
+### `/flow-run <name>` (alias `/fl-run`)
 
 Starts an inline run of the named workflow. In practice, the agent should call the `workflow_run` tool.
 
-### `/ultracode on|off` (alias `/uc`)
-
-Toggles ultracode mode.
+## Tools
 
 ### `workflow_author`
-
-Read-only tool. Generates a JSON workflow definition for a described task. Returns the validated DSL or errors to fix.
-
-### `workflow_save`
 
 Persist a workflow to the local library. Requires approval.
 

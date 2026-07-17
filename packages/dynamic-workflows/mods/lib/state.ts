@@ -61,7 +61,6 @@ export interface DynamicWorkflowsState {
   version: 1;
   library: Record<string, LibraryEntry>;
   runs: Record<string, { status: RunStatus; startedAt: string; updatedAt: string; currentPhaseId: string | null } >;
-  ultracode: boolean;
 }
 
 function emptyState(): DynamicWorkflowsState {
@@ -69,7 +68,6 @@ function emptyState(): DynamicWorkflowsState {
     version: 1,
     library: {},
     runs: {},
-    ultracode: false,
   };
 }
 
@@ -84,7 +82,6 @@ export function readState(): DynamicWorkflowsState {
       version: 1,
       library: typeof parsed.library === "object" ? parsed.library : {},
       runs: typeof parsed.runs === "object" ? parsed.runs : {},
-      ultracode: Boolean(parsed.ultracode),
     };
   } catch {
     return emptyState();
@@ -244,13 +241,3 @@ export function loadRunResult(runId: string): string | null {
   return readTextFile(getRunResultPath(runId));
 }
 
-export function setUltracode(enabled: boolean): boolean {
-  const state = readState();
-  state.ultracode = enabled;
-  writeState(state);
-  return state.ultracode;
-}
-
-export function getUltracode(): boolean {
-  return readState().ultracode;
-}
