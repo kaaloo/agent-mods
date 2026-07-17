@@ -1,4 +1,5 @@
 import type { LettaModContext, ToolCallEndEvent } from "./types.ts";
+import path from "node:path";
 import { authorWorkflow } from "./lib/author.ts";
 import { validateWorkflow, formatValidationErrors } from "./lib/schema.ts";
 import { renderProgressPanel } from "./lib/panel.ts";
@@ -13,9 +14,11 @@ import {
   setUltracode,
 } from "./lib/state.ts";
 import { stepInlineRun, recordAgentComplete, recordBarrierComplete } from "./lib/runner-inline.ts";
+import { listTemplates, loadTemplate } from "./lib/templates.ts";
 import { isNonEmptyString } from "./lib/utils.ts";
 
 const PANEL_ID = "dynamic-workflows";
+const TEMPLATE_DIR = path.resolve(import.meta.dirname, "../assets/templates");
 
 export default function dynamicWorkflowsMod(ctx: LettaModContext): void {
   // Shared state for the current conversation.
@@ -94,7 +97,7 @@ export default function dynamicWorkflowsMod(ctx: LettaModContext): void {
 
   ctx.tools.register({
     name: "workflow_load",
-    description: "Load a saved workflow definition by name.",
+    description: "Load a saved workflow definition by name. Falls back to bundled templates.",
     parameters: {
       type: "object",
       properties: {
@@ -107,10 +110,14 @@ export default function dynamicWorkflowsMod(ctx: LettaModContext): void {
         return { error: "name is required" };
       }
       const entry = loadLibraryEntry(name);
-      if (!entry) {
-        return { error: `Workflow "${name}" not found.` };
+      if (entry) {
+        return { workflow: entry.workflow, source: "library" };
       }
-      return { workflow: entry.workflow };
+      const template = loadTemplate(TEMPLATE_DIR, name);
+      if (template) {
+        return { workflow: template, source: "template" };
+      }
+      return { error: `Workflow "${name}" not found.` };
     },
   });
 
@@ -125,10 +132,15 @@ export default function dynamicWorkflowsMod(ctx: LettaModContext): void {
     },
     handler: ({ filter }) => {
       const entries = listLibrary();
-      const filtered = entries.filter((e) =>
-        !filter || e.name.toLowerCase().includes(String(filter).toLowerCase())
+      const templates = listTemplates(TEMPLATE_DIR);
+      const all = [
+        ...entries.map((e) => ({ name: e.name, description: e.description, source: "library" as const, savedAt: e.savedAt })),
+        ...templates.map((t) => ({ name: t.name, description: t.description, source: t.source, savedAt: undefined })),
+      ];
+      const filtered = all.filter((e) =>
+        !filter || e.name.toLowerCase().includes(String(filter).toLowerCase()) || e.description.toLowerCase().includes(String(filter).toLowerCase())
       );
-      return { workflows: filtered.map((e) => ({ name: e.name, description: e.description, savedAt: e.savedAt })) };
+      return { workflows: filtered };
     },
   });
 
@@ -148,10 +160,11 @@ export default function dynamicWorkflowsMod(ctx: LettaModContext): void {
         return { error: "name is required" };
       }
       const entry = loadLibraryEntry(name);
-      if (!entry) {
+      const workflow = entry?.workflow ?? loadTemplate(TEMPLATE_DIR, name);
+      if (!workflow) {
         return { error: `Workflow "${name}" not found.` };
       }
-      const run = createRun(entry.workflow, normalizeInputs(inputs));
+      const run = createRun(workflow, normalizeInputs(inputs));
       activeRunId = run.runId;
       updateRunRegistry(run);
       refreshPanel();
