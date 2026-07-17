@@ -24,7 +24,14 @@ export function getLettaHome(): string {
   return process.env.LETTA_HOME ?? path.join(homedir(), ".letta");
 }
 
+let runtimeAgentId: string | undefined;
+
+export function setRuntimeAgentId(id: string | undefined): void {
+  runtimeAgentId = id;
+}
+
 export function getAgentId(): string | undefined {
+  if (runtimeAgentId) return runtimeAgentId;
   const env = process.env.LETTA_AGENT_ID ?? process.env.AGENT_ID;
   if (env) return env;
   try {

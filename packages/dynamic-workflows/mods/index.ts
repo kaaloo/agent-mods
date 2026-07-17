@@ -11,6 +11,7 @@ import {
   deleteLibraryEntry,
   listLibrary,
   readRunAgentOutput,
+  setRuntimeAgentId,
 } from "./lib/state.ts";
 import { stepInlineRun, type InlineStep } from "./lib/runner-inline.ts";
 import { listTemplates, loadTemplate } from "./lib/templates.ts";
@@ -184,6 +185,7 @@ export default function activate(letta: LettaModContext): (() => void) {
       approvalPolicy: "alwaysAsk",
       parallelSafe: false,
       async run(ctx: LettaToolContext) {
+        if (ctx.agent?.id) setRuntimeAgentId(ctx.agent.id);
         const { name, inputs } = ctx.args || {};
         if (!isNonEmptyString(name)) {
           return { status: "error", content: "name is required" };
@@ -215,6 +217,7 @@ export default function activate(letta: LettaModContext): (() => void) {
       approvalPolicy: "auto",
       parallelSafe: true,
       async run(ctx: LettaToolContext) {
+        if (ctx.agent?.id) setRuntimeAgentId(ctx.agent.id);
         const { run_id } = ctx.args || {};
         if (!isNonEmptyString(run_id)) {
           return { status: "error", content: "run_id is required" };
@@ -238,6 +241,7 @@ export default function activate(letta: LettaModContext): (() => void) {
       args: "[subcommand] [args...]",
       runWhenBusy: true,
       run: async (ctx: LettaCommandContext) => {
+        if (ctx.agent?.id) setRuntimeAgentId(ctx.agent.id);
         const raw = normalizeCommandArgs(ctx.args);
         const tokens = raw ? raw.trim().split(/\s+/) : [];
         const subcommand = tokens[0] ?? "panel";
@@ -316,6 +320,7 @@ export default function activate(letta: LettaModContext): (() => void) {
   // ── Events ──
   if (letta.capabilities?.events?.tools) {
     safeOn("tool_end", (event: LettaEvent, ctx: LettaEventHandlerContext) => {
+      if (ctx.agent?.id) setRuntimeAgentId(ctx.agent.id);
       if (!activeRunId || !event || typeof event !== "object") return;
       if (ctx.conversation?.id !== activeRunConversationId) return;
       const toolName = event.toolName;
@@ -337,6 +342,7 @@ export default function activate(letta: LettaModContext): (() => void) {
 
   if (letta.capabilities?.events?.turns) {
     safeOn("turn_end", async (_event: LettaEvent, ctx: LettaEventHandlerContext) => {
+      if (ctx.agent?.id) setRuntimeAgentId(ctx.agent.id);
       if (!activeRunId) return;
       if (ctx.conversation?.id !== activeRunConversationId) return;
       const run = loadRun(activeRunId);

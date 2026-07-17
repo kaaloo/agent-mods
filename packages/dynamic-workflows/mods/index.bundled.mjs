@@ -7367,7 +7367,13 @@ var MOD_ID = "flows";
 function getLettaHome() {
   return process.env.LETTA_HOME ?? path2.join(homedir(), ".letta");
 }
+var runtimeAgentId;
+function setRuntimeAgentId(id) {
+  runtimeAgentId = id;
+}
 function getAgentId() {
+  if (runtimeAgentId)
+    return runtimeAgentId;
   const env = process.env.LETTA_AGENT_ID ?? process.env.AGENT_ID;
   if (env)
     return env;
@@ -8200,6 +8206,8 @@ function activate(letta) {
       approvalPolicy: "alwaysAsk",
       parallelSafe: false,
       async run(ctx) {
+        if (ctx.agent?.id)
+          setRuntimeAgentId(ctx.agent.id);
         const { name, inputs } = ctx.args || {};
         if (!isNonEmptyString(name)) {
           return { status: "error", content: "name is required" };
@@ -8230,6 +8238,8 @@ function activate(letta) {
       approvalPolicy: "auto",
       parallelSafe: true,
       async run(ctx) {
+        if (ctx.agent?.id)
+          setRuntimeAgentId(ctx.agent.id);
         const { run_id } = ctx.args || {};
         if (!isNonEmptyString(run_id)) {
           return { status: "error", content: "run_id is required" };
@@ -8250,6 +8260,8 @@ function activate(letta) {
       args: "[subcommand] [args...]",
       runWhenBusy: true,
       run: async (ctx) => {
+        if (ctx.agent?.id)
+          setRuntimeAgentId(ctx.agent.id);
         const raw = normalizeCommandArgs(ctx.args);
         const tokens = raw ? raw.trim().split(/\s+/) : [];
         const subcommand = tokens[0] ?? "panel";
@@ -8334,6 +8346,8 @@ ${buildFlowHelp()}` };
   }
   if (letta.capabilities?.events?.tools) {
     safeOn("tool_end", (event, ctx) => {
+      if (ctx.agent?.id)
+        setRuntimeAgentId(ctx.agent.id);
       if (!activeRunId || !event || typeof event !== "object")
         return;
       if (ctx.conversation?.id !== activeRunConversationId)
@@ -8355,6 +8369,8 @@ ${buildFlowHelp()}` };
   }
   if (letta.capabilities?.events?.turns) {
     safeOn("turn_end", async (_event, ctx) => {
+      if (ctx.agent?.id)
+        setRuntimeAgentId(ctx.agent.id);
       if (!activeRunId)
         return;
       if (ctx.conversation?.id !== activeRunConversationId)

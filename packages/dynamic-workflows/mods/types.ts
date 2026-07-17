@@ -12,6 +12,7 @@ export interface LettaToolContext {
   cwd?: string;
   workingDirectory?: string;
   conversation?: ModConversationHandle;
+  agent?: { id?: string; name?: string | null };
   [key: string]: unknown;
 }
 
@@ -29,6 +30,7 @@ export interface LettaCommandContext {
   cwd?: string;
   workingDirectory?: string;
   conversation?: ModConversationHandle;
+  agent?: { id?: string; name?: string | null };
   [key: string]: unknown;
 }
 
@@ -45,6 +47,7 @@ export interface LettaPanelRenderContext {
   cwd?: string;
   workingDirectory?: string;
   conversation?: ModConversationHandle;
+  agent?: { id?: string; name?: string | null };
   [key: string]: unknown;
 }
 
@@ -72,6 +75,7 @@ export interface LettaEventHandlerContext {
   cwd?: string;
   workingDirectory?: string;
   conversation?: ModConversationHandle;
+  agent?: { id?: string; name?: string | null };
   [key: string]: unknown;
 }
 
