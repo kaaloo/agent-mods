@@ -17,9 +17,8 @@ import {
   updateRunRegistry,
   saveRunResult,
   touchRun,
-  loadRunResult,
-  readRunAgentOutput,
   readRunResult,
+  readRunAgentOutput,
   getRunAgentOutputPath,
   getRunResultPath,
 } from "./state.ts";
@@ -54,7 +53,7 @@ export function stepInlineRun(runId: string): InlineStep | null {
   const run = loadRun(runId);
   if (!run) return null;
   if (run.status === "completed") {
-    const result = loadRunResult(runId) ?? "";
+    const result = readRunResult(runId) ?? "";
     return { type: "complete", runId, result, resultPath: `~/.letta/workflows/runs/${runId}/result.md` };
   }
   if (run.status !== "running") {

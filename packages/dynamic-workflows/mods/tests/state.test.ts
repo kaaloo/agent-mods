@@ -14,7 +14,7 @@ import {
   loadAgentResult,
   getLettaHome,
   getRunDir,
-  getStatePath,
+  getRegistryPath,
   getLibraryDir,
 } from "../lib/state.ts";
 import { WORKFLOW_VERSION, type WorkflowDefinition } from "../lib/schema.ts";
@@ -124,6 +124,6 @@ describe("runs", () => {
 });
 
 afterEach(() => {
-  // Ensure state path is inside temp dir for isolation.
-  expect(getStatePath()).toContain(tempDir);
+  // Ensure registry path is inside temp dir for isolation.
+  expect(getRegistryPath()).toContain(tempDir);
 });

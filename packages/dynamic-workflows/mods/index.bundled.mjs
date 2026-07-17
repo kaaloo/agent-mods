@@ -7293,21 +7293,25 @@ function stripMarkdownFences(text) {
 }
 
 // mods/lib/state.ts
-import { existsSync, mkdirSync, readFileSync, renameSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, readdirSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 var MOD_ID = "dynamic-workflows";
 function getLettaHome() {
   return process.env.LETTA_HOME ?? path.join(homedir(), ".letta");
 }
-function getStateDir() {
-  return path.join(getLettaHome(), "mods");
-}
-function getStatePath() {
-  return path.join(getStateDir(), `${MOD_ID}.state.json`);
+function getAgentId() {
+  return process.env.LETTA_AGENT_ID ?? process.env.AGENT_ID ?? undefined;
 }
 function getWorkflowsDir() {
+  const agentId = getAgentId();
+  if (agentId) {
+    return path.join(getLettaHome(), "agents", agentId, "memory", MOD_ID);
+  }
   return path.join(getLettaHome(), "workflows");
+}
+function getRegistryPath() {
+  return path.join(getWorkflowsDir(), "registry.md");
 }
 function getLibraryDir() {
   return path.join(getWorkflowsDir(), "library");
@@ -7321,39 +7325,39 @@ function emptyState() {
     runs: {}
   };
 }
-function readState() {
+function parseMarkdownFrontmatter(text) {
+  const trimmed = text.trim();
+  const match = trimmed.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!match)
+    return { data: {}, body: trimmed };
   try {
-    const p = getStatePath();
-    if (!existsSync(p))
-      return emptyState();
-    const raw = readFileSync(p, "utf8");
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object")
-      return emptyState();
-    return {
-      version: 1,
-      runs: typeof parsed.runs === "object" && parsed.runs !== null ? parsed.runs : {}
-    };
+    const data = $parse(match[1]);
+    return { data, body: match[2].trim() };
   } catch {
-    return emptyState();
+    return { data: {}, body: trimmed };
   }
 }
-function writeState(state) {
-  const p = getStatePath();
-  mkdirSync(path.dirname(p), { recursive: true });
-  writeJsonAtomically(p, state);
+function serializeMarkdownFrontmatter(data, body = "") {
+  const yaml = $stringify(data, { lineWidth: 0, nullStr: "" }).trim();
+  if (!body.trim())
+    return `---
+${yaml}
+---
+`;
+  return `---
+${yaml}
+---
+
+${body.trim()}
+`;
 }
-function writeJsonAtomically(filePath, value) {
-  const dir = path.dirname(filePath);
-  mkdirSync(dir, { recursive: true });
-  const tmp = path.join(dir, `.tmp-${process.pid}-${Date.now()}.json`);
-  writeFileSync(tmp, `${JSON.stringify(value, null, 2)}
-`, "utf8");
+function readTextFile(filePath) {
   try {
-    renameSync(tmp, filePath);
+    if (!existsSync(filePath))
+      return null;
+    return readFileSync(filePath, "utf8");
   } catch {
-    writeFileSync(filePath, `${JSON.stringify(value, null, 2)}
-`, "utf8");
+    return null;
   }
 }
 function writeTextFileAtomically(filePath, text) {
@@ -7367,14 +7371,29 @@ function writeTextFileAtomically(filePath, text) {
     writeFileSync(filePath, text, "utf8");
   }
 }
-function readTextFile(filePath) {
+function readState() {
   try {
-    if (!existsSync(filePath))
-      return null;
-    return readFileSync(filePath, "utf8");
+    const p = getRegistryPath();
+    if (!existsSync(p))
+      return emptyState();
+    const text = readTextFile(p);
+    if (!text)
+      return emptyState();
+    const { data } = parseMarkdownFrontmatter(text);
+    if (!data || typeof data !== "object" || Array.isArray(data))
+      return emptyState();
+    return {
+      version: 1,
+      runs: typeof data.runs === "object" && data.runs !== null && !Array.isArray(data.runs) ? data.runs : {}
+    };
   } catch {
-    return null;
+    return emptyState();
   }
+}
+function writeState(state) {
+  const p = getRegistryPath();
+  mkdirSync(path.dirname(p), { recursive: true });
+  writeTextFileAtomically(p, serializeMarkdownFrontmatter({ version: 1, runs: state.runs }));
 }
 function getLibraryEntryPath(name) {
   return path.join(getLibraryDir(), `${name}.md`);
@@ -7392,12 +7411,11 @@ function loadLibraryEntry(name) {
   const { workflow, errors: errors2 } = loadWorkflowFromMarkdown(text);
   if (!workflow || errors2.length > 0)
     return null;
-  const savedAt = workflow.name ? new Date().toISOString() : "";
   return {
     name,
     description: workflow.description,
     workflow,
-    savedAt
+    savedAt: new Date().toISOString()
   };
 }
 function listLibrary() {
@@ -7424,22 +7442,26 @@ function getRunDir(runId) {
   return path.join(getRunsDir(), runId);
 }
 function getRunPlanPath(runId) {
-  return path.join(getRunDir(runId), "plan.json");
+  return path.join(getRunDir(runId), "plan.md");
 }
-function getRunCheckpointPath(runId) {
-  return path.join(getRunDir(runId), "checkpoint.json");
+function getRunPath(runId) {
+  return path.join(getRunDir(runId), "run.md");
 }
 function getRunAgentPath(runId, phaseId, agentId) {
-  return path.join(getRunDir(runId), "phases", phaseId, `${agentId}.json`);
+  return path.join(getRunDir(runId), "phases", phaseId, `${agentId}.md`);
 }
 function getRunAgentOutputPath(runId, phaseId, agentId) {
-  return path.join(getRunDir(runId), "phases", phaseId, `${agentId}.md`);
+  return getRunAgentPath(runId, phaseId, agentId);
 }
 function getRunResultPath(runId) {
   return path.join(getRunDir(runId), "result.md");
 }
 function readRunAgentOutput(runId, phaseId, agentId) {
-  return readTextFile(getRunAgentOutputPath(runId, phaseId, agentId));
+  const text = readTextFile(getRunAgentPath(runId, phaseId, agentId));
+  if (!text)
+    return null;
+  const { body } = parseMarkdownFrontmatter(text);
+  return body || null;
 }
 function readRunResult(runId) {
   return readTextFile(getRunResultPath(runId));
@@ -7466,18 +7488,86 @@ function createRun(workflow, inputs = {}) {
 function persistRun(run) {
   const runDir = getRunDir(run.runId);
   mkdirSync(runDir, { recursive: true });
-  writeJsonAtomically(getRunPlanPath(run.runId), run.workflow);
-  writeJsonAtomically(getRunCheckpointPath(run.runId), run);
+  writeTextFileAtomically(getRunPlanPath(run.runId), serializeWorkflowMarkdown(run.workflow));
+  const runCopy = { ...run };
+  delete runCopy.workflow;
+  writeTextFileAtomically(getRunPath(run.runId), serializeMarkdownFrontmatter(runCopy));
+}
+function touchRun(run) {
+  run.updatedAt = new Date().toISOString();
+  return run;
 }
 function loadRun(runId) {
-  const checkpoint = readTextFile(getRunCheckpointPath(runId));
-  if (!checkpoint)
-    return null;
   try {
-    return JSON.parse(checkpoint);
+    const planPath = getRunPlanPath(runId);
+    const runPath = getRunPath(runId);
+    if (!existsSync(planPath) || !existsSync(runPath))
+      return null;
+    const planText = readTextFile(planPath);
+    if (!planText)
+      return null;
+    const { workflow, errors: errors2 } = loadWorkflowFromMarkdown(planText);
+    if (!workflow || errors2.length > 0)
+      return null;
+    const runText = readTextFile(runPath);
+    if (!runText)
+      return null;
+    const { data } = parseMarkdownFrontmatter(runText);
+    if (!data || typeof data !== "object" || Array.isArray(data))
+      return null;
+    return {
+      runId: String(data.runId ?? runId),
+      workflow,
+      inputs: data.inputs ?? {},
+      status: data.status ?? "running",
+      currentPhaseId: data.currentPhaseId ?? null,
+      completedPhaseIds: Array.isArray(data.completedPhaseIds) ? data.completedPhaseIds : [],
+      completedAgents: Array.isArray(data.completedAgents) ? data.completedAgents : [],
+      outputs: data.outputs ?? {},
+      startedAt: String(data.startedAt ?? new Date().toISOString()),
+      updatedAt: String(data.updatedAt ?? new Date().toISOString()),
+      error: data.error ? String(data.error) : undefined
+    };
   } catch {
     return null;
   }
+}
+function saveAgentResult(runId, phaseId, state) {
+  const filePath = getRunAgentPath(runId, phaseId, state.agentId);
+  const output = state.output;
+  const stateCopy = { ...state };
+  delete stateCopy.output;
+  writeTextFileAtomically(filePath, serializeMarkdownFrontmatter(stateCopy, output ?? ""));
+}
+function loadAgentResult(runId, phaseId, agentId) {
+  try {
+    const filePath = getRunAgentPath(runId, phaseId, agentId);
+    if (!existsSync(filePath))
+      return null;
+    const text = readTextFile(filePath);
+    if (!text)
+      return null;
+    const { data, body } = parseMarkdownFrontmatter(text);
+    if (!data || typeof data !== "object" || Array.isArray(data))
+      return null;
+    return {
+      phaseId: String(data.phaseId ?? phaseId),
+      agentId: String(data.agentId ?? agentId),
+      prompt: String(data.prompt ?? ""),
+      status: data.status ?? "completed",
+      output: body || undefined,
+      tokens: typeof data.tokens === "number" ? data.tokens : undefined,
+      durationMs: typeof data.durationMs === "number" ? data.durationMs : undefined,
+      startedAt: data.startedAt ? String(data.startedAt) : undefined,
+      completedAt: data.completedAt ? String(data.completedAt) : undefined,
+      error: data.error ? String(data.error) : undefined
+    };
+  } catch {
+    return null;
+  }
+}
+function saveRunResult(runId, result) {
+  writeTextFileAtomically(getRunResultPath(runId), result);
 }
 function updateRunRegistry(run) {
   const state = readState();
@@ -7488,33 +7578,6 @@ function updateRunRegistry(run) {
     currentPhaseId: run.currentPhaseId
   };
   writeState(state);
-}
-function touchRun(run) {
-  run.updatedAt = new Date().toISOString();
-  return run;
-}
-function saveAgentResult(runId, phaseId, agentState) {
-  const p = getRunAgentPath(runId, phaseId, agentState.agentId);
-  mkdirSync(path.dirname(p), { recursive: true });
-  writeJsonAtomically(p, agentState);
-}
-function loadAgentResult(runId, phaseId, agentId) {
-  const text = readTextFile(getRunAgentPath(runId, phaseId, agentId));
-  if (!text)
-    return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-function saveRunResult(runId, result) {
-  const p = getRunResultPath(runId);
-  mkdirSync(path.dirname(p), { recursive: true });
-  writeFileSync(p, result, "utf8");
-}
-function loadRunResult(runId) {
-  return readTextFile(getRunResultPath(runId));
 }
 
 // mods/lib/utils.ts
@@ -7581,7 +7644,7 @@ function stepInlineRun(runId) {
   if (!run)
     return null;
   if (run.status === "completed") {
-    const result = loadRunResult(runId) ?? "";
+    const result = readRunResult(runId) ?? "";
     return { type: "complete", runId, result, resultPath: `~/.letta/workflows/runs/${runId}/result.md` };
   }
   if (run.status !== "running") {
