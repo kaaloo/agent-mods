@@ -1,11 +1,17 @@
 // Minimal type declarations for the Letta Code mod runtime.
 // These are inferred from first-party mods; the real types are injected by the runtime.
 
+export interface ModConversationHandle {
+  id?: string;
+  fork?: (options?: { hidden?: boolean }) => Promise<ModConversationHandle>;
+  sendMessageStream?: (messages: Array<{ role: string; content: string }>) => Promise<AsyncIterable<unknown>>;
+}
+
 export interface LettaToolContext {
   args: Record<string, unknown>;
   cwd?: string;
   workingDirectory?: string;
-  conversation?: { id?: string };
+  conversation?: ModConversationHandle;
   [key: string]: unknown;
 }
 
@@ -22,7 +28,7 @@ export interface LettaCommandContext {
   args?: string | Record<string, unknown>;
   cwd?: string;
   workingDirectory?: string;
-  conversation?: { id?: string };
+  conversation?: ModConversationHandle;
   [key: string]: unknown;
 }
 
@@ -38,7 +44,7 @@ export interface LettaPanelRenderContext {
   width?: number;
   cwd?: string;
   workingDirectory?: string;
-  conversation?: { id?: string };
+  conversation?: ModConversationHandle;
   [key: string]: unknown;
 }
 
@@ -55,6 +61,8 @@ export interface LettaEvent {
   args?: Record<string, unknown>;
   arguments?: Record<string, unknown>;
   result?: unknown;
+  output?: unknown;
+  resultText?: unknown;
   status?: string;
   reason?: string;
   [key: string]: unknown;
@@ -63,7 +71,7 @@ export interface LettaEvent {
 export interface LettaEventHandlerContext {
   cwd?: string;
   workingDirectory?: string;
-  conversation?: { id?: string };
+  conversation?: ModConversationHandle;
   [key: string]: unknown;
 }
 

@@ -856,6 +856,31 @@ function activate(letta) {
         return { status: "success", run, step };
       }
     }));
+    disposers.push(letta.tools.register({
+      name: "workflow_resume",
+      description: "Resume an existing workflow run and return the current dispatch step. Used inside a fork to take over a run created by /flow-run.",
+      parameters: {
+        type: "object",
+        properties: { run_id: { type: "string" } },
+        required: ["run_id"]
+      },
+      approvalPolicy: "auto",
+      parallelSafe: false,
+      run(ctx) {
+        const { run_id } = ctx.args || {};
+        if (!isNonEmptyString(run_id)) {
+          return { status: "error", content: "run_id is required" };
+        }
+        const run = loadRun(run_id);
+        if (!run) {
+          return { status: "error", content: `Run "${run_id}" not found.` };
+        }
+        activeRunId = run.runId;
+        refreshPanel();
+        const step = stepInlineRun(run_id);
+        return { status: "success", runId: run.runId, step };
+      }
+    }));
   }
   if (letta.capabilities?.commands) {
     disposers.push(letta.commands.register({
@@ -909,10 +934,10 @@ function activate(letta) {
     }));
     disposers.push(letta.commands.register({
       id: "flow-run",
-      description: "Run a saved workflow inline.",
+      description: "Run a saved workflow in a forked background conversation.",
       args: "<name>",
       runWhenBusy: true,
-      run: (ctx) => {
+      async run(ctx) {
         const name = normalizeCommandArgs(ctx.args);
         if (!name) {
           return { type: "output", output: "Usage: /flow-run <name>" };
@@ -926,6 +951,27 @@ function activate(letta) {
         activeRunId = run.runId;
         updateRunRegistry(run);
         refreshPanel();
+        const conversation = ctx.conversation;
+        const fork = conversation?.fork;
+        if (typeof fork === "function") {
+          try {
+            const forked = await fork({ hidden: true });
+            const send = forked.sendMessageStream;
+            if (typeof send !== "function") {
+              return { type: "output", output: `Created run ${run.runId}, but the forked conversation has no sendMessageStream method.` };
+            }
+            const prompt = buildForkExecutorPrompt(run.runId, workflow.name);
+            const stream = await send([{ role: "user", content: prompt }]);
+            (async () => {
+              try {
+                for await (const _ of stream) {}
+              } catch {}
+            })();
+            return { type: "output", output: `Started workflow "${name}" in fork ${forked.id}. Run ID: ${run.runId}` };
+          } catch (err) {
+            return { type: "output", output: `Created run ${run.runId}, but could not fork a background executor: ${err}` };
+          }
+        }
         const step = stepInlineRun(run.runId);
         return { type: "output", output: formatStep(step) };
       }
@@ -1020,6 +1066,24 @@ ${step.agents?.map((a) => `  - ${a.id}: ${a.prompt.slice(0, 120)}...`).join(`
   if (step.type === "wait")
     return `Waiting for phase "${step.phaseId}" (${step.completed}/${step.completed + step.pending} complete).`;
   return "Unknown step.";
+}
+function buildForkExecutorPrompt(runId, workflowName) {
+  return `You are a workflow executor for the Dynamic Workflows mod. Your only job is to execute an already-created workflow run to completion.
+
+Run ID: ${runId}
+Workflow: ${workflowName}
+
+Rules:
+1. Call the workflow_resume tool with run_id "${runId}" to activate the run in this fork.
+2. Loop:
+   a. Call workflow_status with run_id "${runId}" to get the current step.
+   b. If step.type is "complete", stop and return a concise summary (mention the result path).
+   c. If step.type is "dispatch", issue the described parallel Agent tool calls with the exact prompts provided. Wait for all tool results to return.
+   d. If step.type is "wait", call workflow_status again (the mod auto-advances phases).
+3. Do not ask the user questions. Do not explain your reasoning. Only call the workflow_resume, workflow_status, and Agent tools.
+4. Use the general-purpose subagent type for all Agent calls.
+
+Start by calling workflow_resume now.`;
 }
 export {
   activate as default
