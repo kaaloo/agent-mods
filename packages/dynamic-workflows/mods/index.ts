@@ -1,7 +1,6 @@
 import path from "node:path";
 import type { LettaModContext, LettaToolContext, LettaCommandContext, LettaEvent, LettaEventHandlerContext } from "./types.ts";
 import { authorWorkflow, parseWorkflowMarkdownText, stripMarkdownFences } from "./lib/author.ts";
-import { isFanOutPhase, isBarrierPhase } from "./lib/schema.ts";
 import { renderProgressPanel } from "./lib/panel.ts";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
@@ -11,8 +10,10 @@ import {
   saveLibraryEntry,
   deleteLibraryEntry,
   listLibrary,
-  readRunAgentOutput,
+  persistRun,
   setRuntimeAgentId,
+  touchRun,
+  updateRunRegistry,
 } from "./lib/state.ts";
 import { stepInlineRun, type InlineStep } from "./lib/runner-inline.ts";
 import { listTemplates, loadTemplate } from "./lib/templates.ts";
@@ -25,7 +26,6 @@ export default function activate(letta: LettaModContext): (() => void) {
   let activeRunId: string | null = null;
   let activeRunConversationId: string | undefined = undefined;
   let panel: { update: () => void; close: () => void } | null = null;
-  let lastTurnWorkflowActivity = false;
   let workflowContinuationCount = 0;
   const MAX_WORKFLOW_CONTINUATIONS = 20;
 
@@ -200,7 +200,6 @@ export default function activate(letta: LettaModContext): (() => void) {
         activeRunId = run.runId;
         activeRunConversationId = ctx.conversation?.id;
         workflowContinuationCount = 0;
-        lastTurnWorkflowActivity = false;
         refreshPanel();
         const step = await stepInlineRun(run.runId);
         return { status: "success", runId: run.runId, step };
@@ -297,7 +296,6 @@ export default function activate(letta: LettaModContext): (() => void) {
             activeRunId = run.runId;
             activeRunConversationId = ctx.conversation?.id;
             workflowContinuationCount = 0;
-            lastTurnWorkflowActivity = false;
             refreshPanel();
             const step = await stepInlineRun(run.runId);
             return { type: "prompt", content: buildExecutorPrompt(run.runId, workflow.name, step), systemReminder: true };
@@ -326,18 +324,12 @@ export default function activate(letta: LettaModContext): (() => void) {
       if (ctx.conversation?.id !== activeRunConversationId) return;
       const toolName = event.toolName;
       if (typeof toolName !== "string") return;
-      if (toolName === "flow_status") {
-        lastTurnWorkflowActivity = true;
-        return;
+      if (toolName === "Agent" && event.status !== "error") {
+        // Subagent output is written to the run's agent output file by the
+        // subagent itself. The turn_end handler drives the next step, but we
+        // refresh the panel here so progress is visible immediately.
+        refreshPanel();
       }
-      if (toolName !== "Agent") return;
-      if (event.status === "error") return;
-
-      // The actual subagent output is written to the run's agent output file by
-      // the subagent itself. Completion is detected when flow_status polls the
-      // file, so we only mark activity here to trigger a continuation prompt.
-      lastTurnWorkflowActivity = true;
-      refreshPanel();
     });
   }
 
@@ -350,13 +342,29 @@ export default function activate(letta: LettaModContext): (() => void) {
       if (ctx.conversation?.id !== currentConversationId) return;
       const run = loadRun(currentRunId);
       if (!run || run.status !== "running") return;
-      if (!lastTurnWorkflowActivity) return;
-      if (workflowContinuationCount >= MAX_WORKFLOW_CONTINUATIONS) return;
 
-      // Wait conditions: drive the loop from inside the mod without forcing
-      // the model to re-call flow_status. We sleep briefly and re-evaluate
-      // the run state under the mutex, sending a continuation prompt only
-      // when the phase is actually ready to advance.
+      const sendPrompt = async (content: string) => {
+        const conversation = ctx.conversation;
+        const send = conversation?.sendMessageStream;
+        if (typeof send !== "function") return;
+        try {
+          const stream = await send([{ role: "user", content }]);
+          void (async () => { try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ } })();
+        } catch { /* ignore */ }
+      };
+
+      if (workflowContinuationCount >= MAX_WORKFLOW_CONTINUATIONS) {
+        run.status = "failed";
+        run.error = `Exceeded maximum workflow continuations (${MAX_WORKFLOW_CONTINUATIONS}).`;
+        persistRun(touchRun(run));
+        updateRunRegistry(run);
+        await sendPrompt(`Workflow "${run.workflow.name}" stopped: exceeded maximum continuations.`);
+        return;
+      }
+
+      // Poll the run inline until it is ready to advance. The orchestrator
+      // never asks the model to call flow_status during normal execution; the
+      // mod drives the loop by reading the run state directly.
       const waitMs = 4000;
       const maxWaitMs = 30000;
       let waited = 0;
@@ -365,90 +373,25 @@ export default function activate(letta: LettaModContext): (() => void) {
         const refreshed = loadRun(currentRunId);
         if (!refreshed || refreshed.status !== "running") return;
 
-        const phaseId = refreshed.currentPhaseId;
-        const phase = phaseId ? refreshed.workflow.phases.find((p) => p.id === phaseId) : undefined;
+        const step = await stepInlineRun(currentRunId);
+        if (!step) return;
 
-        if (!phase) {
-          lastTurnWorkflowActivity = false;
+        if (step.type === "complete" || step.type === "dispatch") {
           workflowContinuationCount++;
-          const conversation = ctx.conversation;
-          const send = conversation?.sendMessageStream;
-          if (typeof send !== "function") return;
-          const step = await stepInlineRun(currentRunId);
-          const prompt = buildExecutorPrompt(currentRunId, refreshed.workflow.name, step);
-          try {
-            const stream = await send([{ role: "user", content: prompt }]);
-            void (async () => { try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ } })();
-          } catch { /* ignore */ }
+          await sendPrompt(buildExecutorPrompt(currentRunId, refreshed.workflow.name, step));
           return;
         }
 
-        if (isFanOutPhase(phase)) {
-          const allReportsReady = phase.agents.every((a) => {
-            if (!refreshed.startedAgentIds.includes(a.id)) return false;
-            const text = readRunAgentOutput(refreshed.runId, phase.id, a.id);
-            return text && text.length > 0;
-          });
-          if (!allReportsReady) {
-            if (waited >= maxWaitMs) {
-              lastTurnWorkflowActivity = false;
-              workflowContinuationCount++;
-              const conversation = ctx.conversation;
-              const send = conversation?.sendMessageStream;
-              if (typeof send !== "function") return;
-              try {
-                const stream = await send([{ role: "user", content: `The agents for phase "${phase.id}" are still writing their reports. Call flow_status({ run_id: "${refreshed.runId}" }) to check again.` }]);
-                void (async () => { try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ } })();
-              } catch { /* ignore */ }
-              return;
-            }
-            await sleep(waitMs);
-            waited += waitMs;
-            continue;
-          }
+        // step.type === "wait"
+        if (waited >= maxWaitMs) {
+          await sendPrompt(
+            `Workflow "${refreshed.workflow.name}" is waiting for phase "${step.phaseId}" (${step.completed}/${step.completed + step.pending} complete). The orchestrator will check again shortly.`
+          );
+          return;
         }
 
-        if (isBarrierPhase(phase)) {
-          const allDepsReady = phase.depends_on.every((depId) => {
-            const dep = refreshed.workflow.phases.find((p) => p.id === depId);
-            if (!dep || !isFanOutPhase(dep)) return true;
-            return dep.agents.every((a) => {
-              const text = readRunAgentOutput(refreshed.runId, depId, a.id);
-              return text && text.length > 0;
-            });
-          });
-          if (!allDepsReady) {
-            if (waited >= maxWaitMs) {
-              lastTurnWorkflowActivity = false;
-              workflowContinuationCount++;
-              const conversation = ctx.conversation;
-              const send = conversation?.sendMessageStream;
-              if (typeof send !== "function") return;
-              try {
-                const stream = await send([{ role: "user", content: `The prior phase agents are still writing their reports. Call flow_status({ run_id: "${refreshed.runId}" }) to check again.` }]);
-                void (async () => { try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ } })();
-              } catch { /* ignore */ }
-              return;
-            }
-            await sleep(waitMs);
-            waited += waitMs;
-            continue;
-          }
-        }
-
-        // Phase is ready to advance. Run the next step inline under the mutex.
-        lastTurnWorkflowActivity = false;
-        workflowContinuationCount++;
-        const conversation = ctx.conversation;
-        const send = conversation?.sendMessageStream;
-        if (typeof send !== "function") return;
-        const step = await stepInlineRun(currentRunId);
-        const prompt = buildExecutorPrompt(currentRunId, refreshed.workflow.name, step);
-        try {
-          const stream = await send([{ role: "user", content: prompt }]);
-          void (async () => { try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ } })();
-        } catch { /* ignore */ }
-        return;
+        await sleep(waitMs);
+        waited += waitMs;
       }
     });
   }
@@ -543,7 +486,7 @@ Phase types: fan-out (parallel agents) and barrier (single agent after dependenc
 }
 
 function buildExecutorPrompt(runId: string, workflowName: string, step: InlineStep | null): string {
-  const base = `Workflow "${workflowName}" started. Run ID: ${runId}.\n\nYour job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the flow_status tool and the Agent tool.\n\nRules:\n1. After each batch of Agent tool calls returns, call flow_status({ run_id: "${runId}" }) to get the next step.\n2. If step.type is "complete", stop and return a concise summary of the result shown below.\n3. If step.type is "dispatch", issue the described parallel Agent tool calls with the exact prompts provided.\n4. If step.type is "wait", call flow_status again.\n5. Use the general-purpose subagent type for all Agent calls.\n\nCurrent step:`;
+  const base = `Workflow "${workflowName}" started. Run ID: ${runId}.\n\nYour job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the Agent tool.\n\nRules:\n1. If step.type is "complete", stop and return a concise summary of the result shown below.\n2. If step.type is "dispatch", issue the described parallel Agent tool calls with the exact prompts provided.\n3. If step.type is "wait", wait for the next prompt from the orchestrator. Do not call any tools.\n4. Use the general-purpose subagent type for all Agent calls.\n\nCurrent step:`;
   return `${base}\n\n${formatStep(step)}`;
 }
 

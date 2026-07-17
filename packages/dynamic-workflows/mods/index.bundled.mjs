@@ -8049,7 +8049,6 @@ function activate(letta) {
   let activeRunId = null;
   let activeRunConversationId = undefined;
   let panel = null;
-  let lastTurnWorkflowActivity = false;
   let workflowContinuationCount = 0;
   const MAX_WORKFLOW_CONTINUATIONS = 20;
   const TEMPLATE_DIR = path4.resolve(import.meta.dirname, "../assets/templates");
@@ -8218,7 +8217,6 @@ function activate(letta) {
         activeRunId = run.runId;
         activeRunConversationId = ctx.conversation?.id;
         workflowContinuationCount = 0;
-        lastTurnWorkflowActivity = false;
         refreshPanel();
         const step = await stepInlineRun(run.runId);
         return { status: "success", runId: run.runId, step };
@@ -8319,7 +8317,6 @@ Run a saved workflow or bundled template.` };
             activeRunId = run.runId;
             activeRunConversationId = ctx.conversation?.id;
             workflowContinuationCount = 0;
-            lastTurnWorkflowActivity = false;
             refreshPanel();
             const step = await stepInlineRun(run.runId);
             return { type: "prompt", content: buildExecutorPrompt(run.runId, workflow.name, step), systemReminder: true };
@@ -8352,16 +8349,9 @@ ${buildFlowHelp()}` };
       const toolName = event.toolName;
       if (typeof toolName !== "string")
         return;
-      if (toolName === "flow_status") {
-        lastTurnWorkflowActivity = true;
-        return;
+      if (toolName === "Agent" && event.status !== "error") {
+        refreshPanel();
       }
-      if (toolName !== "Agent")
-        return;
-      if (event.status === "error")
-        return;
-      lastTurnWorkflowActivity = true;
-      refreshPanel();
     });
   }
   if (letta.capabilities?.events?.turns) {
@@ -8377,10 +8367,28 @@ ${buildFlowHelp()}` };
       const run = loadRun(currentRunId);
       if (!run || run.status !== "running")
         return;
-      if (!lastTurnWorkflowActivity)
+      const sendPrompt = async (content) => {
+        const conversation = ctx.conversation;
+        const send = conversation?.sendMessageStream;
+        if (typeof send !== "function")
+          return;
+        try {
+          const stream = await send([{ role: "user", content }]);
+          (async () => {
+            try {
+              for await (const _ of stream) {}
+            } catch {}
+          })();
+        } catch {}
+      };
+      if (workflowContinuationCount >= MAX_WORKFLOW_CONTINUATIONS) {
+        run.status = "failed";
+        run.error = `Exceeded maximum workflow continuations (${MAX_WORKFLOW_CONTINUATIONS}).`;
+        persistRun(touchRun(run));
+        updateRunRegistry(run);
+        await sendPrompt(`Workflow "${run.workflow.name}" stopped: exceeded maximum continuations.`);
         return;
-      if (workflowContinuationCount >= MAX_WORKFLOW_CONTINUATIONS)
-        return;
+      }
       const waitMs = 4000;
       const maxWaitMs = 30000;
       let waited = 0;
@@ -8388,107 +8396,20 @@ ${buildFlowHelp()}` };
         const refreshed = loadRun(currentRunId);
         if (!refreshed || refreshed.status !== "running")
           return;
-        const phaseId = refreshed.currentPhaseId;
-        const phase = phaseId ? refreshed.workflow.phases.find((p) => p.id === phaseId) : undefined;
-        if (!phase) {
-          lastTurnWorkflowActivity = false;
-          workflowContinuationCount++;
-          const conversation2 = ctx.conversation;
-          const send2 = conversation2?.sendMessageStream;
-          if (typeof send2 !== "function")
-            return;
-          const step2 = await stepInlineRun(currentRunId);
-          const prompt2 = buildExecutorPrompt(currentRunId, refreshed.workflow.name, step2);
-          try {
-            const stream = await send2([{ role: "user", content: prompt2 }]);
-            (async () => {
-              try {
-                for await (const _ of stream) {}
-              } catch {}
-            })();
-          } catch {}
-          return;
-        }
-        if (isFanOutPhase(phase)) {
-          const allReportsReady = phase.agents.every((a) => {
-            if (!refreshed.startedAgentIds.includes(a.id))
-              return false;
-            const text = readRunAgentOutput(refreshed.runId, phase.id, a.id);
-            return text && text.length > 0;
-          });
-          if (!allReportsReady) {
-            if (waited >= maxWaitMs) {
-              lastTurnWorkflowActivity = false;
-              workflowContinuationCount++;
-              const conversation2 = ctx.conversation;
-              const send2 = conversation2?.sendMessageStream;
-              if (typeof send2 !== "function")
-                return;
-              try {
-                const stream = await send2([{ role: "user", content: `The agents for phase "${phase.id}" are still writing their reports. Call flow_status({ run_id: "${refreshed.runId}" }) to check again.` }]);
-                (async () => {
-                  try {
-                    for await (const _ of stream) {}
-                  } catch {}
-                })();
-              } catch {}
-              return;
-            }
-            await sleep(waitMs);
-            waited += waitMs;
-            continue;
-          }
-        }
-        if (isBarrierPhase(phase)) {
-          const allDepsReady = phase.depends_on.every((depId) => {
-            const dep = refreshed.workflow.phases.find((p) => p.id === depId);
-            if (!dep || !isFanOutPhase(dep))
-              return true;
-            return dep.agents.every((a) => {
-              const text = readRunAgentOutput(refreshed.runId, depId, a.id);
-              return text && text.length > 0;
-            });
-          });
-          if (!allDepsReady) {
-            if (waited >= maxWaitMs) {
-              lastTurnWorkflowActivity = false;
-              workflowContinuationCount++;
-              const conversation2 = ctx.conversation;
-              const send2 = conversation2?.sendMessageStream;
-              if (typeof send2 !== "function")
-                return;
-              try {
-                const stream = await send2([{ role: "user", content: `The prior phase agents are still writing their reports. Call flow_status({ run_id: "${refreshed.runId}" }) to check again.` }]);
-                (async () => {
-                  try {
-                    for await (const _ of stream) {}
-                  } catch {}
-                })();
-              } catch {}
-              return;
-            }
-            await sleep(waitMs);
-            waited += waitMs;
-            continue;
-          }
-        }
-        lastTurnWorkflowActivity = false;
-        workflowContinuationCount++;
-        const conversation = ctx.conversation;
-        const send = conversation?.sendMessageStream;
-        if (typeof send !== "function")
-          return;
         const step = await stepInlineRun(currentRunId);
-        const prompt = buildExecutorPrompt(currentRunId, refreshed.workflow.name, step);
-        try {
-          const stream = await send([{ role: "user", content: prompt }]);
-          (async () => {
-            try {
-              for await (const _ of stream) {}
-            } catch {}
-          })();
-        } catch {}
-        return;
+        if (!step)
+          return;
+        if (step.type === "complete" || step.type === "dispatch") {
+          workflowContinuationCount++;
+          await sendPrompt(buildExecutorPrompt(currentRunId, refreshed.workflow.name, step));
+          return;
+        }
+        if (waited >= maxWaitMs) {
+          await sendPrompt(`Workflow "${refreshed.workflow.name}" is waiting for phase "${step.phaseId}" (${step.completed}/${step.completed + step.pending} complete). The orchestrator will check again shortly.`);
+          return;
+        }
+        await sleep(waitMs);
+        waited += waitMs;
       }
     });
   }
@@ -8590,14 +8511,13 @@ Phase types: fan-out (parallel agents) and barrier (single agent after dependenc
 function buildExecutorPrompt(runId, workflowName, step) {
   const base = `Workflow "${workflowName}" started. Run ID: ${runId}.
 
-Your job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the flow_status tool and the Agent tool.
+Your job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the Agent tool.
 
 Rules:
-1. After each batch of Agent tool calls returns, call flow_status({ run_id: "${runId}" }) to get the next step.
-2. If step.type is "complete", stop and return a concise summary of the result shown below.
-3. If step.type is "dispatch", issue the described parallel Agent tool calls with the exact prompts provided.
-4. If step.type is "wait", call flow_status again.
-5. Use the general-purpose subagent type for all Agent calls.
+1. If step.type is "complete", stop and return a concise summary of the result shown below.
+2. If step.type is "dispatch", issue the described parallel Agent tool calls with the exact prompts provided.
+3. If step.type is "wait", wait for the next prompt from the orchestrator. Do not call any tools.
+4. Use the general-purpose subagent type for all Agent calls.
 
 Current step:`;
   return `${base}
