@@ -7473,7 +7473,7 @@ function readRunAgentOutput(runId, phaseId, agentId) {
 function readRunResult(runId) {
   return readTextFile(getRunResultPath(runId));
 }
-function createRun(workflow, inputs = {}) {
+function createRun(workflow, inputs = {}, conversationId) {
   const runId = generateRunId();
   const firstPhase = workflow.phases[0] ?? null;
   const run = {
@@ -7486,7 +7486,8 @@ function createRun(workflow, inputs = {}) {
     completedAgents: [],
     outputs: {},
     startedAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
+    updatedAt: new Date().toISOString(),
+    conversationId
   };
   persistRun(run);
   updateRunRegistry(run);
@@ -7533,6 +7534,7 @@ function loadRun(runId) {
       outputs: data.outputs ?? {},
       startedAt: String(data.startedAt ?? new Date().toISOString()),
       updatedAt: String(data.updatedAt ?? new Date().toISOString()),
+      conversationId: data.conversationId ? String(data.conversationId) : undefined,
       error: data.error ? String(data.error) : undefined
     };
   } catch {
@@ -7582,7 +7584,8 @@ function updateRunRegistry(run) {
     status: run.status,
     startedAt: run.startedAt,
     updatedAt: run.updatedAt,
-    currentPhaseId: run.currentPhaseId
+    currentPhaseId: run.currentPhaseId,
+    conversationId: run.conversationId
   };
   writeState(state);
 }
@@ -7881,6 +7884,7 @@ var PANEL_ID = "dynamic-workflows";
 function activate(letta) {
   const disposers = [];
   let activeRunId = null;
+  let activeRunConversationId = undefined;
   let panel = null;
   let lastTurnWorkflowActivity = false;
   let workflowContinuationCount = 0;
@@ -8045,8 +8049,9 @@ function activate(letta) {
         if (!workflow) {
           return { status: "error", content: `Workflow "${name}" not found.` };
         }
-        const run = createRun(workflow, normalizeInputs(inputs));
+        const run = createRun(workflow, normalizeInputs(inputs), ctx.conversation?.id);
         activeRunId = run.runId;
+        activeRunConversationId = ctx.conversation?.id;
         workflowContinuationCount = 0;
         lastTurnWorkflowActivity = false;
         updateRunRegistry(run);
@@ -8144,8 +8149,9 @@ function activate(letta) {
         if (!workflow) {
           return { type: "output", output: `Workflow "${name}" not found.` };
         }
-        const run = createRun(workflow);
+        const run = createRun(workflow, {}, ctx.conversation?.id);
         activeRunId = run.runId;
+        activeRunConversationId = ctx.conversation?.id;
         workflowContinuationCount = 0;
         lastTurnWorkflowActivity = false;
         updateRunRegistry(run);
@@ -8156,8 +8162,10 @@ function activate(letta) {
     }));
   }
   if (letta.capabilities?.events?.tools) {
-    safeOn("tool_end", (event) => {
+    safeOn("tool_end", (event, ctx) => {
       if (!activeRunId || !event || typeof event !== "object")
+        return;
+      if (ctx.conversation?.id !== activeRunConversationId)
         return;
       const toolName = event.toolName;
       if (typeof toolName !== "string")
@@ -8199,6 +8207,8 @@ function activate(letta) {
   if (letta.capabilities?.events?.turns) {
     safeOn("turn_end", async (_event, ctx) => {
       if (!activeRunId)
+        return;
+      if (ctx.conversation?.id !== activeRunConversationId)
         return;
       const run = loadRun(activeRunId);
       if (!run || run.status !== "running")
@@ -8257,12 +8267,7 @@ function activate(letta) {
   }
   if (letta.capabilities?.events?.lifecycle) {
     safeOn("conversation_open", () => {
-      const state = readState();
-      const running = Object.entries(state.runs).find(([, r]) => r.status === "running");
-      if (running) {
-        activeRunId = running[0];
-        refreshPanel();
-      }
+      refreshPanel();
     });
   }
   return () => {

@@ -6,7 +6,6 @@ import { renderProgressPanel } from "./lib/panel.ts";
 import {
   createRun,
   loadRun,
-  readState,
   loadLibraryEntry,
   saveLibraryEntry,
   listLibrary,
@@ -22,6 +21,7 @@ const PANEL_ID = "dynamic-workflows";
 export default function activate(letta: LettaModContext): (() => void) {
   const disposers: Array<() => void> = [];
   let activeRunId: string | null = null;
+  let activeRunConversationId: string | undefined = undefined;
   let panel: { update: () => void; close: () => void } | null = null;
   let lastTurnWorkflowActivity = false;
   let workflowContinuationCount = 0;
@@ -193,8 +193,9 @@ export default function activate(letta: LettaModContext): (() => void) {
         if (!workflow) {
           return { status: "error", content: `Workflow "${name}" not found.` };
         }
-        const run = createRun(workflow, normalizeInputs(inputs));
+        const run = createRun(workflow, normalizeInputs(inputs), ctx.conversation?.id);
         activeRunId = run.runId;
+        activeRunConversationId = ctx.conversation?.id;
         workflowContinuationCount = 0;
         lastTurnWorkflowActivity = false;
         updateRunRegistry(run);
@@ -299,8 +300,9 @@ export default function activate(letta: LettaModContext): (() => void) {
         if (!workflow) {
           return { type: "output", output: `Workflow "${name}" not found.` };
         }
-        const run = createRun(workflow);
+        const run = createRun(workflow, {}, ctx.conversation?.id);
         activeRunId = run.runId;
+        activeRunConversationId = ctx.conversation?.id;
         workflowContinuationCount = 0;
         lastTurnWorkflowActivity = false;
         updateRunRegistry(run);
@@ -313,8 +315,9 @@ export default function activate(letta: LettaModContext): (() => void) {
 
   // ── Events ──
   if (letta.capabilities?.events?.tools) {
-    safeOn("tool_end", (event: LettaEvent) => {
+    safeOn("tool_end", (event: LettaEvent, ctx: LettaEventHandlerContext) => {
       if (!activeRunId || !event || typeof event !== "object") return;
+      if (ctx.conversation?.id !== activeRunConversationId) return;
       const toolName = event.toolName;
       if (typeof toolName !== "string") return;
       if (toolName === "workflow_status") {
@@ -351,6 +354,7 @@ export default function activate(letta: LettaModContext): (() => void) {
   if (letta.capabilities?.events?.turns) {
     safeOn("turn_end", async (_event: LettaEvent, ctx: LettaEventHandlerContext) => {
       if (!activeRunId) return;
+      if (ctx.conversation?.id !== activeRunConversationId) return;
       const run = loadRun(activeRunId);
       if (!run || run.status !== "running") return;
       if (!lastTurnWorkflowActivity) return;
@@ -397,12 +401,10 @@ export default function activate(letta: LettaModContext): (() => void) {
 
   if (letta.capabilities?.events?.lifecycle) {
     safeOn("conversation_open", () => {
-      const state = readState();
-      const running = Object.entries(state.runs).find(([, r]) => r.status === "running");
-      if (running) {
-        activeRunId = running[0];
-        refreshPanel();
-      }
+      // Do not auto-resume runs from other conversations. Each run is owned by
+      // the conversation that started it; cross-conversation crosstalk is avoided
+      // by checking conversation IDs in tool_end and turn_end handlers.
+      refreshPanel();
     });
   }
 

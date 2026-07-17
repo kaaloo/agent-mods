@@ -72,12 +72,13 @@ export interface RunState {
   outputs: Record<string, string | Record<string, string>>;
   startedAt: string;
   updatedAt: string;
+  conversationId?: string;
   error?: string;
 }
 
 export interface DynamicWorkflowsState {
   version: 1;
-  runs: Record<string, { status: RunStatus; startedAt: string; updatedAt: string; currentPhaseId: string | null }>;
+  runs: Record<string, { status: RunStatus; startedAt: string; updatedAt: string; currentPhaseId: string | null; conversationId?: string }>;
 }
 
 function emptyState(): DynamicWorkflowsState {
@@ -253,7 +254,7 @@ export function readRunResult(runId: string): string | null {
   return readTextFile(getRunResultPath(runId));
 }
 
-export function createRun(workflow: WorkflowDefinition, inputs: Record<string, string> = {}): RunState {
+export function createRun(workflow: WorkflowDefinition, inputs: Record<string, string> = {}, conversationId?: string): RunState {
   const runId = generateRunId();
   const firstPhase = workflow.phases[0] ?? null;
   const run: RunState = {
@@ -267,6 +268,7 @@ export function createRun(workflow: WorkflowDefinition, inputs: Record<string, s
     outputs: {},
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    conversationId,
   };
   persistRun(run);
   updateRunRegistry(run);
@@ -311,6 +313,7 @@ export function loadRun(runId: string): RunState | null {
       outputs: (data.outputs as Record<string, string | Record<string, string>>) ?? {},
       startedAt: String(data.startedAt ?? new Date().toISOString()),
       updatedAt: String(data.updatedAt ?? new Date().toISOString()),
+      conversationId: data.conversationId ? String(data.conversationId) : undefined,
       error: data.error ? String(data.error) : undefined,
     };
   } catch {
@@ -362,6 +365,7 @@ export function updateRunRegistry(run: RunState): void {
     startedAt: run.startedAt,
     updatedAt: run.updatedAt,
     currentPhaseId: run.currentPhaseId,
+    conversationId: run.conversationId,
   };
   writeState(state);
 }
