@@ -33,40 +33,30 @@ Author a workflow:
 
 ```text
 /flow-author "scan this codebase for bugs"
-# or
-/fl-author "scan this codebase for bugs"
 ```
 
 Save it:
 
 ```text
 /flow-save bug-sweep
-# or
-/fl-save bug-sweep
 ```
 
 Run it:
 
 ```text
 /flow-run bug-sweep
-# or
-/fl-run bug-sweep
 ```
 
 List workflows:
 
 ```text
 /flow-list
-# or
-/fl-list
 ```
 
 Show the panel:
 
 ```text
 /flow
-# or
-/fl
 ```
 
 ## v0.1 status

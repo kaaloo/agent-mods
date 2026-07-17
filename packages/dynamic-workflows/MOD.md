@@ -27,23 +27,23 @@ When a workflow is active, the agent should:
 
 ## Commands
 
-### `/flow` (alias `/fl`)
+### `/flow`
 
 Shows or refreshes the progress panel.
 
-### `/flow-author <task>` (alias `/fl-author`)
+### `/flow-author <task>`
 
 Returns a structured prompt for the model to author a JSON workflow definition.
 
-### `/flow-save <name>` (alias `/fl-save`)
+### `/flow-save <name>`
 
 Saves the most recently authored workflow to the library. In practice, call the `workflow_save` tool directly.
 
-### `/flow-list` (alias `/fl-list`)
+### `/flow-list`
 
 Lists saved workflows and bundled templates.
 
-### `/flow-run <name>` (alias `/fl-run`)
+### `/flow-run <name>`
 
 Starts an inline run of the named workflow. In practice, the agent should call the `workflow_run` tool.
 

@@ -858,50 +858,41 @@ function activate(letta) {
     }));
   }
   if (letta.capabilities?.commands) {
-    let registerCommandWithAlias = function(cmd) {
-      const { alias, ...base } = cmd;
-      disposers.push(letta.commands.register(base));
-      disposers.push(letta.commands.register({ ...base, id: alias, description: `Alias for /${cmd.id}. ${cmd.description}` }));
-    };
-    registerCommandWithAlias({
+    disposers.push(letta.commands.register({
       id: "flow",
-      alias: "fl",
       description: "Show or refresh the Dynamic Workflows progress panel.",
       run: () => {
         refreshPanel();
         return { type: "output", output: activeRunId ? `Workflow panel active. Run ID: ${activeRunId}` : "No active workflow." };
       }
-    });
-    registerCommandWithAlias({
+    }));
+    disposers.push(letta.commands.register({
       id: "flow-author",
-      alias: "fl-author",
       description: "Author a new workflow for the given task.",
       args: "<task>",
       run: (ctx) => {
         const args = normalizeCommandArgs(ctx.args);
         if (!args) {
-          return { type: "output", output: "Usage: /flow-author <task> or /fl-author <task>" };
+          return { type: "output", output: "Usage: /flow-author <task>" };
         }
         const { prompt } = authorWorkflow({ task: args });
         return { type: "output", output: prompt };
       }
-    });
-    registerCommandWithAlias({
+    }));
+    disposers.push(letta.commands.register({
       id: "flow-save",
-      alias: "fl-save",
       description: "Save the most recently authored workflow to the library.",
       args: "<name>",
       run: (ctx) => {
         const name = normalizeCommandArgs(ctx.args);
         if (!name) {
-          return { type: "output", output: "Usage: /flow-save <name> or /fl-save <name>" };
+          return { type: "output", output: "Usage: /flow-save <name>" };
         }
         return { type: "output", output: `To save a workflow, call the workflow_save tool with name="${name}" and the workflow JSON.` };
       }
-    });
-    registerCommandWithAlias({
+    }));
+    disposers.push(letta.commands.register({
       id: "flow-list",
-      alias: "fl-list",
       description: "List saved workflows and bundled templates.",
       run: () => {
         const entries = listLibrary();
@@ -915,17 +906,16 @@ function activate(letta) {
         return { type: "output", output: lines.join(`
 `) };
       }
-    });
-    registerCommandWithAlias({
+    }));
+    disposers.push(letta.commands.register({
       id: "flow-run",
-      alias: "fl-run",
       description: "Run a saved workflow inline.",
       args: "<name>",
       runWhenBusy: true,
       run: (ctx) => {
         const name = normalizeCommandArgs(ctx.args);
         if (!name) {
-          return { type: "output", output: "Usage: /flow-run <name> or /fl-run <name>" };
+          return { type: "output", output: "Usage: /flow-run <name>" };
         }
         const entry = loadLibraryEntry(name);
         const workflow = entry?.workflow ?? loadTemplate(TEMPLATE_DIR, name);
@@ -939,7 +929,7 @@ function activate(letta) {
         const step = stepInlineRun(run.runId);
         return { type: "output", output: formatStep(step) };
       }
-    });
+    }));
   }
   if (letta.capabilities?.events?.tools) {
     safeOn("tool_end", (event) => {
