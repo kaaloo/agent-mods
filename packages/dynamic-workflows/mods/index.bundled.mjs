@@ -7301,7 +7301,19 @@ function getLettaHome() {
   return process.env.LETTA_HOME ?? path.join(homedir(), ".letta");
 }
 function getAgentId() {
-  return process.env.LETTA_AGENT_ID ?? process.env.AGENT_ID ?? undefined;
+  const env = process.env.LETTA_AGENT_ID ?? process.env.AGENT_ID;
+  if (env)
+    return env;
+  try {
+    const agentsDir = path.join(getLettaHome(), "agents");
+    if (!existsSync(agentsDir))
+      return;
+    const entries = readdirSync(agentsDir, { withFileTypes: true });
+    const agentDir = entries.find((e) => e.isDirectory() && e.name.startsWith("agent-"));
+    return agentDir?.name;
+  } catch {
+    return;
+  }
 }
 function getWorkflowsDir() {
   const agentId = getAgentId();
