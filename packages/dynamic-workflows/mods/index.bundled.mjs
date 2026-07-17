@@ -7432,8 +7432,17 @@ function getRunCheckpointPath(runId) {
 function getRunAgentPath(runId, phaseId, agentId) {
   return path.join(getRunDir(runId), "phases", phaseId, `${agentId}.json`);
 }
+function getRunAgentOutputPath(runId, phaseId, agentId) {
+  return path.join(getRunDir(runId), "phases", phaseId, `${agentId}.md`);
+}
 function getRunResultPath(runId) {
   return path.join(getRunDir(runId), "result.md");
+}
+function readRunAgentOutput(runId, phaseId, agentId) {
+  return readTextFile(getRunAgentOutputPath(runId, phaseId, agentId));
+}
+function readRunResult(runId) {
+  return readTextFile(getRunResultPath(runId));
 }
 function createRun(workflow, inputs = {}) {
   const runId = generateRunId();
@@ -7608,19 +7617,21 @@ function recordAgentComplete(runId, phaseId, agentId, output) {
   const agent = phase.agents.find((a) => a.id === agentId);
   if (!agent)
     return null;
+  const fileOutput = readRunAgentOutput(runId, phaseId, agentId);
+  const finalOutput = fileOutput ?? output;
   const existing = loadAgentResult(runId, phaseId, agentId);
-  const state = existing ? { ...existing, status: "completed", output, completedAt: new Date().toISOString() } : {
+  const state = existing ? { ...existing, status: "completed", output: finalOutput, completedAt: new Date().toISOString() } : {
     phaseId,
     agentId,
     prompt: agent.prompt,
     status: "completed",
-    output,
+    output: finalOutput,
     completedAt: new Date().toISOString()
   };
   saveAgentResult(runId, phaseId, state);
   run.completedAgents = run.completedAgents.filter((a) => !(a.phaseId === phaseId && a.agentId === agentId));
   run.completedAgents.push(state);
-  run.outputs[`${phaseId}.${agentId}`] = output;
+  run.outputs[`${phaseId}.${agentId}`] = finalOutput;
   const completedAgentIds = new Set(run.completedAgents.map((a) => a.agentId));
   if (isPhaseComplete(run.workflow, phaseId, completedAgentIds)) {
     advancePhase(run);
@@ -7638,6 +7649,10 @@ function recordBarrierComplete(runId, phaseId, output) {
     return null;
   run.outputs[phaseId] = output;
   advancePhase(run);
+  if (run.status === "completed") {
+    completeRun(run, output);
+    return run;
+  }
   persistRun(touchRun(run));
   updateRunRegistry(run);
   return run;
@@ -7660,7 +7675,13 @@ function dispatchFanOut(run, phase) {
     phaseId: phase.id,
     phaseType: "fan-out",
     instructions: `Dispatch ${dispatchNow.length} parallel Agent tool call(s) for phase "${phase.id}". ${remaining > 0 ? `${remaining} agent(s) will queue after the first batch completes.` : ""}`,
-    agents: dispatchNow.map((a) => ({ id: a.id, prompt: a.prompt, model: phase.model }))
+    agents: dispatchNow.map((a) => ({
+      id: a.id,
+      prompt: `${a.prompt}
+
+When you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id)}.`,
+      model: phase.model
+    }))
   };
 }
 function dispatchBarrier(run, phase) {
@@ -7679,16 +7700,19 @@ function dispatchBarrier(run, phase) {
     }
     return { phaseId: depId, outputs: { result: String(run.outputs[depId] ?? "") } };
   });
+  const resultPath = getRunResultPath(run.runId);
   const synthesizedPrompt = `${phase.prompt}
 
 Inputs from prior phases:
-${JSON.stringify(inputs, null, 2)}`;
+${JSON.stringify(inputs, null, 2)}
+
+When you are done, write your final synthesized report to ${resultPath}.`;
   return {
     type: "dispatch",
     runId: run.runId,
     phaseId: phase.id,
     phaseType: "barrier",
-    instructions: `Dispatch a single Agent (or fork) to synthesize the outputs from prior phases.`,
+    instructions: `Dispatch a single Agent to synthesize the outputs from prior phases.`,
     agents: [{ id: "synthesize", prompt: synthesizedPrompt, model: phase.model }]
   };
 }
@@ -7708,13 +7732,15 @@ function advancePhase(run) {
 function completeRun(run, result) {
   run.status = "completed";
   run.currentPhaseId = null;
+  const fileResult = readRunResult(run.runId);
+  const finalResult = fileResult ?? result;
   persistRun(touchRun(run));
   updateRunRegistry(run);
-  saveRunResult(run.runId, result);
+  saveRunResult(run.runId, finalResult);
   return {
     type: "complete",
     runId: run.runId,
-    result,
+    result: finalResult,
     resultPath: `~/.letta/workflows/runs/${run.runId}/result.md`
   };
 }

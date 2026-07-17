@@ -200,8 +200,20 @@ export function getRunAgentPath(runId: string, phaseId: string, agentId: string)
   return path.join(getRunDir(runId), "phases", phaseId, `${agentId}.json`);
 }
 
+export function getRunAgentOutputPath(runId: string, phaseId: string, agentId: string): string {
+  return path.join(getRunDir(runId), "phases", phaseId, `${agentId}.md`);
+}
+
 export function getRunResultPath(runId: string): string {
   return path.join(getRunDir(runId), "result.md");
+}
+
+export function readRunAgentOutput(runId: string, phaseId: string, agentId: string): string | null {
+  return readTextFile(getRunAgentOutputPath(runId, phaseId, agentId));
+}
+
+export function readRunResult(runId: string): string | null {
+  return readTextFile(getRunResultPath(runId));
 }
 
 export function createRun(workflow: WorkflowDefinition, inputs: Record<string, string> = {}): RunState {
