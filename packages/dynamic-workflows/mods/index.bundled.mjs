@@ -7741,6 +7741,9 @@ function progressBar(completed, total, width) {
   return `[${"█".repeat(filled)}${"░".repeat(empty)}] ${completed}/${total}`;
 }
 
+// mods/index.ts
+import { setTimeout as sleep } from "node:timers/promises";
+
 // mods/lib/runner-inline.ts
 function stepInlineRun(runId) {
   return withRunMutex(async () => {
@@ -8378,77 +8381,115 @@ ${buildFlowHelp()}` };
         return;
       if (workflowContinuationCount >= MAX_WORKFLOW_CONTINUATIONS)
         return;
-      const currentPhaseId = run.currentPhaseId;
-      const currentPhase = currentPhaseId ? run.workflow.phases.find((p) => p.id === currentPhaseId) : undefined;
-      if (currentPhase && isBarrierPhase(currentPhase)) {
-        const ready = currentPhase.depends_on.every((depId) => {
-          const dep = run.workflow.phases.find((p) => p.id === depId);
-          if (!dep || !isFanOutPhase(dep))
-            return true;
-          return dep.agents.every((a) => {
-            const text = readRunAgentOutput(run.runId, depId, a.id);
+      const waitMs = 4000;
+      const maxWaitMs = 30000;
+      let waited = 0;
+      while (waited <= maxWaitMs) {
+        const refreshed = loadRun(currentRunId);
+        if (!refreshed || refreshed.status !== "running")
+          return;
+        const phaseId = refreshed.currentPhaseId;
+        const phase = phaseId ? refreshed.workflow.phases.find((p) => p.id === phaseId) : undefined;
+        if (!phase) {
+          lastTurnWorkflowActivity = false;
+          workflowContinuationCount++;
+          const conversation2 = ctx.conversation;
+          const send2 = conversation2?.sendMessageStream;
+          if (typeof send2 !== "function")
+            return;
+          const step2 = await stepInlineRun(currentRunId);
+          const prompt2 = buildExecutorPrompt(currentRunId, refreshed.workflow.name, step2);
+          try {
+            const stream = await send2([{ role: "user", content: prompt2 }]);
+            (async () => {
+              try {
+                for await (const _ of stream) {}
+              } catch {}
+            })();
+          } catch {}
+          return;
+        }
+        if (isFanOutPhase(phase)) {
+          const allReportsReady = phase.agents.every((a) => {
+            if (!refreshed.startedAgentIds.includes(a.id))
+              return false;
+            const text = readRunAgentOutput(refreshed.runId, phase.id, a.id);
             return text && text.length > 0;
           });
-        });
-        if (!ready) {
-          lastTurnWorkflowActivity = false;
-          workflowContinuationCount++;
-          const conversation2 = ctx.conversation;
-          const send2 = conversation2?.sendMessageStream;
-          if (typeof send2 !== "function")
-            return;
-          try {
-            const stream = await send2([{ role: "user", content: `The prior phase agents are still writing their reports. Call flow_status({ run_id: "${run.runId}" }) to check again.` }]);
-            (async () => {
+          if (!allReportsReady) {
+            if (waited >= maxWaitMs) {
+              lastTurnWorkflowActivity = false;
+              workflowContinuationCount++;
+              const conversation2 = ctx.conversation;
+              const send2 = conversation2?.sendMessageStream;
+              if (typeof send2 !== "function")
+                return;
               try {
-                for await (const _ of stream) {}
+                const stream = await send2([{ role: "user", content: `The agents for phase "${phase.id}" are still writing their reports. Call flow_status({ run_id: "${refreshed.runId}" }) to check again.` }]);
+                (async () => {
+                  try {
+                    for await (const _ of stream) {}
+                  } catch {}
+                })();
               } catch {}
-            })();
-          } catch {}
-          return;
+              return;
+            }
+            await sleep(waitMs);
+            waited += waitMs;
+            continue;
+          }
         }
-      }
-      if (currentPhase && isFanOutPhase(currentPhase)) {
-        const ready = currentPhase.agents.every((a) => {
-          if (!run.startedAgentIds.includes(a.id))
-            return false;
-          const text = readRunAgentOutput(run.runId, currentPhase.id, a.id);
-          return text && text.length > 0;
-        });
-        if (!ready) {
-          lastTurnWorkflowActivity = false;
-          workflowContinuationCount++;
-          const conversation2 = ctx.conversation;
-          const send2 = conversation2?.sendMessageStream;
-          if (typeof send2 !== "function")
-            return;
-          try {
-            const stream = await send2([{ role: "user", content: `The agents for phase "${currentPhase.id}" are still writing their reports. Call flow_status({ run_id: "${run.runId}" }) to check again.` }]);
-            (async () => {
+        if (isBarrierPhase(phase)) {
+          const allDepsReady = phase.depends_on.every((depId) => {
+            const dep = refreshed.workflow.phases.find((p) => p.id === depId);
+            if (!dep || !isFanOutPhase(dep))
+              return true;
+            return dep.agents.every((a) => {
+              const text = readRunAgentOutput(refreshed.runId, depId, a.id);
+              return text && text.length > 0;
+            });
+          });
+          if (!allDepsReady) {
+            if (waited >= maxWaitMs) {
+              lastTurnWorkflowActivity = false;
+              workflowContinuationCount++;
+              const conversation2 = ctx.conversation;
+              const send2 = conversation2?.sendMessageStream;
+              if (typeof send2 !== "function")
+                return;
               try {
-                for await (const _ of stream) {}
+                const stream = await send2([{ role: "user", content: `The prior phase agents are still writing their reports. Call flow_status({ run_id: "${refreshed.runId}" }) to check again.` }]);
+                (async () => {
+                  try {
+                    for await (const _ of stream) {}
+                  } catch {}
+                })();
               } catch {}
-            })();
-          } catch {}
-          return;
+              return;
+            }
+            await sleep(waitMs);
+            waited += waitMs;
+            continue;
+          }
         }
-      }
-      lastTurnWorkflowActivity = false;
-      workflowContinuationCount++;
-      const conversation = ctx.conversation;
-      const send = conversation?.sendMessageStream;
-      if (typeof send !== "function")
+        lastTurnWorkflowActivity = false;
+        workflowContinuationCount++;
+        const conversation = ctx.conversation;
+        const send = conversation?.sendMessageStream;
+        if (typeof send !== "function")
+          return;
+        const step = await stepInlineRun(currentRunId);
+        const prompt = buildExecutorPrompt(currentRunId, refreshed.workflow.name, step);
+        try {
+          const stream = await send([{ role: "user", content: prompt }]);
+          (async () => {
+            try {
+              for await (const _ of stream) {}
+            } catch {}
+          })();
+        } catch {}
         return;
-      const step = await stepInlineRun(currentRunId);
-      const prompt = buildExecutorPrompt(currentRunId, run.workflow.name, step);
-      try {
-        const stream = await send([{ role: "user", content: prompt }]);
-        (async () => {
-          try {
-            for await (const _ of stream) {}
-          } catch {}
-        })();
-      } catch {}
+      }
     });
   }
   if (letta.capabilities?.events?.lifecycle) {

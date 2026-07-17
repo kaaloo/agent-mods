@@ -3,6 +3,7 @@ import type { LettaModContext, LettaToolContext, LettaCommandContext, LettaEvent
 import { authorWorkflow, parseWorkflowMarkdownText, stripMarkdownFences } from "./lib/author.ts";
 import { isFanOutPhase, isBarrierPhase } from "./lib/schema.ts";
 import { renderProgressPanel } from "./lib/panel.ts";
+import { setTimeout as sleep } from "node:timers/promises";
 import {
   createRun,
   loadRun,
@@ -352,62 +353,103 @@ export default function activate(letta: LettaModContext): (() => void) {
       if (!lastTurnWorkflowActivity) return;
       if (workflowContinuationCount >= MAX_WORKFLOW_CONTINUATIONS) return;
 
-      const currentPhaseId = run.currentPhaseId;
-      const currentPhase = currentPhaseId ? run.workflow.phases.find((p) => p.id === currentPhaseId) : undefined;
-      if (currentPhase && isBarrierPhase(currentPhase)) {
-        const ready = currentPhase.depends_on.every((depId) => {
-          const dep = run.workflow.phases.find((p) => p.id === depId);
-          if (!dep || !isFanOutPhase(dep)) return true;
-          return dep.agents.every((a) => {
-            const text = readRunAgentOutput(run.runId, depId, a.id);
+      // Wait conditions: drive the loop from inside the mod without forcing
+      // the model to re-call flow_status. We sleep briefly and re-evaluate
+      // the run state under the mutex, sending a continuation prompt only
+      // when the phase is actually ready to advance.
+      const waitMs = 4000;
+      const maxWaitMs = 30000;
+      let waited = 0;
+
+      while (waited <= maxWaitMs) {
+        const refreshed = loadRun(currentRunId);
+        if (!refreshed || refreshed.status !== "running") return;
+
+        const phaseId = refreshed.currentPhaseId;
+        const phase = phaseId ? refreshed.workflow.phases.find((p) => p.id === phaseId) : undefined;
+
+        if (!phase) {
+          lastTurnWorkflowActivity = false;
+          workflowContinuationCount++;
+          const conversation = ctx.conversation;
+          const send = conversation?.sendMessageStream;
+          if (typeof send !== "function") return;
+          const step = await stepInlineRun(currentRunId);
+          const prompt = buildExecutorPrompt(currentRunId, refreshed.workflow.name, step);
+          try {
+            const stream = await send([{ role: "user", content: prompt }]);
+            void (async () => { try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ } })();
+          } catch { /* ignore */ }
+          return;
+        }
+
+        if (isFanOutPhase(phase)) {
+          const allReportsReady = phase.agents.every((a) => {
+            if (!refreshed.startedAgentIds.includes(a.id)) return false;
+            const text = readRunAgentOutput(refreshed.runId, phase.id, a.id);
             return text && text.length > 0;
           });
-        });
-        if (!ready) {
-          lastTurnWorkflowActivity = false;
-          workflowContinuationCount++;
-          const conversation = ctx.conversation;
-          const send = conversation?.sendMessageStream;
-          if (typeof send !== "function") return;
-          try {
-            const stream = await send([{ role: "user", content: `The prior phase agents are still writing their reports. Call flow_status({ run_id: "${run.runId}" }) to check again.` }]);
-            void (async () => { try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ } })();
-          } catch { /* ignore */ }
-          return;
+          if (!allReportsReady) {
+            if (waited >= maxWaitMs) {
+              lastTurnWorkflowActivity = false;
+              workflowContinuationCount++;
+              const conversation = ctx.conversation;
+              const send = conversation?.sendMessageStream;
+              if (typeof send !== "function") return;
+              try {
+                const stream = await send([{ role: "user", content: `The agents for phase "${phase.id}" are still writing their reports. Call flow_status({ run_id: "${refreshed.runId}" }) to check again.` }]);
+                void (async () => { try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ } })();
+              } catch { /* ignore */ }
+              return;
+            }
+            await sleep(waitMs);
+            waited += waitMs;
+            continue;
+          }
         }
-      }
 
-      if (currentPhase && isFanOutPhase(currentPhase)) {
-        const ready = currentPhase.agents.every((a) => {
-          if (!run.startedAgentIds.includes(a.id)) return false;
-          const text = readRunAgentOutput(run.runId, currentPhase.id, a.id);
-          return text && text.length > 0;
-        });
-        if (!ready) {
-          lastTurnWorkflowActivity = false;
-          workflowContinuationCount++;
-          const conversation = ctx.conversation;
-          const send = conversation?.sendMessageStream;
-          if (typeof send !== "function") return;
-          try {
-            const stream = await send([{ role: "user", content: `The agents for phase "${currentPhase.id}" are still writing their reports. Call flow_status({ run_id: "${run.runId}" }) to check again.` }]);
-            void (async () => { try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ } })();
-          } catch { /* ignore */ }
-          return;
+        if (isBarrierPhase(phase)) {
+          const allDepsReady = phase.depends_on.every((depId) => {
+            const dep = refreshed.workflow.phases.find((p) => p.id === depId);
+            if (!dep || !isFanOutPhase(dep)) return true;
+            return dep.agents.every((a) => {
+              const text = readRunAgentOutput(refreshed.runId, depId, a.id);
+              return text && text.length > 0;
+            });
+          });
+          if (!allDepsReady) {
+            if (waited >= maxWaitMs) {
+              lastTurnWorkflowActivity = false;
+              workflowContinuationCount++;
+              const conversation = ctx.conversation;
+              const send = conversation?.sendMessageStream;
+              if (typeof send !== "function") return;
+              try {
+                const stream = await send([{ role: "user", content: `The prior phase agents are still writing their reports. Call flow_status({ run_id: "${refreshed.runId}" }) to check again.` }]);
+                void (async () => { try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ } })();
+              } catch { /* ignore */ }
+              return;
+            }
+            await sleep(waitMs);
+            waited += waitMs;
+            continue;
+          }
         }
-      }
 
-      lastTurnWorkflowActivity = false;
-      workflowContinuationCount++;
-      const conversation = ctx.conversation;
-      const send = conversation?.sendMessageStream;
-      if (typeof send !== "function") return;
-      const step = await stepInlineRun(currentRunId);
-      const prompt = buildExecutorPrompt(currentRunId, run.workflow.name, step);
-      try {
-        const stream = await send([{ role: "user", content: prompt }]);
-        void (async () => { try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ } })();
-      } catch { /* ignore */ }
+        // Phase is ready to advance. Run the next step inline under the mutex.
+        lastTurnWorkflowActivity = false;
+        workflowContinuationCount++;
+        const conversation = ctx.conversation;
+        const send = conversation?.sendMessageStream;
+        if (typeof send !== "function") return;
+        const step = await stepInlineRun(currentRunId);
+        const prompt = buildExecutorPrompt(currentRunId, refreshed.workflow.name, step);
+        try {
+          const stream = await send([{ role: "user", content: prompt }]);
+          void (async () => { try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ } })();
+        } catch { /* ignore */ }
+        return;
+      }
     });
   }
 
