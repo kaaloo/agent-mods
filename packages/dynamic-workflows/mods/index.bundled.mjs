@@ -74,17 +74,17 @@ var require_visit = __commonJS((exports) => {
   visit.BREAK = BREAK;
   visit.SKIP = SKIP;
   visit.REMOVE = REMOVE;
-  function visit_(key, node, visitor, path) {
-    const ctrl = callVisitor(key, node, visitor, path);
+  function visit_(key, node, visitor, path2) {
+    const ctrl = callVisitor(key, node, visitor, path2);
     if (identity.isNode(ctrl) || identity.isPair(ctrl)) {
-      replaceNode(key, path, ctrl);
-      return visit_(key, ctrl, visitor, path);
+      replaceNode(key, path2, ctrl);
+      return visit_(key, ctrl, visitor, path2);
     }
     if (typeof ctrl !== "symbol") {
       if (identity.isCollection(node)) {
-        path = Object.freeze(path.concat(node));
+        path2 = Object.freeze(path2.concat(node));
         for (let i = 0;i < node.items.length; ++i) {
-          const ci = visit_(i, node.items[i], visitor, path);
+          const ci = visit_(i, node.items[i], visitor, path2);
           if (typeof ci === "number")
             i = ci - 1;
           else if (ci === BREAK)
@@ -95,13 +95,13 @@ var require_visit = __commonJS((exports) => {
           }
         }
       } else if (identity.isPair(node)) {
-        path = Object.freeze(path.concat(node));
-        const ck = visit_("key", node.key, visitor, path);
+        path2 = Object.freeze(path2.concat(node));
+        const ck = visit_("key", node.key, visitor, path2);
         if (ck === BREAK)
           return BREAK;
         else if (ck === REMOVE)
           node.key = null;
-        const cv = visit_("value", node.value, visitor, path);
+        const cv = visit_("value", node.value, visitor, path2);
         if (cv === BREAK)
           return BREAK;
         else if (cv === REMOVE)
@@ -122,17 +122,17 @@ var require_visit = __commonJS((exports) => {
   visitAsync.BREAK = BREAK;
   visitAsync.SKIP = SKIP;
   visitAsync.REMOVE = REMOVE;
-  async function visitAsync_(key, node, visitor, path) {
-    const ctrl = await callVisitor(key, node, visitor, path);
+  async function visitAsync_(key, node, visitor, path2) {
+    const ctrl = await callVisitor(key, node, visitor, path2);
     if (identity.isNode(ctrl) || identity.isPair(ctrl)) {
-      replaceNode(key, path, ctrl);
-      return visitAsync_(key, ctrl, visitor, path);
+      replaceNode(key, path2, ctrl);
+      return visitAsync_(key, ctrl, visitor, path2);
     }
     if (typeof ctrl !== "symbol") {
       if (identity.isCollection(node)) {
-        path = Object.freeze(path.concat(node));
+        path2 = Object.freeze(path2.concat(node));
         for (let i = 0;i < node.items.length; ++i) {
-          const ci = await visitAsync_(i, node.items[i], visitor, path);
+          const ci = await visitAsync_(i, node.items[i], visitor, path2);
           if (typeof ci === "number")
             i = ci - 1;
           else if (ci === BREAK)
@@ -143,13 +143,13 @@ var require_visit = __commonJS((exports) => {
           }
         }
       } else if (identity.isPair(node)) {
-        path = Object.freeze(path.concat(node));
-        const ck = await visitAsync_("key", node.key, visitor, path);
+        path2 = Object.freeze(path2.concat(node));
+        const ck = await visitAsync_("key", node.key, visitor, path2);
         if (ck === BREAK)
           return BREAK;
         else if (ck === REMOVE)
           node.key = null;
-        const cv = await visitAsync_("value", node.value, visitor, path);
+        const cv = await visitAsync_("value", node.value, visitor, path2);
         if (cv === BREAK)
           return BREAK;
         else if (cv === REMOVE)
@@ -176,23 +176,23 @@ var require_visit = __commonJS((exports) => {
     }
     return visitor;
   }
-  function callVisitor(key, node, visitor, path) {
+  function callVisitor(key, node, visitor, path2) {
     if (typeof visitor === "function")
-      return visitor(key, node, path);
+      return visitor(key, node, path2);
     if (identity.isMap(node))
-      return visitor.Map?.(key, node, path);
+      return visitor.Map?.(key, node, path2);
     if (identity.isSeq(node))
-      return visitor.Seq?.(key, node, path);
+      return visitor.Seq?.(key, node, path2);
     if (identity.isPair(node))
-      return visitor.Pair?.(key, node, path);
+      return visitor.Pair?.(key, node, path2);
     if (identity.isScalar(node))
-      return visitor.Scalar?.(key, node, path);
+      return visitor.Scalar?.(key, node, path2);
     if (identity.isAlias(node))
-      return visitor.Alias?.(key, node, path);
+      return visitor.Alias?.(key, node, path2);
     return;
   }
-  function replaceNode(key, path, node) {
-    const parent = path[path.length - 1];
+  function replaceNode(key, path2, node) {
+    const parent = path2[path2.length - 1];
     if (identity.isCollection(parent)) {
       parent.items[key] = node;
     } else if (identity.isPair(parent)) {
@@ -751,10 +751,10 @@ var require_Collection = __commonJS((exports) => {
   var createNode = require_createNode();
   var identity = require_identity();
   var Node = require_Node();
-  function collectionFromPath(schema, path, value) {
+  function collectionFromPath(schema, path2, value) {
     let v = value;
-    for (let i = path.length - 1;i >= 0; --i) {
-      const k = path[i];
+    for (let i = path2.length - 1;i >= 0; --i) {
+      const k = path2[i];
       if (typeof k === "number" && Number.isInteger(k) && k >= 0) {
         const a = [];
         a[k] = v;
@@ -773,7 +773,7 @@ var require_Collection = __commonJS((exports) => {
       sourceObjects: new Map
     });
   }
-  var isEmptyPath = (path) => path == null || typeof path === "object" && !!path[Symbol.iterator]().next().done;
+  var isEmptyPath = (path2) => path2 == null || typeof path2 === "object" && !!path2[Symbol.iterator]().next().done;
 
   class Collection extends Node.NodeBase {
     constructor(type, schema) {
@@ -794,11 +794,11 @@ var require_Collection = __commonJS((exports) => {
         copy.range = this.range.slice();
       return copy;
     }
-    addIn(path, value) {
-      if (isEmptyPath(path))
+    addIn(path2, value) {
+      if (isEmptyPath(path2))
         this.add(value);
       else {
-        const [key, ...rest] = path;
+        const [key, ...rest] = path2;
         const node = this.get(key, true);
         if (identity.isCollection(node))
           node.addIn(rest, value);
@@ -808,8 +808,8 @@ var require_Collection = __commonJS((exports) => {
           throw new Error(`Expected YAML collection at ${key}. Remaining path: ${rest}`);
       }
     }
-    deleteIn(path) {
-      const [key, ...rest] = path;
+    deleteIn(path2) {
+      const [key, ...rest] = path2;
       if (rest.length === 0)
         return this.delete(key);
       const node = this.get(key, true);
@@ -818,8 +818,8 @@ var require_Collection = __commonJS((exports) => {
       else
         throw new Error(`Expected YAML collection at ${key}. Remaining path: ${rest}`);
     }
-    getIn(path, keepScalar) {
-      const [key, ...rest] = path;
+    getIn(path2, keepScalar) {
+      const [key, ...rest] = path2;
       const node = this.get(key, true);
       if (rest.length === 0)
         return !keepScalar && identity.isScalar(node) ? node.value : node;
@@ -834,15 +834,15 @@ var require_Collection = __commonJS((exports) => {
         return n == null || allowScalar && identity.isScalar(n) && n.value == null && !n.commentBefore && !n.comment && !n.tag;
       });
     }
-    hasIn(path) {
-      const [key, ...rest] = path;
+    hasIn(path2) {
+      const [key, ...rest] = path2;
       if (rest.length === 0)
         return this.has(key);
       const node = this.get(key, true);
       return identity.isCollection(node) ? node.hasIn(rest) : false;
     }
-    setIn(path, value) {
-      const [key, ...rest] = path;
+    setIn(path2, value) {
+      const [key, ...rest] = path2;
       if (rest.length === 0) {
         this.set(key, value);
       } else {
@@ -3235,9 +3235,9 @@ var require_Document = __commonJS((exports) => {
       if (assertCollection(this.contents))
         this.contents.add(value);
     }
-    addIn(path, value) {
+    addIn(path2, value) {
       if (assertCollection(this.contents))
-        this.contents.addIn(path, value);
+        this.contents.addIn(path2, value);
     }
     createAlias(node, name) {
       if (!node.anchor) {
@@ -3286,30 +3286,30 @@ var require_Document = __commonJS((exports) => {
     delete(key) {
       return assertCollection(this.contents) ? this.contents.delete(key) : false;
     }
-    deleteIn(path) {
-      if (Collection.isEmptyPath(path)) {
+    deleteIn(path2) {
+      if (Collection.isEmptyPath(path2)) {
         if (this.contents == null)
           return false;
         this.contents = null;
         return true;
       }
-      return assertCollection(this.contents) ? this.contents.deleteIn(path) : false;
+      return assertCollection(this.contents) ? this.contents.deleteIn(path2) : false;
     }
     get(key, keepScalar) {
       return identity.isCollection(this.contents) ? this.contents.get(key, keepScalar) : undefined;
     }
-    getIn(path, keepScalar) {
-      if (Collection.isEmptyPath(path))
+    getIn(path2, keepScalar) {
+      if (Collection.isEmptyPath(path2))
         return !keepScalar && identity.isScalar(this.contents) ? this.contents.value : this.contents;
-      return identity.isCollection(this.contents) ? this.contents.getIn(path, keepScalar) : undefined;
+      return identity.isCollection(this.contents) ? this.contents.getIn(path2, keepScalar) : undefined;
     }
     has(key) {
       return identity.isCollection(this.contents) ? this.contents.has(key) : false;
     }
-    hasIn(path) {
-      if (Collection.isEmptyPath(path))
+    hasIn(path2) {
+      if (Collection.isEmptyPath(path2))
         return this.contents !== undefined;
-      return identity.isCollection(this.contents) ? this.contents.hasIn(path) : false;
+      return identity.isCollection(this.contents) ? this.contents.hasIn(path2) : false;
     }
     set(key, value) {
       if (this.contents == null) {
@@ -3318,13 +3318,13 @@ var require_Document = __commonJS((exports) => {
         this.contents.set(key, value);
       }
     }
-    setIn(path, value) {
-      if (Collection.isEmptyPath(path)) {
+    setIn(path2, value) {
+      if (Collection.isEmptyPath(path2)) {
         this.contents = value;
       } else if (this.contents == null) {
-        this.contents = Collection.collectionFromPath(this.schema, Array.from(path), value);
+        this.contents = Collection.collectionFromPath(this.schema, Array.from(path2), value);
       } else if (assertCollection(this.contents)) {
-        this.contents.setIn(path, value);
+        this.contents.setIn(path2, value);
       }
     }
     setSchema(version, options = {}) {
@@ -5221,9 +5221,9 @@ var require_cst_visit = __commonJS((exports) => {
   visit.BREAK = BREAK;
   visit.SKIP = SKIP;
   visit.REMOVE = REMOVE;
-  visit.itemAtPath = (cst, path) => {
+  visit.itemAtPath = (cst, path2) => {
     let item = cst;
-    for (const [field, index] of path) {
+    for (const [field, index] of path2) {
       const tok = item?.[field];
       if (tok && "items" in tok) {
         item = tok.items[index];
@@ -5232,23 +5232,23 @@ var require_cst_visit = __commonJS((exports) => {
     }
     return item;
   };
-  visit.parentCollection = (cst, path) => {
-    const parent = visit.itemAtPath(cst, path.slice(0, -1));
-    const field = path[path.length - 1][0];
+  visit.parentCollection = (cst, path2) => {
+    const parent = visit.itemAtPath(cst, path2.slice(0, -1));
+    const field = path2[path2.length - 1][0];
     const coll = parent?.[field];
     if (coll && "items" in coll)
       return coll;
     throw new Error("Parent collection not found");
   };
-  function _visit(path, item, visitor) {
-    let ctrl = visitor(item, path);
+  function _visit(path2, item, visitor) {
+    let ctrl = visitor(item, path2);
     if (typeof ctrl === "symbol")
       return ctrl;
     for (const field of ["key", "value"]) {
       const token = item[field];
       if (token && "items" in token) {
         for (let i = 0;i < token.items.length; ++i) {
-          const ci = _visit(Object.freeze(path.concat([[field, i]])), token.items[i], visitor);
+          const ci = _visit(Object.freeze(path2.concat([[field, i]])), token.items[i], visitor);
           if (typeof ci === "number")
             i = ci - 1;
           else if (ci === BREAK)
@@ -5259,10 +5259,10 @@ var require_cst_visit = __commonJS((exports) => {
           }
         }
         if (typeof ctrl === "function" && field === "key")
-          ctrl = ctrl(item, path);
+          ctrl = ctrl(item, path2);
       }
     }
-    return typeof ctrl === "function" ? ctrl(item, path) : ctrl;
+    return typeof ctrl === "function" ? ctrl(item, path2) : ctrl;
   }
   exports.visit = visit;
 });
@@ -6944,7 +6944,47 @@ var require_public_api = __commonJS((exports) => {
 });
 
 // mods/index.ts
-import path2 from "node:path";
+import path4 from "node:path";
+
+// mods/lib/utils.ts
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+function generateId() {
+  return randomUUID().slice(0, 8);
+}
+function generateRunId() {
+  return `${Date.now()}-${generateId()}`;
+}
+function formatDuration(ms) {
+  if (ms === undefined || Number.isNaN(ms))
+    return "—";
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60)
+    return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60)
+    return `${minutes}m ${seconds % 60}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+var SAFE_IDENTIFIER = /^[a-zA-Z0-9][a-zA-Z0-9-_.]*$/;
+function isSafeIdentifier(value) {
+  return SAFE_IDENTIFIER.test(value) && !value.includes("..") && value.length > 0 && value.length <= 128;
+}
+function isSafePathComponent(value) {
+  return isSafeIdentifier(value);
+}
+function isSafeRunId(value) {
+  return /^\d{13,}-[a-zA-Z0-9]{8,}$/.test(value);
+}
+function isContainedPath(baseDir, targetPath) {
+  const resolvedBase = path.resolve(baseDir);
+  const resolvedTarget = path.resolve(targetPath);
+  return resolvedTarget === resolvedBase || resolvedTarget.startsWith(`${resolvedBase}${path.sep}`);
+}
 
 // mods/lib/schema.ts
 var WORKFLOW_VERSION = "1";
@@ -6974,7 +7014,7 @@ function validateWorkflow(value) {
     const phaseIds = new Set;
     for (let i = 0;i < obj.phases.length; i++) {
       const phase = obj.phases[i];
-      if (!phase || typeof phase !== "object") {
+      if (!phase || typeof phase !== "object" || Array.isArray(phase)) {
         errors.push({ path: `phases[${i}]`, message: "Phase must be an object." });
         continue;
       }
@@ -6982,6 +7022,8 @@ function validateWorkflow(value) {
       const id = typeof p.id === "string" ? p.id.trim() : "";
       if (!id) {
         errors.push({ path: `phases[${i}].id`, message: "Phase id is required." });
+      } else if (!isSafeIdentifier(id)) {
+        errors.push({ path: `phases[${i}].id`, message: `Phase id contains unsafe characters: "${id}".` });
       } else if (phaseIds.has(id)) {
         errors.push({ path: `phases[${i}].id`, message: `Duplicate phase id "${id}".` });
       } else {
@@ -6995,7 +7037,7 @@ function validateWorkflow(value) {
           const agentIds = new Set;
           for (let j = 0;j < p.agents.length; j++) {
             const agent = p.agents[j];
-            if (!agent || typeof agent !== "object") {
+            if (!agent || typeof agent !== "object" || Array.isArray(agent)) {
               errors.push({ path: `phases[${i}].agents[${j}]`, message: "Agent must be an object." });
               continue;
             }
@@ -7003,6 +7045,8 @@ function validateWorkflow(value) {
             const agentId = typeof a.id === "string" ? a.id.trim() : "";
             if (!agentId) {
               errors.push({ path: `phases[${i}].agents[${j}].id`, message: "Agent id is required." });
+            } else if (!isSafeIdentifier(agentId)) {
+              errors.push({ path: `phases[${i}].agents[${j}].id`, message: `Agent id contains unsafe characters: "${agentId}".` });
             } else if (agentIds.has(agentId)) {
               errors.push({ path: `phases[${i}].agents[${j}].id`, message: `Duplicate agent id "${agentId}".` });
             } else {
@@ -7018,8 +7062,11 @@ function validateWorkflow(value) {
           errors.push({ path: `phases[${i}].depends_on`, message: "barrier phase must have at least one depends_on phase id." });
         } else {
           for (let k = 0;k < p.depends_on.length; k++) {
-            if (typeof p.depends_on[k] !== "string" || !p.depends_on[k].trim()) {
+            const dep = p.depends_on[k];
+            if (typeof dep !== "string" || !dep.trim()) {
               errors.push({ path: `phases[${i}].depends_on[${k}]`, message: "depends_on entry must be a non-empty string." });
+            } else if (!isSafeIdentifier(dep.trim())) {
+              errors.push({ path: `phases[${i}].depends_on[${k}]`, message: `depends_on entry contains unsafe characters: "${dep.trim()}".` });
             }
           }
         }
@@ -7033,8 +7080,11 @@ function validateWorkflow(value) {
     if (phaseIds.size > 0) {
       for (let i = 0;i < obj.phases.length; i++) {
         const phase = obj.phases[i];
-        if (phase.type === "barrier" && Array.isArray(phase.depends_on)) {
-          for (const dep of phase.depends_on) {
+        if (!phase || typeof phase !== "object" || Array.isArray(phase))
+          continue;
+        const p = phase;
+        if (p.type === "barrier" && Array.isArray(p.depends_on)) {
+          for (const dep of p.depends_on) {
             if (typeof dep === "string" && dep.trim() && !phaseIds.has(dep.trim())) {
               errors.push({ path: `phases[${i}].depends_on`, message: `Unknown phase id "${dep.trim()}".` });
             }
@@ -7043,7 +7093,7 @@ function validateWorkflow(value) {
       }
     }
   }
-  if (obj.budgets && typeof obj.budgets === "object") {
+  if (obj.budgets && typeof obj.budgets === "object" && !Array.isArray(obj.budgets)) {
     const b = obj.budgets;
     if (b.max_tokens !== undefined && (typeof b.max_tokens !== "number" || !Number.isFinite(b.max_tokens) || b.max_tokens <= 0)) {
       errors.push({ path: "budgets.max_tokens", message: "max_tokens must be a positive number." });
@@ -7058,7 +7108,14 @@ function validateWorkflow(value) {
   if (errors.length > 0) {
     return { errors };
   }
-  return { workflow: obj, errors: [] };
+  const validated = {
+    name,
+    version: WORKFLOW_VERSION,
+    description: obj.description,
+    phases: obj.phases,
+    budgets: obj.budgets
+  };
+  return { workflow: validated, errors: [] };
 }
 function isFanOutPhase(phase) {
   return phase.type === "fan-out";
@@ -7295,17 +7352,18 @@ function stripMarkdownFences(text) {
 // mods/lib/state.ts
 import { existsSync, mkdirSync, readFileSync, renameSync, readdirSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import path from "node:path";
-var MOD_ID = "dynamic-workflows";
+import path2 from "node:path";
+var runMutex = Promise.resolve();
+var MOD_ID = "flows";
 function getLettaHome() {
-  return process.env.LETTA_HOME ?? path.join(homedir(), ".letta");
+  return process.env.LETTA_HOME ?? path2.join(homedir(), ".letta");
 }
 function getAgentId() {
   const env = process.env.LETTA_AGENT_ID ?? process.env.AGENT_ID;
   if (env)
     return env;
   try {
-    const agentsDir = path.join(getLettaHome(), "agents");
+    const agentsDir = path2.join(getLettaHome(), "agents");
     if (!existsSync(agentsDir))
       return;
     const entries = readdirSync(agentsDir, { withFileTypes: true });
@@ -7318,18 +7376,18 @@ function getAgentId() {
 function getWorkflowsDir() {
   const agentId = getAgentId();
   if (agentId) {
-    return path.join(getLettaHome(), "agents", agentId, "memory", MOD_ID);
+    return path2.join(getLettaHome(), "agents", agentId, "memory", MOD_ID);
   }
-  return path.join(getLettaHome(), "workflows");
+  return path2.join(getLettaHome(), "workflows");
 }
 function getRegistryPath() {
-  return path.join(getWorkflowsDir(), "registry.md");
+  return path2.join(getWorkflowsDir(), "registry.md");
 }
 function getLibraryDir() {
-  return path.join(getWorkflowsDir(), "library");
+  return path2.join(getWorkflowsDir(), "library");
 }
 function getRunsDir() {
-  return path.join(getWorkflowsDir(), "runs");
+  return path2.join(getWorkflowsDir(), "runs");
 }
 function emptyState() {
   return {
@@ -7373,9 +7431,9 @@ function readTextFile(filePath) {
   }
 }
 function writeTextFileAtomically(filePath, text) {
-  const dir = path.dirname(filePath);
+  const dir = path2.dirname(filePath);
   mkdirSync(dir, { recursive: true });
-  const tmp = path.join(dir, `.tmp-${process.pid}-${Date.now()}.md`);
+  const tmp = path2.join(dir, `.tmp-${process.pid}-${Date.now()}-${generateRunId().slice(-8)}.md`);
   writeFileSync(tmp, text, "utf8");
   try {
     renameSync(tmp, filePath);
@@ -7404,19 +7462,29 @@ function readState() {
 }
 function writeState(state) {
   const p = getRegistryPath();
-  mkdirSync(path.dirname(p), { recursive: true });
+  mkdirSync(path2.dirname(p), { recursive: true });
   writeTextFileAtomically(p, serializeMarkdownFrontmatter({ version: 1, runs: state.runs }));
 }
 function getLibraryEntryPath(name) {
-  return path.join(getLibraryDir(), `${name}.md`);
+  return path2.join(getLibraryDir(), `${name}.md`);
 }
 function saveLibraryEntry(entry) {
+  if (!isSafeIdentifier(entry.name)) {
+    throw new Error(`Invalid workflow name "${entry.name}".`);
+  }
   const filePath = getLibraryEntryPath(entry.name);
+  if (!isContainedPath(getLibraryDir(), filePath)) {
+    throw new Error(`Workflow path escapes library directory: ${filePath}`);
+  }
   const text = serializeWorkflowMarkdown(entry.workflow, `Saved at ${entry.savedAt}.`);
   writeTextFileAtomically(filePath, text);
 }
 function loadLibraryEntry(name) {
+  if (!isSafeIdentifier(name))
+    return null;
   const filePath = getLibraryEntryPath(name);
+  if (!isContainedPath(getLibraryDir(), filePath))
+    return null;
   const text = readTextFile(filePath);
   if (!text)
     return null;
@@ -7436,9 +7504,11 @@ function listLibrary() {
     return [];
   const entries = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isFile() || path.extname(entry.name) !== ".md")
+    if (!entry.isFile() || path2.extname(entry.name) !== ".md")
       continue;
     const name = entry.name.replace(/\.md$/, "");
+    if (!isSafeIdentifier(name))
+      continue;
     const loaded = loadLibraryEntry(name);
     if (loaded)
       entries.push(loaded);
@@ -7446,26 +7516,32 @@ function listLibrary() {
   return entries;
 }
 function deleteLibraryEntry(name) {
+  if (!isSafeIdentifier(name))
+    return;
   try {
-    unlinkSync(getLibraryEntryPath(name));
+    const filePath = getLibraryEntryPath(name);
+    if (!isContainedPath(getLibraryDir(), filePath))
+      return;
+    unlinkSync(filePath);
   } catch {}
 }
-function generateRunId() {
-  const now = Date.now();
-  const random = Math.random().toString(36).slice(2, 8);
-  return `${now}-${random}`;
-}
 function getRunDir(runId) {
-  return path.join(getRunsDir(), runId);
+  if (!isSafeRunId(runId)) {
+    throw new Error(`Invalid run ID "${runId}".`);
+  }
+  return path2.join(getRunsDir(), runId);
 }
 function getRunPlanPath(runId) {
-  return path.join(getRunDir(runId), "plan.md");
+  return path2.join(getRunDir(runId), "plan.md");
 }
 function getRunPath(runId) {
-  return path.join(getRunDir(runId), "run.md");
+  return path2.join(getRunDir(runId), "run.md");
 }
 function getRunAgentPath(runId, phaseId, agentId) {
-  return path.join(getRunDir(runId), "phases", phaseId, `${agentId}.md`);
+  if (!isSafePathComponent(phaseId) || !isSafePathComponent(agentId)) {
+    throw new Error(`Invalid phase or agent ID "${phaseId}" / "${agentId}".`);
+  }
+  return path2.join(getRunDir(runId), "phases", phaseId, `${agentId}.md`);
 }
 function getRunAgentOutputPath(runId, phaseId, agentId) {
   return getRunAgentPath(runId, phaseId, agentId);
@@ -7478,7 +7554,7 @@ function getRunResultDisplayPath(runId) {
   return `~/.letta/workflows/runs/${runId}/result.md`;
 }
 function getRunResultPath(runId) {
-  return path.join(getRunDir(runId), "result.md");
+  return path2.join(getRunDir(runId), "result.md");
 }
 function readRunAgentOutput(runId, phaseId, agentId) {
   const text = readTextFile(getRunAgentPath(runId, phaseId, agentId));
@@ -7605,23 +7681,6 @@ function updateRunRegistry(run) {
     conversationId: run.conversationId
   };
   writeState(state);
-}
-
-// mods/lib/utils.ts
-function formatDuration(ms) {
-  if (ms === undefined)
-    return "—";
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60)
-    return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60)
-    return `${minutes}m ${seconds % 60}s`;
-  const hours = Math.floor(minutes / 60);
-  return `${hours}h ${minutes % 60}m`;
-}
-function isNonEmptyString(value) {
-  return typeof value === "string" && value.trim().length > 0;
 }
 
 // mods/lib/panel.ts
@@ -7856,22 +7915,28 @@ function completeRun(run, result) {
 }
 
 // mods/lib/templates.ts
+import path3 from "node:path";
 import { readdirSync as readdirSync2, readFileSync as readFileSync2 } from "node:fs";
-import { extname } from "node:path";
 function listTemplates(templateDir) {
   try {
     const entries = readdirSync2(templateDir, { withFileTypes: true });
     const templates = [];
     for (const entry of entries) {
-      if (!entry.isFile() || extname(entry.name) !== ".md")
+      if (!entry.isFile() || path3.extname(entry.name) !== ".md")
         continue;
       const filename = entry.name;
+      const name = filename.replace(/\.md$/, "");
+      if (!isSafeIdentifier(name))
+        continue;
       try {
-        const text = readFileSync2(`${templateDir}/${filename}`, "utf8");
+        const filePath = path3.join(templateDir, filename);
+        if (!isContainedPath(templateDir, filePath))
+          continue;
+        const text = readFileSync2(filePath, "utf8");
         const { workflow, errors: errors2 } = loadWorkflowFromMarkdown(text);
         if (workflow && errors2.length === 0) {
           templates.push({
-            name: filename.replace(/\.md$/, ""),
+            name,
             description: workflow.description,
             source: "template"
           });
@@ -7884,9 +7949,14 @@ function listTemplates(templateDir) {
   }
 }
 function loadTemplate(templateDir, name) {
+  if (!isSafeIdentifier(name))
+    return;
   try {
     const filename = `${name}.md`;
-    const text = readFileSync2(`${templateDir}/${filename}`, "utf8");
+    const filePath = path3.join(templateDir, filename);
+    if (!isContainedPath(templateDir, filePath))
+      return;
+    const text = readFileSync2(filePath, "utf8");
     const { workflow, errors: errors2 } = loadWorkflowFromMarkdown(text);
     if (errors2.length > 0)
       return;
@@ -7897,7 +7967,7 @@ function loadTemplate(templateDir, name) {
 }
 
 // mods/index.ts
-var PANEL_ID = "dynamic-workflows";
+var PANEL_ID = "flows";
 function activate(letta) {
   const disposers = [];
   let activeRunId = null;
@@ -7906,7 +7976,7 @@ function activate(letta) {
   let lastTurnWorkflowActivity = false;
   let workflowContinuationCount = 0;
   const MAX_WORKFLOW_CONTINUATIONS = 20;
-  const TEMPLATE_DIR = path2.resolve(import.meta.dirname, "../assets/templates");
+  const TEMPLATE_DIR = path4.resolve(import.meta.dirname, "../assets/templates");
   function refreshPanel() {
     if (panel) {
       try {

@@ -1,9 +1,9 @@
 ---
 name: "@kaaloo/dynamic-workflows"
-description: "A Letta-native mod for authoring and running multi-agent dynamic workflows."
+description: "A Letta-native mod for authoring and running multi-agent flows."
 ---
 
-# Dynamic Workflows mod semantics
+# Flows mod semantics
 
 ## When to use
 
@@ -102,9 +102,9 @@ Query the current state of a run. Read-only.
 
 All state lives in the agent's MemFS:
 
-- `~/.letta/agents/<agent-id>/memory/dynamic-workflows/registry.md` — run registry.
-- `~/.letta/agents/<agent-id>/memory/dynamic-workflows/library/` — saved workflows.
-- `~/.letta/agents/<agent-id>/memory/dynamic-workflows/runs/<run_id>/` — per-run plan, checkpoint, agent outputs, and result.
+- `~/.letta/agents/<agent-id>/memory/flows/registry.md` — run registry.
+- `~/.letta/agents/<agent-id>/memory/flows/library/` — saved workflows.
+- `~/.letta/agents/<agent-id>/memory/flows/runs/<run_id>/` — per-run plan, checkpoint, agent outputs, and result.
 
 ## Adaptation notes for agents
 

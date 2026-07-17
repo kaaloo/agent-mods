@@ -3,9 +3,22 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { parse, stringify } from "yaml";
 import { serializeWorkflowMarkdown, loadWorkflowFromMarkdown } from "./markdown.ts";
+import { generateRunId, isSafeIdentifier, isSafePathComponent, isSafeRunId, isContainedPath } from "./utils.ts";
 import type { WorkflowDefinition } from "./schema.ts";
 
-export const MOD_ID = "dynamic-workflows";
+let runMutex = Promise.resolve();
+
+export function withRunMutex<T>(fn: () => Promise<T> | T): Promise<T> {
+  const release = runMutex;
+  let resolveRelease: () => void = () => {};
+  const next = new Promise<void>((resolve) => {
+    resolveRelease = resolve;
+  });
+  runMutex = release.then(() => next);
+  return Promise.resolve(release).then(() => fn()).finally(() => resolveRelease());
+}
+
+export const MOD_ID = "flows";
 
 export function getLettaHome(): string {
   return process.env.LETTA_HOME ?? path.join(homedir(), ".letta");
@@ -128,7 +141,7 @@ export function readTextFile(filePath: string): string | null {
 export function writeTextFileAtomically(filePath: string, text: string): void {
   const dir = path.dirname(filePath);
   mkdirSync(dir, { recursive: true });
-  const tmp = path.join(dir, `.tmp-${process.pid}-${Date.now()}.md`);
+  const tmp = path.join(dir, `.tmp-${process.pid}-${Date.now()}-${generateRunId().slice(-8)}.md`);
   writeFileSync(tmp, text, "utf8");
   try {
     renameSync(tmp, filePath);
@@ -140,7 +153,7 @@ export function writeTextFileAtomically(filePath: string, text: string): void {
 export function writeJsonAtomically(filePath: string, value: unknown): void {
   const dir = path.dirname(filePath);
   mkdirSync(dir, { recursive: true });
-  const tmp = path.join(dir, `.tmp-${process.pid}-${Date.now()}.json`);
+  const tmp = path.join(dir, `.tmp-${process.pid}-${Date.now()}-${generateRunId().slice(-8)}.json`);
   writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   try {
     renameSync(tmp, filePath);
@@ -177,13 +190,21 @@ export function getLibraryEntryPath(name: string): string {
 }
 
 export function saveLibraryEntry(entry: LibraryEntry): void {
+  if (!isSafeIdentifier(entry.name)) {
+    throw new Error(`Invalid workflow name "${entry.name}".`);
+  }
   const filePath = getLibraryEntryPath(entry.name);
+  if (!isContainedPath(getLibraryDir(), filePath)) {
+    throw new Error(`Workflow path escapes library directory: ${filePath}`);
+  }
   const text = serializeWorkflowMarkdown(entry.workflow, `Saved at ${entry.savedAt}.`);
   writeTextFileAtomically(filePath, text);
 }
 
 export function loadLibraryEntry(name: string): LibraryEntry | null {
+  if (!isSafeIdentifier(name)) return null;
   const filePath = getLibraryEntryPath(name);
+  if (!isContainedPath(getLibraryDir(), filePath)) return null;
   const text = readTextFile(filePath);
   if (!text) return null;
   const { workflow, errors } = loadWorkflowFromMarkdown(text);
@@ -203,6 +224,7 @@ export function listLibrary(): LibraryEntry[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (!entry.isFile() || path.extname(entry.name) !== ".md") continue;
     const name = entry.name.replace(/\.md$/, "");
+    if (!isSafeIdentifier(name)) continue;
     const loaded = loadLibraryEntry(name);
     if (loaded) entries.push(loaded);
   }
@@ -210,18 +232,18 @@ export function listLibrary(): LibraryEntry[] {
 }
 
 export function deleteLibraryEntry(name: string): void {
+  if (!isSafeIdentifier(name)) return;
   try {
-    unlinkSync(getLibraryEntryPath(name));
+    const filePath = getLibraryEntryPath(name);
+    if (!isContainedPath(getLibraryDir(), filePath)) return;
+    unlinkSync(filePath);
   } catch { /* ignore */ }
 }
 
-export function generateRunId(): string {
-  const now = Date.now();
-  const random = Math.random().toString(36).slice(2, 8);
-  return `${now}-${random}`;
-}
-
 export function getRunDir(runId: string): string {
+  if (!isSafeRunId(runId)) {
+    throw new Error(`Invalid run ID "${runId}".`);
+  }
   return path.join(getRunsDir(), runId);
 }
 
@@ -234,6 +256,9 @@ export function getRunPath(runId: string): string {
 }
 
 export function getRunAgentPath(runId: string, phaseId: string, agentId: string): string {
+  if (!isSafePathComponent(phaseId) || !isSafePathComponent(agentId)) {
+    throw new Error(`Invalid phase or agent ID "${phaseId}" / "${agentId}".`);
+  }
   return path.join(getRunDir(runId), "phases", phaseId, `${agentId}.md`);
 }
 

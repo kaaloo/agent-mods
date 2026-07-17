@@ -17,7 +17,7 @@ import { stepInlineRun, recordAgentComplete, recordBarrierComplete } from "./lib
 import { listTemplates, loadTemplate } from "./lib/templates.ts";
 import { isNonEmptyString } from "./lib/utils.ts";
 
-const PANEL_ID = "dynamic-workflows";
+const PANEL_ID = "flows";
 
 export default function activate(letta: LettaModContext): (() => void) {
   const disposers: Array<() => void> = [];

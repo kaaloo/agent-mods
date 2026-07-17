@@ -1,3 +1,5 @@
+import { isSafeIdentifier } from "./utils.ts";
+
 export const WORKFLOW_VERSION = "1";
 export const DEFAULT_MAX_CONCURRENT = 4;
 export const MAX_WORKFLOW_NAME_LENGTH = 64;
@@ -73,7 +75,7 @@ export function validateWorkflow(value: unknown): { workflow?: WorkflowDefinitio
     const phaseIds = new Set<string>();
     for (let i = 0; i < obj.phases.length; i++) {
       const phase = obj.phases[i];
-      if (!phase || typeof phase !== "object") {
+      if (!phase || typeof phase !== "object" || Array.isArray(phase)) {
         errors.push({ path: `phases[${i}]`, message: "Phase must be an object." });
         continue;
       }
@@ -81,6 +83,8 @@ export function validateWorkflow(value: unknown): { workflow?: WorkflowDefinitio
       const id = typeof p.id === "string" ? p.id.trim() : "";
       if (!id) {
         errors.push({ path: `phases[${i}].id`, message: "Phase id is required." });
+      } else if (!isSafeIdentifier(id)) {
+        errors.push({ path: `phases[${i}].id`, message: `Phase id contains unsafe characters: "${id}".` });
       } else if (phaseIds.has(id)) {
         errors.push({ path: `phases[${i}].id`, message: `Duplicate phase id "${id}".` });
       } else {
@@ -95,7 +99,7 @@ export function validateWorkflow(value: unknown): { workflow?: WorkflowDefinitio
           const agentIds = new Set<string>();
           for (let j = 0; j < p.agents.length; j++) {
             const agent = p.agents[j];
-            if (!agent || typeof agent !== "object") {
+            if (!agent || typeof agent !== "object" || Array.isArray(agent)) {
               errors.push({ path: `phases[${i}].agents[${j}]`, message: "Agent must be an object." });
               continue;
             }
@@ -103,6 +107,8 @@ export function validateWorkflow(value: unknown): { workflow?: WorkflowDefinitio
             const agentId = typeof a.id === "string" ? a.id.trim() : "";
             if (!agentId) {
               errors.push({ path: `phases[${i}].agents[${j}].id`, message: "Agent id is required." });
+            } else if (!isSafeIdentifier(agentId)) {
+              errors.push({ path: `phases[${i}].agents[${j}].id`, message: `Agent id contains unsafe characters: "${agentId}".` });
             } else if (agentIds.has(agentId)) {
               errors.push({ path: `phases[${i}].agents[${j}].id`, message: `Duplicate agent id "${agentId}".` });
             } else {
@@ -118,8 +124,11 @@ export function validateWorkflow(value: unknown): { workflow?: WorkflowDefinitio
           errors.push({ path: `phases[${i}].depends_on`, message: "barrier phase must have at least one depends_on phase id." });
         } else {
           for (let k = 0; k < p.depends_on.length; k++) {
-            if (typeof p.depends_on[k] !== "string" || !p.depends_on[k].trim()) {
+            const dep = p.depends_on[k];
+            if (typeof dep !== "string" || !dep.trim()) {
               errors.push({ path: `phases[${i}].depends_on[${k}]`, message: "depends_on entry must be a non-empty string." });
+            } else if (!isSafeIdentifier(dep.trim())) {
+              errors.push({ path: `phases[${i}].depends_on[${k}]`, message: `depends_on entry contains unsafe characters: "${dep.trim()}".` });
             }
           }
         }
@@ -134,9 +143,11 @@ export function validateWorkflow(value: unknown): { workflow?: WorkflowDefinitio
     // Resolve depends_on after all ids are collected.
     if (phaseIds.size > 0) {
       for (let i = 0; i < obj.phases.length; i++) {
-        const phase = obj.phases[i] as Record<string, unknown>;
-        if (phase.type === "barrier" && Array.isArray(phase.depends_on)) {
-          for (const dep of phase.depends_on) {
+        const phase = obj.phases[i];
+        if (!phase || typeof phase !== "object" || Array.isArray(phase)) continue;
+        const p = phase as Record<string, unknown>;
+        if (p.type === "barrier" && Array.isArray(p.depends_on)) {
+          for (const dep of p.depends_on) {
             if (typeof dep === "string" && dep.trim() && !phaseIds.has(dep.trim())) {
               errors.push({ path: `phases[${i}].depends_on`, message: `Unknown phase id "${dep.trim()}".` });
             }
@@ -146,7 +157,7 @@ export function validateWorkflow(value: unknown): { workflow?: WorkflowDefinitio
     }
   }
 
-  if (obj.budgets && typeof obj.budgets === "object") {
+  if (obj.budgets && typeof obj.budgets === "object" && !Array.isArray(obj.budgets)) {
     const b = obj.budgets as Record<string, unknown>;
     if (b.max_tokens !== undefined && (typeof b.max_tokens !== "number" || !Number.isFinite(b.max_tokens) || b.max_tokens <= 0)) {
       errors.push({ path: "budgets.max_tokens", message: "max_tokens must be a positive number." });
@@ -163,7 +174,15 @@ export function validateWorkflow(value: unknown): { workflow?: WorkflowDefinitio
     return { errors };
   }
 
-  return { workflow: obj as unknown as WorkflowDefinition, errors: [] };
+  const validated: WorkflowDefinition = {
+    name: name as string,
+    version: WORKFLOW_VERSION,
+    description: obj.description as string,
+    phases: obj.phases as Phase[],
+    budgets: obj.budgets as WorkflowDefinition["budgets"] | undefined,
+  };
+
+  return { workflow: validated, errors: [] };
 }
 
 export function isFanOutPhase(phase: Phase): phase is FanOutPhase {
