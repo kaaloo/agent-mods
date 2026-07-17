@@ -14,65 +14,98 @@ Use this mod when a task benefits from parallel subagents with explicit synchron
 - multi-angle analysis before synthesis
 - tasks that naturally decompose into independent subtasks
 
-## Behavioral contract
+## Workflow format
 
-When a workflow is active, the agent should:
+Workflows are stored as **Markdown files with YAML frontmatter**. The frontmatter contains the structured workflow definition; the Markdown body is reserved for descriptive content.
 
-1. Use the workflow's phase structure to guide subagent dispatch.
-2. Dispatch all agents in a `fan-out` phase in parallel using multiple `Agent` tool calls.
-3. Wait for the mod to report a phase complete before starting the next phase.
-4. Use `barrier` phases to merge prior phase outputs into a single synthesized result.
-5. Treat the progress panel as operational state, not durable memory.
-6. Persist reusable workflows to the library via `workflow_save`.
+### Minimal example
+
+```markdown
+---
+name: my-security-sweep
+version: "1"
+description: Scan for common security issues and synthesize a report.
+phases:
+  - id: scan
+    type: fan-out
+    concurrency: 3
+    agents:
+      - id: auth
+        prompt: Check authentication and authorization bugs.
+      - id: input
+        prompt: Check input validation and injection risks.
+  - id: report
+    type: barrier
+    depends_on:
+      - scan
+    prompt: Merge the findings into a prioritized report.
+budgets:
+  max_concurrent: 3
+  max_duration_ms: 600000
+---
+
+Longer descriptive content about the workflow, intended for humans.
+```
+
+### Phase types
+
+- `fan-out`: dispatch all agents in parallel. The phase completes when every agent has finished.
+- `barrier`: run a single synthesis agent after all `depends_on` phases complete. The prompt can reference prior phase outputs.
+
+### Authoring your own sweep
+
+1. Use `/flow new <task>` to generate a draft. The model returns a Markdown workflow.
+2. Save it with the `flow_save` tool (or `/flow save <name>` as a reminder).
+3. Run it with `/flow run <name>`.
 
 ## Commands
 
-### `/flow`
+All commands live under `/flow`:
 
-Shows or refreshes the progress panel.
-
-### `/flow-author <task>`
-
-Returns a structured prompt for the model to author a JSON workflow definition.
-
-### `/flow-save <name>`
-
-Saves the most recently authored workflow to the library. In practice, call the `workflow_save` tool directly.
-
-### `/flow-list`
-
-Lists saved workflows and bundled templates.
-
-### `/flow-run <name>`
-
-Starts a visible run in the current conversation. The model will dispatch the workflow's subagents as `Agent` tool calls (so they appear in the UI), then call `workflow_status` to advance phases until completion.
+| Command | Description |
+|---------|-------------|
+| `/flow` | Show active workflow status / refresh panel. |
+| `/flow help` | Show quick-start guide. |
+| `/flow new <task>` | Author a new workflow. |
+| `/flow save <name>` | Reminder to save the generated workflow via `flow_save`. |
+| `/flow list` | List saved workflows and bundled templates. |
+| `/flow run <name>` | Run a workflow in the current conversation. |
+| `/flow delete <name>` | Delete a saved workflow. |
+| `/flow-delete <name>` | Standalone shortcut to delete a saved workflow. |
 
 ## Tools
 
-### `workflow_author`
+### `flow_author`
 
-Persist a workflow to the local library. Requires approval.
+Generate a workflow definition from a task description.
 
-### `workflow_load`
+### `flow_save`
+
+Persist a workflow to the local library. Requires approval. The workflow argument must be a Markdown string with YAML frontmatter.
+
+### `flow_load`
 
 Load a workflow by name. Read-only.
 
-### `workflow_list`
+### `flow_list`
 
 List saved workflows and templates. Read-only.
 
-### `workflow_run`
+### `flow_run`
 
 Start an inline run. Returns a run ID and dispatch instructions for the current phase. Requires approval.
 
-### `workflow_status`
+### `flow_status`
 
 Query the current state of a run. Read-only.
 
 ## State
 
-- `~/.letta/mods/dynamic-workflows.state.json` — library index and run registry.
-- `~/.letta/workflows/runs/<run_id>/` — per-run plan, checkpoint, and agent outputs.
+All state lives in the agent's MemFS:
+
+- `~/.letta/agents/<agent-id>/memory/dynamic-workflows/registry.md` — run registry.
+- `~/.letta/agents/<agent-id>/memory/dynamic-workflows/library/` — saved workflows.
+- `~/.letta/agents/<agent-id>/memory/dynamic-workflows/runs/<run_id>/` — per-run plan, checkpoint, agent outputs, and result.
 
 ## Adaptation notes for agents
 
@@ -80,3 +113,4 @@ Query the current state of a run. Read-only.
 - Use the public mod API and Node built-ins.
 - Keep the DSL bounded and validate it before running.
 - In v0.1, only `fan-out` and `barrier` phases are supported.
+- Workflows are scoped to the conversation that started them; other conversations will not receive continuation prompts.

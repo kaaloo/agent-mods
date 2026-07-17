@@ -55,7 +55,7 @@ Rules:
 - Keep the workflow small and debuggable for a first run.
 - Use the Markdown body below the frontmatter for descriptive content about the workflow.
 
-After you generate the workflow, call workflow_save with the Markdown content as the "workflow" argument.`;
+After you generate the workflow, call flow_save with the Markdown content as the "workflow" argument.`;
 }
 
 export function authorWorkflow(input: AuthorInput): { workflow?: WorkflowDefinition; prompt: string; error?: string } {

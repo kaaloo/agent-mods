@@ -7258,7 +7258,7 @@ Rules:
 - Keep the workflow small and debuggable for a first run.
 - Use the Markdown body below the frontmatter for descriptive content about the workflow.
 
-After you generate the workflow, call workflow_save with the Markdown content as the "workflow" argument.`;
+After you generate the workflow, call flow_save with the Markdown content as the "workflow" argument.`;
 }
 function authorWorkflow(input) {
   const prompt = buildAuthorPrompt(input);
@@ -7432,6 +7432,11 @@ function listLibrary() {
       entries.push(loaded);
   }
   return entries;
+}
+function deleteLibraryEntry(name) {
+  try {
+    unlinkSync(getLibraryEntryPath(name));
+  } catch {}
 }
 function generateRunId() {
   const now = Date.now();
@@ -7918,7 +7923,7 @@ function activate(letta) {
   }
   if (letta.capabilities?.tools) {
     disposers.push(letta.tools.register({
-      name: "workflow_author",
+      name: "flow_author",
       description: "Generate a workflow prompt for the model to author a JSON workflow definition for a given task.",
       parameters: {
         type: "object",
@@ -7941,7 +7946,7 @@ function activate(letta) {
       }
     }));
     disposers.push(letta.tools.register({
-      name: "workflow_save",
+      name: "flow_save",
       description: "Save a workflow definition to the local library. The workflow argument should be a Markdown string with YAML frontmatter. Requires approval.",
       parameters: {
         type: "object",
@@ -7980,7 +7985,7 @@ function activate(letta) {
       }
     }));
     disposers.push(letta.tools.register({
-      name: "workflow_load",
+      name: "flow_load",
       description: "Load a saved workflow definition by name. Falls back to bundled templates.",
       parameters: {
         type: "object",
@@ -8006,7 +8011,7 @@ function activate(letta) {
       }
     }));
     disposers.push(letta.tools.register({
-      name: "workflow_list",
+      name: "flow_list",
       description: "List saved workflows and bundled example templates.",
       parameters: {
         type: "object",
@@ -8027,7 +8032,7 @@ function activate(letta) {
       }
     }));
     disposers.push(letta.tools.register({
-      name: "workflow_run",
+      name: "flow_run",
       description: "Start an inline run of a workflow. Returns a run ID and dispatch instructions for the current phase. Requires approval.",
       parameters: {
         type: "object",
@@ -8061,7 +8066,7 @@ function activate(letta) {
       }
     }));
     disposers.push(letta.tools.register({
-      name: "workflow_status",
+      name: "flow_status",
       description: "Query the current state of a run.",
       parameters: {
         type: "object",
@@ -8087,77 +8092,103 @@ function activate(letta) {
   if (letta.capabilities?.commands) {
     disposers.push(letta.commands.register({
       id: "flow",
-      description: "Show or refresh the Dynamic Workflows progress panel.",
-      run: () => {
-        refreshPanel();
-        return { type: "output", output: activeRunId ? `Workflow panel active. Run ID: ${activeRunId}` : "No active workflow." };
-      }
-    }));
-    disposers.push(letta.commands.register({
-      id: "flow-author",
-      description: "Author a new workflow for the given task.",
-      args: "<task>",
-      run: (ctx) => {
-        const args = normalizeCommandArgs(ctx.args);
-        if (!args) {
-          return { type: "output", output: "Usage: /flow-author <task>" };
-        }
-        const { prompt } = authorWorkflow({ task: args });
-        return { type: "output", output: prompt };
-      }
-    }));
-    disposers.push(letta.commands.register({
-      id: "flow-save",
-      description: "Save the most recently authored workflow to the library.",
-      args: "<name>",
-      run: (ctx) => {
-        const name = normalizeCommandArgs(ctx.args);
-        if (!name) {
-          return { type: "output", output: "Usage: /flow-save <name>" };
-        }
-        return { type: "output", output: `To save a workflow, call the workflow_save tool with name="${name}" and the workflow JSON.` };
-      }
-    }));
-    disposers.push(letta.commands.register({
-      id: "flow-list",
-      description: "List saved workflows and bundled templates.",
-      run: () => {
-        const entries = listLibrary();
-        const templates = listTemplates(TEMPLATE_DIR);
-        const lines = [
-          "Saved workflows:",
-          ...entries.map((e) => `  • ${e.name} — ${e.description}`),
-          "Bundled templates:",
-          ...templates.map((t) => `  • ${t.name} — ${t.description}`)
-        ];
-        return { type: "output", output: lines.join(`
-`) };
-      }
-    }));
-    disposers.push(letta.commands.register({
-      id: "flow-run",
-      description: "Run a saved workflow in the current conversation. The agent will dispatch the visible subagents and continue until the workflow completes.",
-      args: "<name>",
+      description: "Dynamic Workflows: /flow [panel|new|save|list|run|delete|help] — manage multi-agent workflows.",
+      args: "[subcommand] [args...]",
       runWhenBusy: true,
       run: (ctx) => {
+        const raw = normalizeCommandArgs(ctx.args);
+        const tokens = raw ? raw.trim().split(/\s+/) : [];
+        const subcommand = tokens[0] ?? "panel";
+        const rest = tokens.slice(1).join(" ");
+        switch (subcommand.toLowerCase()) {
+          case "panel":
+          case "status": {
+            refreshPanel();
+            return { type: "output", output: activeRunId ? `Workflow panel active. Run ID: ${activeRunId}` : "No active workflow." };
+          }
+          case "help":
+          case "h": {
+            return { type: "output", output: buildFlowHelp() };
+          }
+          case "new":
+          case "author": {
+            if (!rest) {
+              return { type: "output", output: `Usage: /flow new <task>
+
+Example: /flow new "security sweep for a TypeScript codebase"` };
+            }
+            const { prompt } = authorWorkflow({ task: rest });
+            return { type: "output", output: prompt };
+          }
+          case "save": {
+            if (!rest) {
+              return { type: "output", output: `Usage: /flow save <name>
+
+After /flow new generates a workflow, call the flow_save tool with name="<name>" and the Markdown workflow.` };
+            }
+            return { type: "output", output: `To save the workflow, call the flow_save tool with name="${rest}" and the Markdown workflow definition.` };
+          }
+          case "list":
+          case "ls": {
+            const entries = listLibrary();
+            const templates = listTemplates(TEMPLATE_DIR);
+            const lines = [
+              "Saved workflows:",
+              ...entries.map((e) => `  • ${e.name} — ${e.description}`),
+              "Bundled templates:",
+              ...templates.map((t) => `  • ${t.name} — ${t.description}`)
+            ];
+            return { type: "output", output: lines.join(`
+`) };
+          }
+          case "run": {
+            if (!rest) {
+              return { type: "output", output: `Usage: /flow run <name>
+
+Run a saved workflow or bundled template.` };
+            }
+            const entry = loadLibraryEntry(rest);
+            const workflow = entry?.workflow ?? loadTemplate(TEMPLATE_DIR, rest);
+            if (!workflow) {
+              return { type: "output", output: `Workflow "${rest}" not found.` };
+            }
+            const run = createRun(workflow, {}, ctx.conversation?.id);
+            activeRunId = run.runId;
+            activeRunConversationId = ctx.conversation?.id;
+            workflowContinuationCount = 0;
+            lastTurnWorkflowActivity = false;
+            updateRunRegistry(run);
+            refreshPanel();
+            const step = stepInlineRun(run.runId);
+            return { type: "prompt", content: buildExecutorPrompt(run.runId, workflow.name, step), systemReminder: true };
+          }
+          case "delete":
+          case "rm": {
+            if (!rest) {
+              return { type: "output", output: "Usage: /flow delete <name>" };
+            }
+            deleteLibraryEntry(rest);
+            return { type: "output", output: `Deleted workflow "${rest}" from the library.` };
+          }
+          default: {
+            return { type: "output", output: `Unknown subcommand: ${subcommand}
+
+${buildFlowHelp()}` };
+          }
+        }
+      }
+    }));
+    disposers.push(letta.commands.register({
+      id: "flow-delete",
+      description: "Delete a saved workflow from the library.",
+      args: "<name>",
+      run: (ctx) => {
         const name = normalizeCommandArgs(ctx.args);
         if (!name) {
-          return { type: "output", output: "Usage: /flow-run <name>" };
+          return { type: "output", output: "Usage: /flow-delete <name>" };
         }
-        const entry = loadLibraryEntry(name);
-        const workflow = entry?.workflow ?? loadTemplate(TEMPLATE_DIR, name);
-        if (!workflow) {
-          return { type: "output", output: `Workflow "${name}" not found.` };
-        }
-        const run = createRun(workflow, {}, ctx.conversation?.id);
-        activeRunId = run.runId;
-        activeRunConversationId = ctx.conversation?.id;
-        workflowContinuationCount = 0;
-        lastTurnWorkflowActivity = false;
-        updateRunRegistry(run);
-        refreshPanel();
-        const step = stepInlineRun(run.runId);
-        return { type: "prompt", content: buildExecutorPrompt(run.runId, workflow.name, step), systemReminder: true };
+        deleteLibraryEntry(name);
+        return { type: "output", output: `Deleted workflow "${name}" from the library.` };
       }
     }));
   }
@@ -8170,7 +8201,7 @@ function activate(letta) {
       const toolName = event.toolName;
       if (typeof toolName !== "string")
         return;
-      if (toolName === "workflow_status") {
+      if (toolName === "flow_status") {
         lastTurnWorkflowActivity = true;
         return;
       }
@@ -8237,7 +8268,7 @@ function activate(letta) {
           if (typeof send2 !== "function")
             return;
           try {
-            const stream = await send2([{ role: "user", content: `The prior phase agents are still writing their reports. Call workflow_status({ run_id: "${run.runId}" }) to check again.` }]);
+            const stream = await send2([{ role: "user", content: `The prior phase agents are still writing their reports. Call flow_status({ run_id: "${run.runId}" }) to check again.` }]);
             (async () => {
               try {
                 for await (const _ of stream) {}
@@ -8304,8 +8335,14 @@ function normalizeInputs(value) {
 function formatStep(step) {
   if (!step)
     return "No step available.";
-  if (step.type === "complete")
-    return `Workflow complete. Result: ${step.resultPath}`;
+  if (step.type === "complete") {
+    const resultPreview = step.result ? `
+
+${step.result.slice(0, 4000)}${step.result.length > 4000 ? `
+
+[... result truncated; full report at result.md]` : ""}` : "";
+    return `Workflow complete. Result saved to ${step.resultPath}.${resultPreview}`;
+  }
   if (step.type === "dispatch")
     return `${step.instructions}
 
@@ -8316,16 +8353,54 @@ ${step.agents?.map((a) => `  - ${a.id}: ${a.prompt.slice(0, 120)}...`).join(`
     return `Waiting for phase "${step.phaseId}" (${step.completed}/${step.completed + step.pending} complete).`;
   return "Unknown step.";
 }
+function buildFlowHelp() {
+  return `Dynamic Workflows — /flow subcommands
+
+  /flow                    — show active workflow status / panel
+  /flow help               — show this help
+  /flow new <task>          — generate a new workflow for a task
+  /flow save <name>        — reminder to save the generated workflow via flow_save
+  /flow list               — list saved workflows and bundled templates
+  /flow run <name>         — run a workflow in the current conversation
+  /flow delete <name>      — delete a saved workflow
+
+Workflows are Markdown files with YAML frontmatter. Example:
+
+---
+name: my-sweep
+version: "1"
+description: One-line description.
+phases:
+  - id: scan
+    type: fan-out
+    concurrency: 3
+    agents:
+      - id: a
+        prompt: "Prompt for parallel agent A."
+      - id: b
+        prompt: "Prompt for parallel agent B."
+  - id: synthesize
+    type: barrier
+    depends_on:
+      - scan
+    prompt: "Merge the prior outputs into a report."
+budgets:
+  max_concurrent: 3
+  max_duration_ms: 600000
+---
+
+Phase types: fan-out (parallel agents) and barrier (single agent after dependencies).`;
+}
 function buildExecutorPrompt(runId, workflowName, step) {
   const base = `Workflow "${workflowName}" started. Run ID: ${runId}.
 
-Your job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the workflow_status tool and the Agent tool.
+Your job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the flow_status tool and the Agent tool.
 
 Rules:
-1. After each batch of Agent tool calls returns, call workflow_status({ run_id: "${runId}" }) to get the next step.
-2. If step.type is "complete", stop and return a concise summary.
+1. After each batch of Agent tool calls returns, call flow_status({ run_id: "${runId}" }) to get the next step.
+2. If step.type is "complete", stop and return a concise summary of the result shown below.
 3. If step.type is "dispatch", issue the described parallel Agent tool calls with the exact prompts provided.
-4. If step.type is "wait", call workflow_status again.
+4. If step.type is "wait", call flow_status again.
 5. Use the general-purpose subagent type for all Agent calls.
 
 Current step:`;
