@@ -314,20 +314,6 @@ export default function activate(letta: LettaModContext): (() => void) {
         }
       },
     }));
-
-    disposers.push(letta.commands.register({
-      id: "flow-delete",
-      description: "Delete a saved workflow from the library.",
-      args: "<name>",
-      run: (ctx: LettaCommandContext) => {
-        const name = normalizeCommandArgs(ctx.args);
-        if (!name) {
-          return { type: "output", output: "Usage: /flow-delete <name>" };
-        }
-        deleteLibraryEntry(name);
-        return { type: "output", output: `Deleted workflow "${name}" from the library.` };
-      },
-    }));
   }
 
   // ── Events ──

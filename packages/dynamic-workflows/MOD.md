@@ -71,7 +71,6 @@ All commands live under `/flow`:
 | `/flow list` | List saved workflows and bundled templates. |
 | `/flow run <name>` | Run a workflow in the current conversation. |
 | `/flow delete <name>` | Delete a saved workflow. |
-| `/flow-delete <name>` | Standalone shortcut to delete a saved workflow. |
 
 ## Tools
 
