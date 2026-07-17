@@ -934,13 +934,36 @@ function activate(letta) {
     }));
     disposers.push(letta.commands.register({
       id: "flow-run",
+      description: "Run a saved workflow in the current conversation. The agent will dispatch the visible subagents and continue until the workflow completes.",
+      args: "<name>",
+      runWhenBusy: true,
+      run: (ctx) => {
+        const name = normalizeCommandArgs(ctx.args);
+        if (!name) {
+          return { type: "output", output: "Usage: /flow-run <name>" };
+        }
+        const entry = loadLibraryEntry(name);
+        const workflow = entry?.workflow ?? loadTemplate(TEMPLATE_DIR, name);
+        if (!workflow) {
+          return { type: "output", output: `Workflow "${name}" not found.` };
+        }
+        const run = createRun(workflow);
+        activeRunId = run.runId;
+        updateRunRegistry(run);
+        refreshPanel();
+        const step = stepInlineRun(run.runId);
+        return { type: "prompt", content: buildExecutorPrompt(run.runId, workflow.name, step), systemReminder: true };
+      }
+    }));
+    disposers.push(letta.commands.register({
+      id: "flow-run-fork",
       description: "Run a saved workflow in a forked background conversation.",
       args: "<name>",
       runWhenBusy: true,
       async run(ctx) {
         const name = normalizeCommandArgs(ctx.args);
         if (!name) {
-          return { type: "output", output: "Usage: /flow-run <name>" };
+          return { type: "output", output: "Usage: /flow-run-fork <name>" };
         }
         const entry = loadLibraryEntry(name);
         const workflow = entry?.workflow ?? loadTemplate(TEMPLATE_DIR, name);
@@ -1066,6 +1089,23 @@ ${step.agents?.map((a) => `  - ${a.id}: ${a.prompt.slice(0, 120)}...`).join(`
   if (step.type === "wait")
     return `Waiting for phase "${step.phaseId}" (${step.completed}/${step.completed + step.pending} complete).`;
   return "Unknown step.";
+}
+function buildExecutorPrompt(runId, workflowName, step) {
+  const base = `Workflow "${workflowName}" started. Run ID: ${runId}.
+
+Your job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the workflow_status tool and the Agent tool.
+
+Rules:
+1. After each batch of Agent tool calls returns, call workflow_status({ run_id: "${runId}" }) to get the next step.
+2. If step.type is "complete", stop and return a concise summary.
+3. If step.type is "dispatch", issue the described parallel Agent tool calls with the exact prompts provided.
+4. If step.type is "wait", call workflow_status again.
+5. Use the general-purpose subagent type for all Agent calls.
+
+Current step:`;
+  return `${base}
+
+${formatStep(step)}`;
 }
 function buildForkExecutorPrompt(runId, workflowName) {
   return `You are a workflow executor for the Dynamic Workflows mod. Your only job is to execute an already-created workflow run to completion.

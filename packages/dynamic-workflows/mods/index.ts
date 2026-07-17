@@ -302,13 +302,37 @@ export default function activate(letta: LettaModContext): (() => void) {
 
     disposers.push(letta.commands.register({
       id: "flow-run",
+      description: "Run a saved workflow in the current conversation. The agent will dispatch the visible subagents and continue until the workflow completes.",
+      args: "<name>",
+      runWhenBusy: true,
+      run: (ctx: LettaCommandContext) => {
+        const name = normalizeCommandArgs(ctx.args);
+        if (!name) {
+          return { type: "output", output: "Usage: /flow-run <name>" };
+        }
+        const entry = loadLibraryEntry(name);
+        const workflow = entry?.workflow ?? loadTemplate(TEMPLATE_DIR, name);
+        if (!workflow) {
+          return { type: "output", output: `Workflow "${name}" not found.` };
+        }
+        const run = createRun(workflow);
+        activeRunId = run.runId;
+        updateRunRegistry(run);
+        refreshPanel();
+        const step = stepInlineRun(run.runId);
+        return { type: "prompt", content: buildExecutorPrompt(run.runId, workflow.name, step), systemReminder: true };
+      },
+    }));
+
+    disposers.push(letta.commands.register({
+      id: "flow-run-fork",
       description: "Run a saved workflow in a forked background conversation.",
       args: "<name>",
       runWhenBusy: true,
       async run(ctx: LettaCommandContext) {
         const name = normalizeCommandArgs(ctx.args);
         if (!name) {
-          return { type: "output", output: "Usage: /flow-run <name>" };
+          return { type: "output", output: "Usage: /flow-run-fork <name>" };
         }
         const entry = loadLibraryEntry(name);
         const workflow = entry?.workflow ?? loadTemplate(TEMPLATE_DIR, name);
@@ -423,6 +447,11 @@ function formatStep(step: ReturnType<typeof stepInlineRun>): string {
   if (step.type === "dispatch") return `${step.instructions}\n\nAgents:\n${step.agents?.map((a) => `  - ${a.id}: ${a.prompt.slice(0, 120)}...`).join("\n") ?? ""}`;
   if (step.type === "wait") return `Waiting for phase "${step.phaseId}" (${step.completed}/${step.completed + step.pending} complete).`;
   return "Unknown step.";
+}
+
+function buildExecutorPrompt(runId: string, workflowName: string, step: ReturnType<typeof stepInlineRun>): string {
+  const base = `Workflow "${workflowName}" started. Run ID: ${runId}.\n\nYour job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the workflow_status tool and the Agent tool.\n\nRules:\n1. After each batch of Agent tool calls returns, call workflow_status({ run_id: "${runId}" }) to get the next step.\n2. If step.type is "complete", stop and return a concise summary.\n3. If step.type is "dispatch", issue the described parallel Agent tool calls with the exact prompts provided.\n4. If step.type is "wait", call workflow_status again.\n5. Use the general-purpose subagent type for all Agent calls.\n\nCurrent step:`;
+  return `${base}\n\n${formatStep(step)}`;
 }
 
 function buildForkExecutorPrompt(runId: string, workflowName: string): string {
