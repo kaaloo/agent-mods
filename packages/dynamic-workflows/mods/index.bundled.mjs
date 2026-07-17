@@ -7692,9 +7692,11 @@ function dispatchBarrier(run, phase) {
     if (isFanOutPhase(dep)) {
       const outputs = {};
       for (const agent of dep.agents) {
-        const key = `${depId}.${agent.id}`;
-        if (run.outputs[key])
-          outputs[agent.id] = String(run.outputs[key]);
+        const filePath = getRunAgentOutputPath(run.runId, depId, agent.id);
+        const fileOutput = readRunAgentOutput(run.runId, depId, agent.id);
+        outputs[agent.id] = fileOutput ? `Read the full report from ${filePath}:
+
+${fileOutput}` : String(run.outputs[`${depId}.${agent.id}`] ?? "");
       }
       return { phaseId: depId, outputs };
     }
@@ -7703,7 +7705,7 @@ function dispatchBarrier(run, phase) {
   const resultPath = getRunResultPath(run.runId);
   const synthesizedPrompt = `${phase.prompt}
 
-Inputs from prior phases:
+Inputs from prior phases (read from the full .md reports where available):
 ${JSON.stringify(inputs, null, 2)}
 
 When you are done, write your final synthesized report to ${resultPath}.`;
@@ -8070,7 +8072,13 @@ function activate(letta) {
       if (!activeRunId || !event || typeof event !== "object")
         return;
       const toolName = event.toolName;
-      if (typeof toolName !== "string" || toolName !== "Agent")
+      if (typeof toolName !== "string")
+        return;
+      if (toolName === "workflow_status") {
+        lastTurnWorkflowActivity = true;
+        return;
+      }
+      if (toolName !== "Agent")
         return;
       if (event.status === "error")
         return;
@@ -8111,6 +8119,36 @@ function activate(letta) {
         return;
       if (workflowContinuationCount >= MAX_WORKFLOW_CONTINUATIONS)
         return;
+      const currentPhaseId = run.currentPhaseId;
+      const currentPhase = currentPhaseId ? run.workflow.phases.find((p) => p.id === currentPhaseId) : undefined;
+      if (currentPhase && isBarrierPhase(currentPhase)) {
+        const ready = currentPhase.depends_on.every((depId) => {
+          const dep = run.workflow.phases.find((p) => p.id === depId);
+          if (!dep || !isFanOutPhase(dep))
+            return true;
+          return dep.agents.every((a) => {
+            const text = readRunAgentOutput(run.runId, depId, a.id);
+            return text && text.length > 0;
+          });
+        });
+        if (!ready) {
+          lastTurnWorkflowActivity = false;
+          workflowContinuationCount++;
+          const conversation2 = ctx.conversation;
+          const send2 = conversation2?.sendMessageStream;
+          if (typeof send2 !== "function")
+            return;
+          try {
+            const stream = await send2([{ role: "user", content: `The prior phase agents are still writing their reports. Call workflow_status({ run_id: "${run.runId}" }) to check again.` }]);
+            (async () => {
+              try {
+                for await (const _ of stream) {}
+              } catch {}
+            })();
+          } catch {}
+          return;
+        }
+      }
       lastTurnWorkflowActivity = false;
       workflowContinuationCount++;
       const conversation = ctx.conversation;

@@ -174,15 +174,18 @@ function dispatchFanOut(run: RunState, phase: FanOutPhase): InlineDispatch | Inl
   };
 }
 
-function dispatchBarrier(run: RunState, phase: BarrierPhase): InlineDispatch {
+function dispatchBarrier(run: RunState, phase: BarrierPhase): InlineDispatch | InlineWait {
   const inputs = phase.depends_on.map((depId) => {
     const dep = phaseById(run.workflow, depId);
     if (!dep) return { phaseId: depId, outputs: {} };
     if (isFanOutPhase(dep)) {
       const outputs: Record<string, string> = {};
       for (const agent of dep.agents) {
-        const key = `${depId}.${agent.id}`;
-        if (run.outputs[key]) outputs[agent.id] = String(run.outputs[key]);
+        const filePath = getRunAgentOutputPath(run.runId, depId, agent.id);
+        const fileOutput = readRunAgentOutput(run.runId, depId, agent.id);
+        outputs[agent.id] = fileOutput
+          ? `Read the full report from ${filePath}:\n\n${fileOutput}`
+          : String(run.outputs[`${depId}.${agent.id}`] ?? "");
       }
       return { phaseId: depId, outputs };
     }
@@ -192,7 +195,7 @@ function dispatchBarrier(run: RunState, phase: BarrierPhase): InlineDispatch {
   const resultPath = getRunResultPath(run.runId);
   const synthesizedPrompt = `${phase.prompt}
 
-Inputs from prior phases:
+Inputs from prior phases (read from the full .md reports where available):
 ${JSON.stringify(inputs, null, 2)}
 
 When you are done, write your final synthesized report to ${resultPath}.`;

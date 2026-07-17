@@ -11,6 +11,7 @@ import {
   saveLibraryEntry,
   listLibrary,
   updateRunRegistry,
+  readRunAgentOutput,
 } from "./lib/state.ts";
 import { stepInlineRun, recordAgentComplete, recordBarrierComplete } from "./lib/runner-inline.ts";
 import { listTemplates, loadTemplate } from "./lib/templates.ts";
@@ -315,7 +316,12 @@ export default function activate(letta: LettaModContext): (() => void) {
     safeOn("tool_end", (event: LettaEvent) => {
       if (!activeRunId || !event || typeof event !== "object") return;
       const toolName = event.toolName;
-      if (typeof toolName !== "string" || toolName !== "Agent") return;
+      if (typeof toolName !== "string") return;
+      if (toolName === "workflow_status") {
+        lastTurnWorkflowActivity = true;
+        return;
+      }
+      if (toolName !== "Agent") return;
       if (event.status === "error") return;
 
       const raw = event.output ?? event.resultText ?? event.result;
@@ -349,6 +355,32 @@ export default function activate(letta: LettaModContext): (() => void) {
       if (!run || run.status !== "running") return;
       if (!lastTurnWorkflowActivity) return;
       if (workflowContinuationCount >= MAX_WORKFLOW_CONTINUATIONS) return;
+
+      const currentPhaseId = run.currentPhaseId;
+      const currentPhase = currentPhaseId ? run.workflow.phases.find((p) => p.id === currentPhaseId) : undefined;
+      if (currentPhase && isBarrierPhase(currentPhase)) {
+        const ready = currentPhase.depends_on.every((depId) => {
+          const dep = run.workflow.phases.find((p) => p.id === depId);
+          if (!dep || !isFanOutPhase(dep)) return true;
+          return dep.agents.every((a) => {
+            const text = readRunAgentOutput(run.runId, depId, a.id);
+            return text && text.length > 0;
+          });
+        });
+        if (!ready) {
+          lastTurnWorkflowActivity = false;
+          workflowContinuationCount++;
+          const conversation = ctx.conversation;
+          const send = conversation?.sendMessageStream;
+          if (typeof send !== "function") return;
+          try {
+            const stream = await send([{ role: "user", content: `The prior phase agents are still writing their reports. Call workflow_status({ run_id: "${run.runId}" }) to check again.` }]);
+            void (async () => { try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ } })();
+          } catch { /* ignore */ }
+          return;
+        }
+      }
+
       lastTurnWorkflowActivity = false;
       workflowContinuationCount++;
       const conversation = ctx.conversation;
