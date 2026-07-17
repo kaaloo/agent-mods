@@ -939,27 +939,24 @@ function activate(letta) {
       const result = event.result;
       if (typeof toolName !== "string" || toolName !== "Agent")
         return;
-      const args = event.args ?? event.arguments;
-      if (!args || typeof args !== "object")
-        return;
-      const runId = args.run_id ?? args.runId;
-      const phaseId = args.phase_id ?? args.phaseId;
-      const agentId = args.agent_id ?? args.agentId;
-      if (!isNonEmptyString(runId) || !isNonEmptyString(phaseId) || !isNonEmptyString(agentId))
-        return;
-      if (runId !== activeRunId)
-        return;
-      const run = loadRun(runId);
+      const run = loadRun(activeRunId);
       if (!run)
         return;
-      const phase = run.workflow.phases.find((p) => p.id === phaseId);
+      const currentPhaseId = run.currentPhaseId;
+      if (!currentPhaseId)
+        return;
+      const phase = run.workflow.phases.find((p) => p.id === currentPhaseId);
       if (!phase)
         return;
       const output = typeof result === "string" ? result : JSON.stringify(result);
       if (isFanOutPhase(phase)) {
-        recordAgentComplete(runId, phaseId, agentId, output);
+        const completedIds = new Set(run.completedAgents.map((a) => a.agentId));
+        const pendingAgent = phase.agents.find((a) => !completedIds.has(a.id));
+        if (!pendingAgent)
+          return;
+        recordAgentComplete(activeRunId, currentPhaseId, pendingAgent.id, output);
       } else if (isBarrierPhase(phase)) {
-        recordBarrierComplete(runId, phaseId, output);
+        recordBarrierComplete(activeRunId, currentPhaseId, output);
       }
       refreshPanel();
     });
