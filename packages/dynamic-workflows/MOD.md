@@ -47,10 +47,6 @@ Lists saved workflows and bundled templates.
 
 Starts a visible run in the current conversation. The model will dispatch the workflow's subagents as `Agent` tool calls (so they appear in the UI), then call `workflow_status` to advance phases until completion.
 
-### `/flow-run-fork <name>`
-
-Starts a run in a hidden forked conversation. No subagent cards appear in the current UI, but the workflow executes in the background.
-
 ## Tools
 
 ### `workflow_author`
