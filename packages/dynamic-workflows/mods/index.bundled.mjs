@@ -7702,6 +7702,24 @@ ${fileOutput}` : String(run.outputs[`${depId}.${agent.id}`] ?? "");
     }
     return { phaseId: depId, outputs: { result: String(run.outputs[depId] ?? "") } };
   });
+  const missingReports = phase.depends_on.flatMap((depId) => {
+    const dep = phaseById(run.workflow, depId);
+    if (!dep || !isFanOutPhase(dep))
+      return [];
+    return dep.agents.filter((a) => {
+      const text = readRunAgentOutput(run.runId, depId, a.id);
+      return !text || text.length === 0;
+    }).map((a) => `${depId}.${a.id}`);
+  });
+  if (missingReports.length > 0) {
+    return {
+      type: "wait",
+      runId: run.runId,
+      phaseId: phase.id,
+      pending: missingReports.length,
+      completed: 0
+    };
+  }
   const resultPath = getRunResultPath(run.runId);
   const synthesizedPrompt = `${phase.prompt}
 
