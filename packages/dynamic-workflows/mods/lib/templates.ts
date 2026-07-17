@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { extname } from "node:path";
-import { validateWorkflow } from "./schema.ts";
+import { loadWorkflowFromMarkdown } from "./markdown.ts";
 
 export interface TemplateEntry {
   name: string;
@@ -13,15 +13,14 @@ export function listTemplates(templateDir: string): TemplateEntry[] {
     const entries = readdirSync(templateDir, { withFileTypes: true });
     const templates: TemplateEntry[] = [];
     for (const entry of entries) {
-      if (!entry.isFile() || extname(entry.name) !== ".json") continue;
+      if (!entry.isFile() || extname(entry.name) !== ".md") continue;
       const filename = entry.name;
-      const text = readFileSync(`${templateDir}/${filename}`, "utf8");
       try {
-        const parsed = JSON.parse(text);
-        const { workflow, errors } = validateWorkflow(parsed);
+        const text = readFileSync(`${templateDir}/${filename}`, "utf8");
+        const { workflow, errors } = loadWorkflowFromMarkdown(text);
         if (workflow && errors.length === 0) {
           templates.push({
-            name: filename.replace(/\.json$/, ""),
+            name: filename.replace(/\.md$/, ""),
             description: workflow.description,
             source: "template",
           });
@@ -36,10 +35,14 @@ export function listTemplates(templateDir: string): TemplateEntry[] {
   }
 }
 
-export function loadTemplate(templateDir: string, name: string) {
-  const filename = `${name}.json`;
-  const text = readFileSync(`${templateDir}/${filename}`, "utf8");
-  const parsed = JSON.parse(text);
-  const { workflow } = validateWorkflow(parsed);
-  return workflow;
+export function loadTemplate(templateDir: string, name: string): import("./schema.ts").WorkflowDefinition | undefined {
+  try {
+    const filename = `${name}.md`;
+    const text = readFileSync(`${templateDir}/${filename}`, "utf8");
+    const { workflow, errors } = loadWorkflowFromMarkdown(text);
+    if (errors.length > 0) return undefined;
+    return workflow;
+  } catch {
+    return undefined;
+  }
 }

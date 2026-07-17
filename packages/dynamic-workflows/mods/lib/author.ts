@@ -1,5 +1,6 @@
+import { formatValidationErrors } from "./schema.ts";
 import type { WorkflowDefinition } from "./schema.ts";
-import { validateWorkflow, formatValidationErrors } from "./schema.ts";
+import { parseWorkflowMarkdown, serializeWorkflowMarkdown } from "./markdown.ts";
 
 export interface AuthorInput {
   task: string;
@@ -9,52 +10,52 @@ export interface AuthorInput {
 
 export function buildAuthorPrompt(input: AuthorInput): string {
   const patternDescription = describePattern(input.pattern ?? "custom");
-  return `You are a workflow architect. Design a JSON workflow definition for the following task.
+  const example = serializeWorkflowMarkdown({
+    name: "kebab-case-workflow-name",
+    version: "1",
+    description: "One-line description.",
+    phases: [
+      {
+        id: "scan",
+        type: "fan-out",
+        concurrency: 4,
+        agents: [{ id: "agent-1", prompt: "Detailed prompt for this subagent." }],
+      },
+      {
+        id: "synthesize",
+        type: "barrier",
+        depends_on: ["scan"],
+        prompt: "Prompt that references prior phase outputs.",
+      },
+    ],
+    budgets: {
+      max_tokens: 500000,
+      max_concurrent: 4,
+      max_duration_ms: 3600000,
+    },
+  }, "Optional longer descriptive content in Markdown.");
+
+  return `You are a workflow architect. Design a Markdown file with YAML frontmatter for the following task.
 
 Task: ${input.task}
-${input.hints ? `Additional hints: ${input.hints}\n` : ""}
-Pattern guidance: ${patternDescription}
+${input.hints ? `Additional hints: ${input.hints}\n` : ""}Pattern guidance: ${patternDescription}
 
-The workflow must conform to this JSON schema:
+The workflow must use this format:
 
-{
-  "name": "kebab-case-workflow-name",
-  "version": "1",
-  "description": "One-line description.",
-  "phases": [
-    {
-      "id": "scan",
-      "type": "fan-out",
-      "model": "optional-model-handle",
-      "concurrency": 4,
-      "agents": [
-        { "id": "agent-1", "prompt": "Detailed prompt for this subagent." }
-      ]
-    },
-    {
-      "id": "synthesize",
-      "type": "barrier",
-      "depends_on": ["scan"],
-      "model": "optional-model-handle",
-      "prompt": "Prompt that references prior phase outputs."
-    }
-  ],
-  "budgets": {
-    "max_tokens": 500000,
-    "max_concurrent": 4,
-    "max_duration_ms": 3600000
-  }
-}
+${example}
 
 Rules:
+- The file must start with YAML frontmatter between triple dashes (---).
+- The frontmatter must include: name, version, description, phases, and optionally budgets.
 - Use only "fan-out" and "barrier" phase types.
 - Every fan-out phase must have at least one agent.
 - Every barrier phase must have a non-empty "depends_on" array referencing earlier phase ids.
 - Agent prompts should be self-contained and concrete.
 - Model handles are optional; omit to use the default model.
 - Keep the workflow small and debuggable for a first run.
+- Use the Markdown body below the frontmatter for descriptive content about the workflow.
 
-After you generate the workflow, call workflow_save with the JSON object. Do not wrap the JSON in markdown code fences.`;
+After you generate the workflow, call workflow_save with the Markdown content as the "workflow" argument.`;
 }
 
 export function authorWorkflow(input: AuthorInput): { workflow?: WorkflowDefinition; prompt: string; error?: string } {
@@ -62,21 +63,12 @@ export function authorWorkflow(input: AuthorInput): { workflow?: WorkflowDefinit
   return { prompt };
 }
 
-export function parseWorkflowJson(text: string): { workflow?: WorkflowDefinition; error?: string } {
-  let trimmed = text.trim();
-  if (trimmed.startsWith("```")) {
-    trimmed = trimmed.replace(/```(?:json)?\n?/g, "").replace(/\n?```$/, "").trim();
+export function parseWorkflowMarkdownText(text: string): { workflow?: WorkflowDefinition; error?: string } {
+  const { workflow, errors } = parseWorkflowMarkdown(text);
+  if (errors.length > 0) {
+    return { error: formatValidationErrors(errors.map((e) => ({ path: e, message: e }))) };
   }
-  try {
-    const parsed = JSON.parse(trimmed);
-    const { workflow, errors } = validateWorkflow(parsed);
-    if (errors.length > 0) {
-      return { error: formatValidationErrors(errors) };
-    }
-    return { workflow };
-  } catch (error) {
-    return { error: `Invalid JSON: ${error instanceof Error ? error.message : String(error)}` };
-  }
+  return { workflow };
 }
 
 function describePattern(pattern: string): string {
@@ -91,4 +83,12 @@ function describePattern(pattern: string): string {
     default:
       return "Choose the simplest phase structure that fits the task. Prefer fan-out + barrier unless there is a clear reason for something else.";
   }
+}
+
+export function stripMarkdownFences(text: string): string {
+  let trimmed = text.trim();
+  if (trimmed.startsWith("```")) {
+    trimmed = trimmed.replace(/```(?:markdown|md)?\n?/g, "").replace(/\n?```$/, "").trim();
+  }
+  return trimmed;
 }

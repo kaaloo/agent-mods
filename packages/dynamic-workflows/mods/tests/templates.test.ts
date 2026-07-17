@@ -7,17 +7,26 @@ import { WORKFLOW_VERSION } from "../lib/schema.ts";
 
 let tempDir: string;
 
-test("listTemplates reads valid templates", () => {
+const goodMarkdown = `---
+name: good-template
+version: "${WORKFLOW_VERSION}"
+description: A good template.
+phases:
+  - id: p1
+    type: fan-out
+    agents:
+      - id: a1
+        prompt: p
+---
+
+This is the descriptive body of the template.
+`;
+
+test("listTemplates reads valid markdown templates", () => {
   tempDir = mkdtempSync(path.join(tmpdir(), "dw-templates-"));
-  const good = JSON.stringify({
-    name: "good-template",
-    version: WORKFLOW_VERSION,
-    description: "A good template.",
-    phases: [{ id: "p1", type: "fan-out", agents: [{ id: "a1", prompt: "p" }] }],
-  });
-  const bad = "not json";
-  writeFileSync(path.join(tempDir, "good-template.json"), good);
-  writeFileSync(path.join(tempDir, "bad.json"), bad);
+  writeFileSync(path.join(tempDir, "good-template.md"), goodMarkdown);
+  writeFileSync(path.join(tempDir, "bad.md"), "not yaml frontmatter");
+  writeFileSync(path.join(tempDir, "ignored.json"), '{"name": "ignored"}');
 
   const list = listTemplates(tempDir);
   expect(list).toHaveLength(1);

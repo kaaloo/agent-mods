@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -15,6 +15,7 @@ import {
   getLettaHome,
   getRunDir,
   getStatePath,
+  getLibraryDir,
 } from "../lib/state.ts";
 import { WORKFLOW_VERSION, type WorkflowDefinition } from "../lib/schema.ts";
 
@@ -65,20 +66,20 @@ describe("readState and writeState", () => {
   test("returns empty state when missing", () => {
     const state = readState();
     expect(state.version).toBe(1);
-    expect(Object.keys(state.library)).toHaveLength(0);
+    expect(Object.keys(state.runs)).toHaveLength(0);
   });
 
   test("round-trips state", () => {
     const state = readState();
-    state.library = { test: { name: "test", description: "", workflow: sampleWorkflow, savedAt: new Date().toISOString() } };
+    state.runs = { "run-1": { status: "running" as const, startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), currentPhaseId: "scan" } };
     writeState(state);
     const reloaded = readState();
-    expect(reloaded.library.test).toBeTruthy();
+    expect(reloaded.runs["run-1"]).toBeTruthy();
   });
 });
 
 describe("library", () => {
-  test("saves and loads entry", () => {
+  test("saves and loads entry as markdown", () => {
     const entry = {
       name: "bug-sweep",
       description: "Sweep for bugs.",
@@ -86,6 +87,10 @@ describe("library", () => {
       savedAt: new Date().toISOString(),
     };
     saveLibraryEntry(entry);
+    const filePath = path.join(getLibraryDir(), "bug-sweep.md");
+    expect(existsSync(filePath)).toBe(true);
+    const text = readFileSync(filePath, "utf8");
+    expect(text.startsWith("---")).toBe(true);
     const loaded = loadLibraryEntry("bug-sweep");
     expect(loaded?.name).toBe("bug-sweep");
     expect(listLibrary()).toHaveLength(1);

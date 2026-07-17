@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { LettaModContext, LettaToolContext, LettaCommandContext, LettaEvent, LettaEventHandlerContext } from "./types.ts";
-import { authorWorkflow } from "./lib/author.ts";
-import { validateWorkflow, formatValidationErrors, isFanOutPhase, isBarrierPhase } from "./lib/schema.ts";
+import { authorWorkflow, parseWorkflowMarkdownText, stripMarkdownFences } from "./lib/author.ts";
+import { isFanOutPhase, isBarrierPhase } from "./lib/schema.ts";
 import { renderProgressPanel } from "./lib/panel.ts";
 import {
   createRun,
@@ -78,12 +78,12 @@ export default function activate(letta: LettaModContext): (() => void) {
 
     disposers.push(letta.tools.register({
       name: "workflow_save",
-      description: "Save a workflow definition to the local library. Requires approval.",
+      description: "Save a workflow definition to the local library. The workflow argument should be a Markdown string with YAML frontmatter. Requires approval.",
       parameters: {
         type: "object",
         properties: {
           name: { type: "string", description: "Unique kebab-case workflow name." },
-          workflow: { type: "object", description: "Workflow definition object." },
+          workflow: { type: "string", description: "Workflow definition as a Markdown file with YAML frontmatter." },
           description: { type: "string", description: "Optional description override." },
         },
         required: ["name", "workflow"],
@@ -95,9 +95,13 @@ export default function activate(letta: LettaModContext): (() => void) {
         if (!isNonEmptyString(name)) {
           return { status: "error", content: "name is required" };
         }
-        const { workflow: validated, errors } = validateWorkflow(workflow);
-        if (errors.length > 0) {
-          return { status: "error", content: formatValidationErrors(errors) };
+        if (!isNonEmptyString(workflow)) {
+          return { status: "error", content: "workflow must be a Markdown string with YAML frontmatter" };
+        }
+        const cleaned = stripMarkdownFences(workflow);
+        const { workflow: validated, error } = parseWorkflowMarkdownText(cleaned);
+        if (error) {
+          return { status: "error", content: error };
         }
         if (!validated) {
           return { status: "error", content: "Validation failed" };

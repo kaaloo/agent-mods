@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { serializeWorkflowMarkdown, loadWorkflowFromMarkdown } from "./markdown.ts";
 import type { WorkflowDefinition } from "./schema.ts";
 
 export const MOD_ID = "dynamic-workflows";
@@ -17,8 +18,16 @@ export function getStatePath(): string {
   return path.join(getStateDir(), `${MOD_ID}.state.json`);
 }
 
+export function getWorkflowsDir(): string {
+  return path.join(getLettaHome(), "workflows");
+}
+
+export function getLibraryDir(): string {
+  return path.join(getWorkflowsDir(), "library");
+}
+
 export function getRunsDir(): string {
-  return path.join(getLettaHome(), "workflows", "runs");
+  return path.join(getWorkflowsDir(), "runs");
 }
 
 export interface LibraryEntry {
@@ -59,14 +68,12 @@ export interface RunState {
 
 export interface DynamicWorkflowsState {
   version: 1;
-  library: Record<string, LibraryEntry>;
   runs: Record<string, { status: RunStatus; startedAt: string; updatedAt: string; currentPhaseId: string | null } >;
 }
 
 function emptyState(): DynamicWorkflowsState {
   return {
     version: 1,
-    library: {},
     runs: {},
   };
 }
@@ -80,8 +87,7 @@ export function readState(): DynamicWorkflowsState {
     if (!parsed || typeof parsed !== "object") return emptyState();
     return {
       version: 1,
-      library: typeof parsed.library === "object" ? parsed.library : {},
-      runs: typeof parsed.runs === "object" ? parsed.runs : {},
+      runs: typeof parsed.runs === "object" && parsed.runs !== null ? parsed.runs : {},
     };
   } catch {
     return emptyState();
@@ -107,6 +113,18 @@ export function writeJsonAtomically(filePath: string, value: unknown): void {
   }
 }
 
+export function writeTextFileAtomically(filePath: string, text: string): void {
+  const dir = path.dirname(filePath);
+  mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, `.tmp-${process.pid}-${Date.now()}.md`);
+  writeFileSync(tmp, text, "utf8");
+  try {
+    renameSync(tmp, filePath);
+  } catch {
+    writeFileSync(filePath, text, "utf8");
+  }
+}
+
 export function readTextFile(filePath: string): string | null {
   try {
     if (!existsSync(filePath)) return null;
@@ -116,24 +134,48 @@ export function readTextFile(filePath: string): string | null {
   }
 }
 
+export function getLibraryEntryPath(name: string): string {
+  return path.join(getLibraryDir(), `${name}.md`);
+}
+
 export function saveLibraryEntry(entry: LibraryEntry): void {
-  const state = readState();
-  state.library[entry.name] = entry;
-  writeState(state);
+  const filePath = getLibraryEntryPath(entry.name);
+  const text = serializeWorkflowMarkdown(entry.workflow, `Saved at ${entry.savedAt}.`);
+  writeTextFileAtomically(filePath, text);
 }
 
 export function loadLibraryEntry(name: string): LibraryEntry | null {
-  return readState().library[name] ?? null;
+  const filePath = getLibraryEntryPath(name);
+  const text = readTextFile(filePath);
+  if (!text) return null;
+  const { workflow, errors } = loadWorkflowFromMarkdown(text);
+  if (!workflow || errors.length > 0) return null;
+  const savedAt = workflow.name ? new Date().toISOString() : "";
+  return {
+    name,
+    description: workflow.description,
+    workflow,
+    savedAt,
+  };
 }
 
 export function listLibrary(): LibraryEntry[] {
-  return Object.values(readState().library);
+  const dir = getLibraryDir();
+  if (!existsSync(dir)) return [];
+  const entries: LibraryEntry[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isFile() || path.extname(entry.name) !== ".md") continue;
+    const name = entry.name.replace(/\.md$/, "");
+    const loaded = loadLibraryEntry(name);
+    if (loaded) entries.push(loaded);
+  }
+  return entries;
 }
 
 export function deleteLibraryEntry(name: string): void {
-  const state = readState();
-  delete state.library[name];
-  writeState(state);
+  try {
+    unlinkSync(getLibraryEntryPath(name));
+  } catch { /* ignore */ }
 }
 
 export function generateRunId(): string {
