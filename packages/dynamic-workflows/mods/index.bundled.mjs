@@ -669,6 +669,9 @@ function activate(letta) {
   const disposers = [];
   let activeRunId = null;
   let panel = null;
+  let lastTurnWorkflowActivity = false;
+  let workflowContinuationCount = 0;
+  const MAX_WORKFLOW_CONTINUATIONS = 20;
   const TEMPLATE_DIR = path2.resolve(import.meta.dirname, "../assets/templates");
   function refreshPanel() {
     if (panel) {
@@ -827,6 +830,8 @@ function activate(letta) {
         }
         const run = createRun(workflow, normalizeInputs(inputs));
         activeRunId = run.runId;
+        workflowContinuationCount = 0;
+        lastTurnWorkflowActivity = false;
         updateRunRegistry(run);
         refreshPanel();
         const step = stepInlineRun(run.runId);
@@ -924,6 +929,8 @@ function activate(letta) {
         }
         const run = createRun(workflow);
         activeRunId = run.runId;
+        workflowContinuationCount = 0;
+        lastTurnWorkflowActivity = false;
         updateRunRegistry(run);
         refreshPanel();
         const step = stepInlineRun(run.runId);
@@ -962,7 +969,37 @@ function activate(letta) {
       } else if (isBarrierPhase(phase)) {
         recordBarrierComplete(activeRunId, currentPhaseId, output);
       }
+      lastTurnWorkflowActivity = true;
       refreshPanel();
+    });
+  }
+  if (letta.capabilities?.events?.turns) {
+    safeOn("turn_end", async (_event, ctx) => {
+      if (!activeRunId)
+        return;
+      const run = loadRun(activeRunId);
+      if (!run || run.status !== "running")
+        return;
+      if (!lastTurnWorkflowActivity)
+        return;
+      if (workflowContinuationCount >= MAX_WORKFLOW_CONTINUATIONS)
+        return;
+      lastTurnWorkflowActivity = false;
+      workflowContinuationCount++;
+      const conversation = ctx.conversation;
+      const send = conversation?.sendMessageStream;
+      if (typeof send !== "function")
+        return;
+      const step = stepInlineRun(activeRunId);
+      const prompt = buildExecutorPrompt(activeRunId, run.workflow.name, step);
+      try {
+        const stream = await send([{ role: "user", content: prompt }]);
+        (async () => {
+          try {
+            for await (const _ of stream) {}
+          } catch {}
+        })();
+      } catch {}
     });
   }
   if (letta.capabilities?.events?.lifecycle) {

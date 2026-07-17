@@ -22,6 +22,9 @@ export default function activate(letta: LettaModContext): (() => void) {
   const disposers: Array<() => void> = [];
   let activeRunId: string | null = null;
   let panel: { update: () => void; close: () => void } | null = null;
+  let lastTurnWorkflowActivity = false;
+  let workflowContinuationCount = 0;
+  const MAX_WORKFLOW_CONTINUATIONS = 20;
 
   const TEMPLATE_DIR = path.resolve(import.meta.dirname, "../assets/templates");
 
@@ -187,6 +190,8 @@ export default function activate(letta: LettaModContext): (() => void) {
         }
         const run = createRun(workflow, normalizeInputs(inputs));
         activeRunId = run.runId;
+        workflowContinuationCount = 0;
+        lastTurnWorkflowActivity = false;
         updateRunRegistry(run);
         refreshPanel();
         const step = stepInlineRun(run.runId);
@@ -291,6 +296,8 @@ export default function activate(letta: LettaModContext): (() => void) {
         }
         const run = createRun(workflow);
         activeRunId = run.runId;
+        workflowContinuationCount = 0;
+        lastTurnWorkflowActivity = false;
         updateRunRegistry(run);
         refreshPanel();
         const step = stepInlineRun(run.runId);
@@ -326,7 +333,29 @@ export default function activate(letta: LettaModContext): (() => void) {
       } else if (isBarrierPhase(phase)) {
         recordBarrierComplete(activeRunId, currentPhaseId, output);
       }
+      lastTurnWorkflowActivity = true;
       refreshPanel();
+    });
+  }
+
+  if (letta.capabilities?.events?.turns) {
+    safeOn("turn_end", async (_event: LettaEvent, ctx: LettaEventHandlerContext) => {
+      if (!activeRunId) return;
+      const run = loadRun(activeRunId);
+      if (!run || run.status !== "running") return;
+      if (!lastTurnWorkflowActivity) return;
+      if (workflowContinuationCount >= MAX_WORKFLOW_CONTINUATIONS) return;
+      lastTurnWorkflowActivity = false;
+      workflowContinuationCount++;
+      const conversation = ctx.conversation;
+      const send = conversation?.sendMessageStream;
+      if (typeof send !== "function") return;
+      const step = stepInlineRun(activeRunId);
+      const prompt = buildExecutorPrompt(activeRunId, run.workflow.name, step);
+      try {
+        const stream = await send([{ role: "user", content: prompt }]);
+        void (async () => { try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ } })();
+      } catch { /* ignore */ }
     });
   }
 
