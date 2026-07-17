@@ -343,9 +343,11 @@ export default function activate(letta: LettaModContext): (() => void) {
   if (letta.capabilities?.events?.turns) {
     safeOn("turn_end", async (_event: LettaEvent, ctx: LettaEventHandlerContext) => {
       if (ctx.agent?.id) setRuntimeAgentId(ctx.agent.id);
-      if (!activeRunId) return;
-      if (ctx.conversation?.id !== activeRunConversationId) return;
-      const run = loadRun(activeRunId);
+      const currentRunId = activeRunId;
+      const currentConversationId = activeRunConversationId;
+      if (!currentRunId) return;
+      if (ctx.conversation?.id !== currentConversationId) return;
+      const run = loadRun(currentRunId);
       if (!run || run.status !== "running") return;
       if (!lastTurnWorkflowActivity) return;
       if (workflowContinuationCount >= MAX_WORKFLOW_CONTINUATIONS) return;
@@ -400,8 +402,8 @@ export default function activate(letta: LettaModContext): (() => void) {
       const conversation = ctx.conversation;
       const send = conversation?.sendMessageStream;
       if (typeof send !== "function") return;
-      const step = await stepInlineRun(activeRunId);
-      const prompt = buildExecutorPrompt(activeRunId, run.workflow.name, step);
+      const step = await stepInlineRun(currentRunId);
+      const prompt = buildExecutorPrompt(currentRunId, run.workflow.name, step);
       try {
         const stream = await send([{ role: "user", content: prompt }]);
         void (async () => { try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ } })();

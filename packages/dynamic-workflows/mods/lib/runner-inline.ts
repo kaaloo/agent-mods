@@ -51,114 +51,112 @@ export interface InlineWait {
 
 export type InlineStep = InlineDispatch | InlineComplete | InlineWait;
 
-export async function stepInlineRun(runId: string): Promise<InlineStep | null> {
-  const run = loadRun(runId);
-  if (!run) return null;
-  if (run.status === "completed") {
-    const result = readRunResult(runId) ?? "";
-    return { type: "complete", runId, result, resultPath: getRunResultDisplayPath(runId) };
-  }
-  if (run.status !== "running") {
+export function stepInlineRun(runId: string): Promise<InlineStep | null> {
+  return withRunMutex(async () => {
+    const run = loadRun(runId);
+    if (!run) return null;
+    if (run.status === "completed") {
+      const result = readRunResult(runId) ?? "";
+      return { type: "complete", runId, result, resultPath: getRunResultDisplayPath(runId) };
+    }
+    if (run.status !== "running") {
+      return null;
+    }
+
+    const currentPhaseId = run.currentPhaseId;
+    if (!currentPhaseId) {
+      return completeRun(run, "No phases remaining.");
+    }
+
+    const phase = phaseById(run.workflow, currentPhaseId);
+    if (!phase) {
+      run.status = "failed";
+      run.error = `Unknown phase "${currentPhaseId}".`;
+      persistRun(touchRun(run));
+      updateRunRegistry(run);
+      return null;
+    }
+
+    if (isFanOutPhase(phase)) {
+      return dispatchFanOut(run, phase);
+    }
+
+    if (isBarrierPhase(phase)) {
+      return dispatchBarrier(run, phase);
+    }
+
     return null;
-  }
-
-  const currentPhaseId = run.currentPhaseId;
-  if (!currentPhaseId) {
-    return completeRun(run, "No phases remaining.");
-  }
-
-  const phase = phaseById(run.workflow, currentPhaseId);
-  if (!phase) {
-    run.status = "failed";
-    run.error = `Unknown phase "${currentPhaseId}".`;
-    persistRun(touchRun(run));
-    updateRunRegistry(run);
-    return null;
-  }
-
-  if (isFanOutPhase(phase)) {
-    return dispatchFanOut(run, phase);
-  }
-
-  if (isBarrierPhase(phase)) {
-    return dispatchBarrier(run, phase);
-  }
-
-  return null;
+  });
 }
 
 export async function recordAgentComplete(runId: string, phaseId: string, agentId: string, output: string): Promise<RunState | null> {
-  return withRunMutex(async () => {
-    const run = loadRun(runId);
-    if (!run) return null;
-    const phase = phaseById(run.workflow, phaseId);
-    if (!phase || !isFanOutPhase(phase)) return null;
+  const run = loadRun(runId);
+  if (!run) return null;
+  const phase = phaseById(run.workflow, phaseId);
+  if (!phase || !isFanOutPhase(phase)) return null;
 
-    const agent = phase.agents.find((a) => a.id === agentId);
-    if (!agent) return null;
+  const agent = phase.agents.find((a) => a.id === agentId);
+  if (!agent) return null;
 
-    const fileOutput = readRunAgentOutput(runId, phaseId, agentId);
-    const finalOutput = fileOutput ?? output;
+  const fileOutput = readRunAgentOutput(runId, phaseId, agentId);
+  const finalOutput = fileOutput ?? output;
 
-    const existing = loadAgentResult(runId, phaseId, agentId);
-    const state: AgentRunState = existing
-      ? { ...existing, status: "completed", output: finalOutput, completedAt: new Date().toISOString() }
-      : {
-          phaseId,
-          agentId,
-          prompt: agent.prompt,
-          status: "completed",
-          output: finalOutput,
-          completedAt: new Date().toISOString(),
-        };
+  const existing = loadAgentResult(runId, phaseId, agentId);
+  const state: AgentRunState = existing
+    ? { ...existing, status: "completed", output: finalOutput, completedAt: new Date().toISOString() }
+    : {
+        phaseId,
+        agentId,
+        prompt: agent.prompt,
+        status: "completed",
+        output: finalOutput,
+        completedAt: new Date().toISOString(),
+      };
 
-    // Only write the file if the agent did not already write it. If the agent
-    // produced a detailed report, preserving that is more valuable than the
-    // short tool-return placeholder.
-    if (!fileOutput) {
-      saveAgentResult(runId, phaseId, state);
-    }
+  // Only write the file if the agent did not already write it. If the agent
+  // produced a detailed report, preserving that is more valuable than the
+  // short tool-return placeholder.
+  if (!fileOutput) {
+    saveAgentResult(runId, phaseId, state);
+  }
 
-    run.completedAgents = run.completedAgents.filter((a) => !(a.phaseId === phaseId && a.agentId === agentId));
-    run.completedAgents.push(state);
+  run.completedAgents = run.completedAgents.filter((a) => !(a.phaseId === phaseId && a.agentId === agentId));
+  run.completedAgents.push(state);
 
-    run.outputs[`${phaseId}.${agentId}`] = finalOutput;
+  run.outputs[`${phaseId}.${agentId}`] = finalOutput;
 
-    const completedAgentIds = new Set(run.completedAgents.map((a) => a.agentId));
-    if (isPhaseComplete(run.workflow, phaseId, completedAgentIds)) {
-      advancePhase(run);
-    }
+  const completedAgentIds = new Set(run.completedAgents.map((a) => a.agentId));
+  if (isPhaseComplete(run.workflow, phaseId, completedAgentIds)) {
+    advancePhase(run);
+  }
 
-    persistRun(touchRun(run));
-    updateRunRegistry(run);
-    return run;
-  });
+  persistRun(touchRun(run));
+  updateRunRegistry(run);
+  return run;
 }
 
 export async function recordBarrierComplete(runId: string, phaseId: string, output: string): Promise<RunState | null> {
-  return withRunMutex(async () => {
-    const run = loadRun(runId);
-    if (!run) return null;
-    const phase = phaseById(run.workflow, phaseId);
-    if (!phase || !isBarrierPhase(phase)) return null;
+  const run = loadRun(runId);
+  if (!run) return null;
+  const phase = phaseById(run.workflow, phaseId);
+  if (!phase || !isBarrierPhase(phase)) return null;
 
-    run.outputs[phaseId] = output;
-    advancePhase(run);
-    if (run.status === "completed") {
-      const complete = completeRun(run, output);
-      if (complete.error) {
-        run.status = "failed";
-        run.error = complete.error;
-        persistRun(touchRun(run));
-        updateRunRegistry(run);
-        return null;
-      }
-      return run;
+  run.outputs[phaseId] = output;
+  advancePhase(run);
+  if (run.status === "completed") {
+    const complete = completeRun(run, output);
+    if (complete.error) {
+      run.status = "failed";
+      run.error = complete.error;
+      persistRun(touchRun(run));
+      updateRunRegistry(run);
+      return null;
     }
-    persistRun(touchRun(run));
-    updateRunRegistry(run);
     return run;
-  });
+  }
+  persistRun(touchRun(run));
+  updateRunRegistry(run);
+  return run;
 }
 
 async function dispatchFanOut(run: RunState, phase: FanOutPhase): Promise<InlineStep | null> {

@@ -7355,13 +7355,9 @@ import { homedir } from "node:os";
 import path2 from "node:path";
 var runMutex = Promise.resolve();
 function withRunMutex(fn) {
-  const release = runMutex;
-  let resolveRelease = () => {};
-  const next = new Promise((resolve) => {
-    resolveRelease = resolve;
-  });
-  runMutex = release.then(() => next);
-  return Promise.resolve(release).then(() => fn()).finally(() => resolveRelease());
+  const promise = runMutex.then(() => fn());
+  runMutex = promise.then(() => {}, () => {});
+  return promise;
 }
 var MOD_ID = "flows";
 function getLettaHome() {
@@ -7746,99 +7742,97 @@ function progressBar(completed, total, width) {
 }
 
 // mods/lib/runner-inline.ts
-async function stepInlineRun(runId) {
+function stepInlineRun(runId) {
+  return withRunMutex(async () => {
+    const run = loadRun(runId);
+    if (!run)
+      return null;
+    if (run.status === "completed") {
+      const result = readRunResult(runId) ?? "";
+      return { type: "complete", runId, result, resultPath: getRunResultDisplayPath(runId) };
+    }
+    if (run.status !== "running") {
+      return null;
+    }
+    const currentPhaseId = run.currentPhaseId;
+    if (!currentPhaseId) {
+      return completeRun(run, "No phases remaining.");
+    }
+    const phase = phaseById(run.workflow, currentPhaseId);
+    if (!phase) {
+      run.status = "failed";
+      run.error = `Unknown phase "${currentPhaseId}".`;
+      persistRun(touchRun(run));
+      updateRunRegistry(run);
+      return null;
+    }
+    if (isFanOutPhase(phase)) {
+      return dispatchFanOut(run, phase);
+    }
+    if (isBarrierPhase(phase)) {
+      return dispatchBarrier(run, phase);
+    }
+    return null;
+  });
+}
+async function recordAgentComplete(runId, phaseId, agentId, output) {
   const run = loadRun(runId);
   if (!run)
     return null;
-  if (run.status === "completed") {
-    const result = readRunResult(runId) ?? "";
-    return { type: "complete", runId, result, resultPath: getRunResultDisplayPath(runId) };
-  }
-  if (run.status !== "running") {
+  const phase = phaseById(run.workflow, phaseId);
+  if (!phase || !isFanOutPhase(phase))
     return null;
-  }
-  const currentPhaseId = run.currentPhaseId;
-  if (!currentPhaseId) {
-    return completeRun(run, "No phases remaining.");
-  }
-  const phase = phaseById(run.workflow, currentPhaseId);
-  if (!phase) {
-    run.status = "failed";
-    run.error = `Unknown phase "${currentPhaseId}".`;
-    persistRun(touchRun(run));
-    updateRunRegistry(run);
+  const agent = phase.agents.find((a) => a.id === agentId);
+  if (!agent)
     return null;
+  const fileOutput = readRunAgentOutput(runId, phaseId, agentId);
+  const finalOutput = fileOutput ?? output;
+  const existing = loadAgentResult(runId, phaseId, agentId);
+  const state = existing ? { ...existing, status: "completed", output: finalOutput, completedAt: new Date().toISOString() } : {
+    phaseId,
+    agentId,
+    prompt: agent.prompt,
+    status: "completed",
+    output: finalOutput,
+    completedAt: new Date().toISOString()
+  };
+  if (!fileOutput) {
+    saveAgentResult(runId, phaseId, state);
   }
-  if (isFanOutPhase(phase)) {
-    return dispatchFanOut(run, phase);
+  run.completedAgents = run.completedAgents.filter((a) => !(a.phaseId === phaseId && a.agentId === agentId));
+  run.completedAgents.push(state);
+  run.outputs[`${phaseId}.${agentId}`] = finalOutput;
+  const completedAgentIds = new Set(run.completedAgents.map((a) => a.agentId));
+  if (isPhaseComplete(run.workflow, phaseId, completedAgentIds)) {
+    advancePhase(run);
   }
-  if (isBarrierPhase(phase)) {
-    return dispatchBarrier(run, phase);
-  }
-  return null;
-}
-async function recordAgentComplete(runId, phaseId, agentId, output) {
-  return withRunMutex(async () => {
-    const run = loadRun(runId);
-    if (!run)
-      return null;
-    const phase = phaseById(run.workflow, phaseId);
-    if (!phase || !isFanOutPhase(phase))
-      return null;
-    const agent = phase.agents.find((a) => a.id === agentId);
-    if (!agent)
-      return null;
-    const fileOutput = readRunAgentOutput(runId, phaseId, agentId);
-    const finalOutput = fileOutput ?? output;
-    const existing = loadAgentResult(runId, phaseId, agentId);
-    const state = existing ? { ...existing, status: "completed", output: finalOutput, completedAt: new Date().toISOString() } : {
-      phaseId,
-      agentId,
-      prompt: agent.prompt,
-      status: "completed",
-      output: finalOutput,
-      completedAt: new Date().toISOString()
-    };
-    if (!fileOutput) {
-      saveAgentResult(runId, phaseId, state);
-    }
-    run.completedAgents = run.completedAgents.filter((a) => !(a.phaseId === phaseId && a.agentId === agentId));
-    run.completedAgents.push(state);
-    run.outputs[`${phaseId}.${agentId}`] = finalOutput;
-    const completedAgentIds = new Set(run.completedAgents.map((a) => a.agentId));
-    if (isPhaseComplete(run.workflow, phaseId, completedAgentIds)) {
-      advancePhase(run);
-    }
-    persistRun(touchRun(run));
-    updateRunRegistry(run);
-    return run;
-  });
+  persistRun(touchRun(run));
+  updateRunRegistry(run);
+  return run;
 }
 async function recordBarrierComplete(runId, phaseId, output) {
-  return withRunMutex(async () => {
-    const run = loadRun(runId);
-    if (!run)
+  const run = loadRun(runId);
+  if (!run)
+    return null;
+  const phase = phaseById(run.workflow, phaseId);
+  if (!phase || !isBarrierPhase(phase))
+    return null;
+  run.outputs[phaseId] = output;
+  advancePhase(run);
+  if (run.status === "completed") {
+    const complete = completeRun(run, output);
+    if (complete.error) {
+      run.status = "failed";
+      run.error = complete.error;
+      persistRun(touchRun(run));
+      updateRunRegistry(run);
       return null;
-    const phase = phaseById(run.workflow, phaseId);
-    if (!phase || !isBarrierPhase(phase))
-      return null;
-    run.outputs[phaseId] = output;
-    advancePhase(run);
-    if (run.status === "completed") {
-      const complete = completeRun(run, output);
-      if (complete.error) {
-        run.status = "failed";
-        run.error = complete.error;
-        persistRun(touchRun(run));
-        updateRunRegistry(run);
-        return null;
-      }
-      return run;
     }
-    persistRun(touchRun(run));
-    updateRunRegistry(run);
     return run;
-  });
+  }
+  persistRun(touchRun(run));
+  updateRunRegistry(run);
+  return run;
 }
 async function dispatchFanOut(run, phase) {
   const completedIds = new Set(run.completedAgents.map((a) => a.agentId));
@@ -8371,11 +8365,13 @@ ${buildFlowHelp()}` };
     safeOn("turn_end", async (_event, ctx) => {
       if (ctx.agent?.id)
         setRuntimeAgentId(ctx.agent.id);
-      if (!activeRunId)
+      const currentRunId = activeRunId;
+      const currentConversationId = activeRunConversationId;
+      if (!currentRunId)
         return;
-      if (ctx.conversation?.id !== activeRunConversationId)
+      if (ctx.conversation?.id !== currentConversationId)
         return;
-      const run = loadRun(activeRunId);
+      const run = loadRun(currentRunId);
       if (!run || run.status !== "running")
         return;
       if (!lastTurnWorkflowActivity)
@@ -8443,8 +8439,8 @@ ${buildFlowHelp()}` };
       const send = conversation?.sendMessageStream;
       if (typeof send !== "function")
         return;
-      const step = await stepInlineRun(activeRunId);
-      const prompt = buildExecutorPrompt(activeRunId, run.workflow.name, step);
+      const step = await stepInlineRun(currentRunId);
+      const prompt = buildExecutorPrompt(currentRunId, run.workflow.name, step);
       try {
         const stream = await send([{ role: "user", content: prompt }]);
         (async () => {

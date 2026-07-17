@@ -9,13 +9,9 @@ import type { WorkflowDefinition } from "./schema.ts";
 let runMutex = Promise.resolve();
 
 export function withRunMutex<T>(fn: () => Promise<T> | T): Promise<T> {
-  const release = runMutex;
-  let resolveRelease: () => void = () => {};
-  const next = new Promise<void>((resolve) => {
-    resolveRelease = resolve;
-  });
-  runMutex = release.then(() => next);
-  return Promise.resolve(release).then(() => fn()).finally(() => resolveRelease());
+  const promise = runMutex.then(() => fn());
+  runMutex = promise.then(() => {}, () => {});
+  return promise;
 }
 
 export const MOD_ID = "flows";
