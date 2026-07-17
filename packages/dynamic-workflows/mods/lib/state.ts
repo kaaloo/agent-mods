@@ -230,6 +230,14 @@ export function getRunAgentOutputPath(runId: string, phaseId: string, agentId: s
   return getRunAgentPath(runId, phaseId, agentId);
 }
 
+export function getRunResultDisplayPath(runId: string): string {
+  const agentId = getAgentId();
+  if (agentId) {
+    return `~/.letta/agents/${agentId}/memory/${MOD_ID}/runs/${runId}/result.md`;
+  }
+  return `~/.letta/workflows/runs/${runId}/result.md`;
+}
+
 export function getRunResultPath(runId: string): string {
   return path.join(getRunDir(runId), "result.md");
 }

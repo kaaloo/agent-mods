@@ -7453,6 +7453,13 @@ function getRunAgentPath(runId, phaseId, agentId) {
 function getRunAgentOutputPath(runId, phaseId, agentId) {
   return getRunAgentPath(runId, phaseId, agentId);
 }
+function getRunResultDisplayPath(runId) {
+  const agentId = getAgentId();
+  if (agentId) {
+    return `~/.letta/agents/${agentId}/memory/${MOD_ID}/runs/${runId}/result.md`;
+  }
+  return `~/.letta/workflows/runs/${runId}/result.md`;
+}
 function getRunResultPath(runId) {
   return path.join(getRunDir(runId), "result.md");
 }
@@ -7645,7 +7652,7 @@ function stepInlineRun(runId) {
     return null;
   if (run.status === "completed") {
     const result = readRunResult(runId) ?? "";
-    return { type: "complete", runId, result, resultPath: `~/.letta/workflows/runs/${runId}/result.md` };
+    return { type: "complete", runId, result, resultPath: getRunResultDisplayPath(runId) };
   }
   if (run.status !== "running") {
     return null;
@@ -7824,7 +7831,7 @@ function completeRun(run, result) {
     type: "complete",
     runId: run.runId,
     result: finalResult,
-    resultPath: `~/.letta/workflows/runs/${run.runId}/result.md`
+    resultPath: getRunResultDisplayPath(run.runId)
   };
 }
 

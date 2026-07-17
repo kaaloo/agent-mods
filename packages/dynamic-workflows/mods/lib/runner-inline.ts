@@ -21,6 +21,7 @@ import {
   readRunAgentOutput,
   getRunAgentOutputPath,
   getRunResultPath,
+  getRunResultDisplayPath,
 } from "./state.ts";
 
 export interface InlineDispatch {
@@ -54,7 +55,7 @@ export function stepInlineRun(runId: string): InlineStep | null {
   if (!run) return null;
   if (run.status === "completed") {
     const result = readRunResult(runId) ?? "";
-    return { type: "complete", runId, result, resultPath: `~/.letta/workflows/runs/${runId}/result.md` };
+    return { type: "complete", runId, result, resultPath: getRunResultDisplayPath(runId) };
   }
   if (run.status !== "running") {
     return null;
@@ -257,6 +258,6 @@ function completeRun(run: RunState, result: string): InlineComplete {
     type: "complete",
     runId: run.runId,
     result: finalResult,
-    resultPath: `~/.letta/workflows/runs/${run.runId}/result.md`,
+    resultPath: getRunResultDisplayPath(run.runId),
   };
 }
