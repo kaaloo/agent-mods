@@ -936,8 +936,13 @@ function activate(letta) {
       if (!activeRunId || !event || typeof event !== "object")
         return;
       const toolName = event.toolName;
-      const result = event.result;
       if (typeof toolName !== "string" || toolName !== "Agent")
+        return;
+      if (event.status === "error")
+        return;
+      const raw = event.output ?? event.resultText ?? event.result;
+      const output = typeof raw === "string" ? raw : JSON.stringify(raw);
+      if (!output)
         return;
       const run = loadRun(activeRunId);
       if (!run)
@@ -948,7 +953,6 @@ function activate(letta) {
       const phase = run.workflow.phases.find((p) => p.id === currentPhaseId);
       if (!phase)
         return;
-      const output = typeof result === "string" ? result : JSON.stringify(result);
       if (isFanOutPhase(phase)) {
         const completedIds = new Set(run.completedAgents.map((a) => a.agentId));
         const pendingAgent = phase.agents.find((a) => !completedIds.has(a.id));
