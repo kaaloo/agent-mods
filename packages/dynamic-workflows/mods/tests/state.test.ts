@@ -98,8 +98,8 @@ describe("library", () => {
 });
 
 describe("runs", () => {
-  test("creates a run with checkpoint", () => {
-    const run = createRun(sampleWorkflow);
+  test("creates a run with checkpoint", async () => {
+    const run = await createRun(sampleWorkflow);
     expect(run.runId).toBeTruthy();
     expect(run.status).toBe("running");
     expect(run.currentPhaseId).toBe("scan");
@@ -109,8 +109,8 @@ describe("runs", () => {
     expect(getRunDir(run.runId)).toContain(tempDir);
   });
 
-  test("saves and loads agent result", () => {
-    const run = createRun(sampleWorkflow);
+  test("saves and loads agent result", async () => {
+    const run = await createRun(sampleWorkflow);
     saveAgentResult(run.runId, "scan", {
       phaseId: "scan",
       agentId: "a1",

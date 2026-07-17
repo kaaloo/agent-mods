@@ -7354,6 +7354,15 @@ import { existsSync, mkdirSync, readFileSync, renameSync, readdirSync, writeFile
 import { homedir } from "node:os";
 import path2 from "node:path";
 var runMutex = Promise.resolve();
+function withRunMutex(fn) {
+  const release = runMutex;
+  let resolveRelease = () => {};
+  const next = new Promise((resolve) => {
+    resolveRelease = resolve;
+  });
+  runMutex = release.then(() => next);
+  return Promise.resolve(release).then(() => fn()).finally(() => resolveRelease());
+}
 var MOD_ID = "flows";
 function getLettaHome() {
   return process.env.LETTA_HOME ?? path2.join(homedir(), ".letta");
@@ -7566,7 +7575,7 @@ function readRunAgentOutput(runId, phaseId, agentId) {
 function readRunResult(runId) {
   return readTextFile(getRunResultPath(runId));
 }
-function createRun(workflow, inputs = {}, conversationId) {
+async function createRun(workflow, inputs = {}, conversationId) {
   const runId = generateRunId();
   const firstPhase = workflow.phases[0] ?? null;
   const run = {
@@ -7577,14 +7586,18 @@ function createRun(workflow, inputs = {}, conversationId) {
     currentPhaseId: firstPhase?.id ?? null,
     completedPhaseIds: [],
     completedAgents: [],
+    startedAgentIds: [],
+    startedPhaseIds: [],
     outputs: {},
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     conversationId
   };
-  persistRun(run);
-  updateRunRegistry(run);
-  return run;
+  return withRunMutex(() => {
+    persistRun(run);
+    updateRunRegistry(run);
+    return run;
+  });
 }
 function persistRun(run) {
   const runDir = getRunDir(run.runId);
@@ -7624,6 +7637,8 @@ function loadRun(runId) {
       currentPhaseId: data.currentPhaseId ?? null,
       completedPhaseIds: Array.isArray(data.completedPhaseIds) ? data.completedPhaseIds : [],
       completedAgents: Array.isArray(data.completedAgents) ? data.completedAgents : [],
+      startedAgentIds: Array.isArray(data.startedAgentIds) ? data.startedAgentIds : [],
+      startedPhaseIds: Array.isArray(data.startedPhaseIds) ? data.startedPhaseIds : [],
       outputs: data.outputs ?? {},
       startedAt: String(data.startedAt ?? new Date().toISOString()),
       updatedAt: String(data.updatedAt ?? new Date().toISOString()),
@@ -7725,7 +7740,7 @@ function progressBar(completed, total, width) {
 }
 
 // mods/lib/runner-inline.ts
-function stepInlineRun(runId) {
+async function stepInlineRun(runId) {
   const run = loadRun(runId);
   if (!run)
     return null;
@@ -7756,68 +7771,101 @@ function stepInlineRun(runId) {
   }
   return null;
 }
-function recordAgentComplete(runId, phaseId, agentId, output) {
-  const run = loadRun(runId);
-  if (!run)
-    return null;
-  const phase = phaseById(run.workflow, phaseId);
-  if (!phase || !isFanOutPhase(phase))
-    return null;
-  const agent = phase.agents.find((a) => a.id === agentId);
-  if (!agent)
-    return null;
-  const fileOutput = readRunAgentOutput(runId, phaseId, agentId);
-  const finalOutput = fileOutput ?? output;
-  const existing = loadAgentResult(runId, phaseId, agentId);
-  const state = existing ? { ...existing, status: "completed", output: finalOutput, completedAt: new Date().toISOString() } : {
-    phaseId,
-    agentId,
-    prompt: agent.prompt,
-    status: "completed",
-    output: finalOutput,
-    completedAt: new Date().toISOString()
-  };
-  saveAgentResult(runId, phaseId, state);
-  run.completedAgents = run.completedAgents.filter((a) => !(a.phaseId === phaseId && a.agentId === agentId));
-  run.completedAgents.push(state);
-  run.outputs[`${phaseId}.${agentId}`] = finalOutput;
-  const completedAgentIds = new Set(run.completedAgents.map((a) => a.agentId));
-  if (isPhaseComplete(run.workflow, phaseId, completedAgentIds)) {
-    advancePhase(run);
-  }
-  persistRun(touchRun(run));
-  updateRunRegistry(run);
-  return run;
-}
-function recordBarrierComplete(runId, phaseId, output) {
-  const run = loadRun(runId);
-  if (!run)
-    return null;
-  const phase = phaseById(run.workflow, phaseId);
-  if (!phase || !isBarrierPhase(phase))
-    return null;
-  run.outputs[phaseId] = output;
-  advancePhase(run);
-  if (run.status === "completed") {
-    completeRun(run, output);
-    return run;
-  }
-  persistRun(touchRun(run));
-  updateRunRegistry(run);
-  return run;
-}
-function dispatchFanOut(run, phase) {
-  const completedIds = new Set(run.completedAgents.map((a) => a.agentId));
-  const pendingAgents = phase.agents.filter((a) => !completedIds.has(a.id));
-  if (pendingAgents.length === 0) {
-    advancePhase(run);
+async function recordAgentComplete(runId, phaseId, agentId, output) {
+  return withRunMutex(async () => {
+    const run = loadRun(runId);
+    if (!run)
+      return null;
+    const phase = phaseById(run.workflow, phaseId);
+    if (!phase || !isFanOutPhase(phase))
+      return null;
+    const agent = phase.agents.find((a) => a.id === agentId);
+    if (!agent)
+      return null;
+    const fileOutput = readRunAgentOutput(runId, phaseId, agentId);
+    const finalOutput = fileOutput ?? output;
+    const existing = loadAgentResult(runId, phaseId, agentId);
+    const state = existing ? { ...existing, status: "completed", output: finalOutput, completedAt: new Date().toISOString() } : {
+      phaseId,
+      agentId,
+      prompt: agent.prompt,
+      status: "completed",
+      output: finalOutput,
+      completedAt: new Date().toISOString()
+    };
+    if (!fileOutput) {
+      saveAgentResult(runId, phaseId, state);
+    }
+    run.completedAgents = run.completedAgents.filter((a) => !(a.phaseId === phaseId && a.agentId === agentId));
+    run.completedAgents.push(state);
+    run.outputs[`${phaseId}.${agentId}`] = finalOutput;
+    const completedAgentIds = new Set(run.completedAgents.map((a) => a.agentId));
+    if (isPhaseComplete(run.workflow, phaseId, completedAgentIds)) {
+      advancePhase(run);
+    }
     persistRun(touchRun(run));
     updateRunRegistry(run);
-    return stepInlineRun(run.runId);
+    return run;
+  });
+}
+async function recordBarrierComplete(runId, phaseId, output) {
+  return withRunMutex(async () => {
+    const run = loadRun(runId);
+    if (!run)
+      return null;
+    const phase = phaseById(run.workflow, phaseId);
+    if (!phase || !isBarrierPhase(phase))
+      return null;
+    run.outputs[phaseId] = output;
+    advancePhase(run);
+    if (run.status === "completed") {
+      const complete = completeRun(run, output);
+      if (complete.error) {
+        run.status = "failed";
+        run.error = complete.error;
+        persistRun(touchRun(run));
+        updateRunRegistry(run);
+        return null;
+      }
+      return run;
+    }
+    persistRun(touchRun(run));
+    updateRunRegistry(run);
+    return run;
+  });
+}
+async function dispatchFanOut(run, phase) {
+  const completedIds = new Set(run.completedAgents.map((a) => a.agentId));
+  const pendingAgents = phase.agents.filter((a) => !completedIds.has(a.id) && !run.startedAgentIds.includes(a.id));
+  if (pendingAgents.length === 0) {
+    const runningAgents = phase.agents.filter((a) => run.startedAgentIds.includes(a.id) && !completedIds.has(a.id));
+    for (const a of runningAgents) {
+      const fileOutput = readRunAgentOutput(run.runId, phase.id, a.id);
+      if (fileOutput && fileOutput.length > 0) {
+        await recordAgentComplete(run.runId, phase.id, a.id, fileOutput);
+      }
+    }
+    const refreshed = loadRun(run.runId);
+    if (refreshed && isPhaseComplete(refreshed.workflow, phase.id, new Set(refreshed.completedAgents.map((a) => a.agentId)))) {
+      advancePhase(refreshed);
+      persistRun(touchRun(refreshed));
+      updateRunRegistry(refreshed);
+      return stepInlineRun(refreshed.runId);
+    }
+    const remaining2 = runningAgents.length;
+    const done = phase.agents.length - remaining2;
+    return { type: "wait", runId: run.runId, phaseId: phase.id, pending: remaining2, completed: done };
   }
   const concurrency = getPhaseMaxConcurrent(phase, run.workflow.budgets);
   const dispatchNow = pendingAgents.slice(0, concurrency);
-  const remaining = pendingAgents.length - dispatchNow.length;
+  const remaining = phase.agents.length - completedIds.size - dispatchNow.length;
+  for (const a of dispatchNow) {
+    if (!run.startedAgentIds.includes(a.id)) {
+      run.startedAgentIds.push(a.id);
+    }
+  }
+  persistRun(touchRun(run));
+  updateRunRegistry(run);
   return {
     type: "dispatch",
     runId: run.runId,
@@ -7833,7 +7881,7 @@ When you are done, write your complete findings to ${getRunAgentOutputPath(run.r
     }))
   };
 }
-function dispatchBarrier(run, phase) {
+async function dispatchBarrier(run, phase) {
   const inputs = phase.depends_on.map((depId) => {
     const dep = phaseById(run.workflow, depId);
     if (!dep)
@@ -7869,6 +7917,21 @@ ${fileOutput}` : String(run.outputs[`${depId}.${agent.id}`] ?? "");
       completed: 0
     };
   }
+  if (run.startedPhaseIds.includes(phase.id)) {
+    const fileResult = readRunResult(run.runId);
+    if (fileResult && fileResult.length > 0) {
+      await recordBarrierComplete(run.runId, phase.id, fileResult);
+      const refreshed = loadRun(run.runId);
+      if (refreshed?.status === "completed") {
+        return { type: "complete", runId: run.runId, result: fileResult, resultPath: getRunResultDisplayPath(run.runId) };
+      }
+      return stepInlineRun(run.runId);
+    }
+    return { type: "wait", runId: run.runId, phaseId: phase.id, pending: 1, completed: 0 };
+  }
+  run.startedPhaseIds.push(phase.id);
+  persistRun(touchRun(run));
+  updateRunRegistry(run);
   const resultPath = getRunResultPath(run.runId);
   const synthesizedPrompt = `${phase.prompt}
 
@@ -7905,7 +7968,17 @@ function completeRun(run, result) {
   const finalResult = fileResult ?? result;
   persistRun(touchRun(run));
   updateRunRegistry(run);
-  saveRunResult(run.runId, finalResult);
+  try {
+    saveRunResult(run.runId, finalResult);
+  } catch (err) {
+    return {
+      type: "complete",
+      runId: run.runId,
+      result: finalResult,
+      resultPath: getRunResultDisplayPath(run.runId),
+      error: String(err)
+    };
+  }
   return {
     type: "complete",
     runId: run.runId,
@@ -8126,7 +8199,7 @@ function activate(letta) {
       },
       approvalPolicy: "alwaysAsk",
       parallelSafe: false,
-      run(ctx) {
+      async run(ctx) {
         const { name, inputs } = ctx.args || {};
         if (!isNonEmptyString(name)) {
           return { status: "error", content: "name is required" };
@@ -8136,14 +8209,13 @@ function activate(letta) {
         if (!workflow) {
           return { status: "error", content: `Workflow "${name}" not found.` };
         }
-        const run = createRun(workflow, normalizeInputs(inputs), ctx.conversation?.id);
+        const run = await createRun(workflow, normalizeInputs(inputs), ctx.conversation?.id);
         activeRunId = run.runId;
         activeRunConversationId = ctx.conversation?.id;
         workflowContinuationCount = 0;
         lastTurnWorkflowActivity = false;
-        updateRunRegistry(run);
         refreshPanel();
-        const step = stepInlineRun(run.runId);
+        const step = await stepInlineRun(run.runId);
         return { status: "success", runId: run.runId, step };
       }
     }));
@@ -8157,7 +8229,7 @@ function activate(letta) {
       },
       approvalPolicy: "auto",
       parallelSafe: true,
-      run(ctx) {
+      async run(ctx) {
         const { run_id } = ctx.args || {};
         if (!isNonEmptyString(run_id)) {
           return { status: "error", content: "run_id is required" };
@@ -8166,7 +8238,7 @@ function activate(letta) {
         if (!run) {
           return { status: "error", content: `Run "${run_id}" not found.` };
         }
-        const step = stepInlineRun(run_id);
+        const step = await stepInlineRun(run_id);
         return { status: "success", run, step };
       }
     }));
@@ -8177,7 +8249,7 @@ function activate(letta) {
       description: "Dynamic Workflows: /flow [panel|new|save|list|run|delete|help] — manage multi-agent workflows.",
       args: "[subcommand] [args...]",
       runWhenBusy: true,
-      run: (ctx) => {
+      run: async (ctx) => {
         const raw = normalizeCommandArgs(ctx.args);
         const tokens = raw ? raw.trim().split(/\s+/) : [];
         const subcommand = tokens[0] ?? "panel";
@@ -8234,14 +8306,13 @@ Run a saved workflow or bundled template.` };
             if (!workflow) {
               return { type: "output", output: `Workflow "${rest}" not found.` };
             }
-            const run = createRun(workflow, {}, ctx.conversation?.id);
+            const run = await createRun(workflow, {}, ctx.conversation?.id);
             activeRunId = run.runId;
             activeRunConversationId = ctx.conversation?.id;
             workflowContinuationCount = 0;
             lastTurnWorkflowActivity = false;
-            updateRunRegistry(run);
             refreshPanel();
-            const step = stepInlineRun(run.runId);
+            const step = await stepInlineRun(run.runId);
             return { type: "prompt", content: buildExecutorPrompt(run.runId, workflow.name, step), systemReminder: true };
           }
           case "delete":
@@ -8278,28 +8349,6 @@ ${buildFlowHelp()}` };
         return;
       if (event.status === "error")
         return;
-      const raw = event.output ?? event.resultText ?? event.result;
-      const output = typeof raw === "string" ? raw : JSON.stringify(raw);
-      if (!output)
-        return;
-      const run = loadRun(activeRunId);
-      if (!run)
-        return;
-      const currentPhaseId = run.currentPhaseId;
-      if (!currentPhaseId)
-        return;
-      const phase = run.workflow.phases.find((p) => p.id === currentPhaseId);
-      if (!phase)
-        return;
-      if (isFanOutPhase(phase)) {
-        const completedIds = new Set(run.completedAgents.map((a) => a.agentId));
-        const pendingAgent = phase.agents.find((a) => !completedIds.has(a.id));
-        if (!pendingAgent)
-          return;
-        recordAgentComplete(activeRunId, currentPhaseId, pendingAgent.id, output);
-      } else if (isBarrierPhase(phase)) {
-        recordBarrierComplete(activeRunId, currentPhaseId, output);
-      }
       lastTurnWorkflowActivity = true;
       refreshPanel();
     });
@@ -8347,13 +8396,38 @@ ${buildFlowHelp()}` };
           return;
         }
       }
+      if (currentPhase && isFanOutPhase(currentPhase)) {
+        const ready = currentPhase.agents.every((a) => {
+          if (!run.startedAgentIds.includes(a.id))
+            return false;
+          const text = readRunAgentOutput(run.runId, currentPhase.id, a.id);
+          return text && text.length > 0;
+        });
+        if (!ready) {
+          lastTurnWorkflowActivity = false;
+          workflowContinuationCount++;
+          const conversation2 = ctx.conversation;
+          const send2 = conversation2?.sendMessageStream;
+          if (typeof send2 !== "function")
+            return;
+          try {
+            const stream = await send2([{ role: "user", content: `The agents for phase "${currentPhase.id}" are still writing their reports. Call flow_status({ run_id: "${run.runId}" }) to check again.` }]);
+            (async () => {
+              try {
+                for await (const _ of stream) {}
+              } catch {}
+            })();
+          } catch {}
+          return;
+        }
+      }
       lastTurnWorkflowActivity = false;
       workflowContinuationCount++;
       const conversation = ctx.conversation;
       const send = conversation?.sendMessageStream;
       if (typeof send !== "function")
         return;
-      const step = stepInlineRun(activeRunId);
+      const step = await stepInlineRun(activeRunId);
       const prompt = buildExecutorPrompt(activeRunId, run.workflow.name, step);
       try {
         const stream = await send([{ role: "user", content: prompt }]);

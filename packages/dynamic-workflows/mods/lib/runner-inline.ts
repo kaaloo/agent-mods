@@ -10,6 +10,7 @@ import {
   getPhaseMaxConcurrent,
 } from "./schema.ts";
 import {
+  withRunMutex,
   loadRun,
   loadAgentResult,
   saveAgentResult,
@@ -50,7 +51,7 @@ export interface InlineWait {
 
 export type InlineStep = InlineDispatch | InlineComplete | InlineWait;
 
-export function stepInlineRun(runId: string): InlineStep | null {
+export async function stepInlineRun(runId: string): Promise<InlineStep | null> {
   const run = loadRun(runId);
   if (!run) return null;
   if (run.status === "completed") {
@@ -86,79 +87,115 @@ export function stepInlineRun(runId: string): InlineStep | null {
   return null;
 }
 
-export function recordAgentComplete(runId: string, phaseId: string, agentId: string, output: string): RunState | null {
-  const run = loadRun(runId);
-  if (!run) return null;
-  const phase = phaseById(run.workflow, phaseId);
-  if (!phase || !isFanOutPhase(phase)) return null;
+export async function recordAgentComplete(runId: string, phaseId: string, agentId: string, output: string): Promise<RunState | null> {
+  return withRunMutex(async () => {
+    const run = loadRun(runId);
+    if (!run) return null;
+    const phase = phaseById(run.workflow, phaseId);
+    if (!phase || !isFanOutPhase(phase)) return null;
 
-  const agent = phase.agents.find((a) => a.id === agentId);
-  if (!agent) return null;
+    const agent = phase.agents.find((a) => a.id === agentId);
+    if (!agent) return null;
 
-  // The Agent tool may return a placeholder if the subagent was backgrounded.
-  // If the subagent was instructed to write a detailed report, prefer that file.
-  const fileOutput = readRunAgentOutput(runId, phaseId, agentId);
-  const finalOutput = fileOutput ?? output;
+    const fileOutput = readRunAgentOutput(runId, phaseId, agentId);
+    const finalOutput = fileOutput ?? output;
 
-  const existing = loadAgentResult(runId, phaseId, agentId);
-  const state: AgentRunState = existing
-    ? { ...existing, status: "completed", output: finalOutput, completedAt: new Date().toISOString() }
-    : {
-        phaseId,
-        agentId,
-        prompt: agent.prompt,
-        status: "completed",
-        output: finalOutput,
-        completedAt: new Date().toISOString(),
-      };
-  saveAgentResult(runId, phaseId, state);
+    const existing = loadAgentResult(runId, phaseId, agentId);
+    const state: AgentRunState = existing
+      ? { ...existing, status: "completed", output: finalOutput, completedAt: new Date().toISOString() }
+      : {
+          phaseId,
+          agentId,
+          prompt: agent.prompt,
+          status: "completed",
+          output: finalOutput,
+          completedAt: new Date().toISOString(),
+        };
 
-  run.completedAgents = run.completedAgents.filter((a) => !(a.phaseId === phaseId && a.agentId === agentId));
-  run.completedAgents.push(state);
+    // Only write the file if the agent did not already write it. If the agent
+    // produced a detailed report, preserving that is more valuable than the
+    // short tool-return placeholder.
+    if (!fileOutput) {
+      saveAgentResult(runId, phaseId, state);
+    }
 
-  run.outputs[`${phaseId}.${agentId}`] = finalOutput;
+    run.completedAgents = run.completedAgents.filter((a) => !(a.phaseId === phaseId && a.agentId === agentId));
+    run.completedAgents.push(state);
 
-  const completedAgentIds = new Set(run.completedAgents.map((a) => a.agentId));
-  if (isPhaseComplete(run.workflow, phaseId, completedAgentIds)) {
-    advancePhase(run);
-  }
+    run.outputs[`${phaseId}.${agentId}`] = finalOutput;
 
-  persistRun(touchRun(run));
-  updateRunRegistry(run);
-  return run;
-}
+    const completedAgentIds = new Set(run.completedAgents.map((a) => a.agentId));
+    if (isPhaseComplete(run.workflow, phaseId, completedAgentIds)) {
+      advancePhase(run);
+    }
 
-export function recordBarrierComplete(runId: string, phaseId: string, output: string): RunState | null {
-  const run = loadRun(runId);
-  if (!run) return null;
-  const phase = phaseById(run.workflow, phaseId);
-  if (!phase || !isBarrierPhase(phase)) return null;
-
-  run.outputs[phaseId] = output;
-  advancePhase(run);
-  if (run.status === "completed") {
-    completeRun(run, output);
-    return run;
-  }
-  persistRun(touchRun(run));
-  updateRunRegistry(run);
-  return run;
-}
-
-function dispatchFanOut(run: RunState, phase: FanOutPhase): InlineDispatch | InlineWait {
-  const completedIds = new Set(run.completedAgents.map((a) => a.agentId));
-  const pendingAgents = phase.agents.filter((a) => !completedIds.has(a.id));
-
-  if (pendingAgents.length === 0) {
-    advancePhase(run);
     persistRun(touchRun(run));
     updateRunRegistry(run);
-    return stepInlineRun(run.runId) as InlineDispatch | InlineWait;
+    return run;
+  });
+}
+
+export async function recordBarrierComplete(runId: string, phaseId: string, output: string): Promise<RunState | null> {
+  return withRunMutex(async () => {
+    const run = loadRun(runId);
+    if (!run) return null;
+    const phase = phaseById(run.workflow, phaseId);
+    if (!phase || !isBarrierPhase(phase)) return null;
+
+    run.outputs[phaseId] = output;
+    advancePhase(run);
+    if (run.status === "completed") {
+      const complete = completeRun(run, output);
+      if (complete.error) {
+        run.status = "failed";
+        run.error = complete.error;
+        persistRun(touchRun(run));
+        updateRunRegistry(run);
+        return null;
+      }
+      return run;
+    }
+    persistRun(touchRun(run));
+    updateRunRegistry(run);
+    return run;
+  });
+}
+
+async function dispatchFanOut(run: RunState, phase: FanOutPhase): Promise<InlineStep | null> {
+  const completedIds = new Set(run.completedAgents.map((a) => a.agentId));
+  const pendingAgents = phase.agents.filter((a) => !completedIds.has(a.id) && !run.startedAgentIds.includes(a.id));
+
+  if (pendingAgents.length === 0) {
+    const runningAgents = phase.agents.filter((a) => run.startedAgentIds.includes(a.id) && !completedIds.has(a.id));
+    for (const a of runningAgents) {
+      const fileOutput = readRunAgentOutput(run.runId, phase.id, a.id);
+      if (fileOutput && fileOutput.length > 0) {
+        await recordAgentComplete(run.runId, phase.id, a.id, fileOutput);
+      }
+    }
+    const refreshed = loadRun(run.runId);
+    if (refreshed && isPhaseComplete(refreshed.workflow, phase.id, new Set(refreshed.completedAgents.map((a) => a.agentId)))) {
+      advancePhase(refreshed);
+      persistRun(touchRun(refreshed));
+      updateRunRegistry(refreshed);
+      return stepInlineRun(refreshed.runId);
+    }
+    const remaining = runningAgents.length;
+    const done = phase.agents.length - remaining;
+    return { type: "wait", runId: run.runId, phaseId: phase.id, pending: remaining, completed: done };
   }
 
   const concurrency = getPhaseMaxConcurrent(phase, run.workflow.budgets);
   const dispatchNow = pendingAgents.slice(0, concurrency);
-  const remaining = pendingAgents.length - dispatchNow.length;
+  const remaining = phase.agents.length - completedIds.size - dispatchNow.length;
+
+  for (const a of dispatchNow) {
+    if (!run.startedAgentIds.includes(a.id)) {
+      run.startedAgentIds.push(a.id);
+    }
+  }
+  persistRun(touchRun(run));
+  updateRunRegistry(run);
 
   return {
     type: "dispatch",
@@ -174,7 +211,7 @@ function dispatchFanOut(run: RunState, phase: FanOutPhase): InlineDispatch | Inl
   };
 }
 
-function dispatchBarrier(run: RunState, phase: BarrierPhase): InlineDispatch | InlineWait {
+async function dispatchBarrier(run: RunState, phase: BarrierPhase): Promise<InlineStep | null> {
   const inputs = phase.depends_on.map((depId) => {
     const dep = phaseById(run.workflow, depId);
     if (!dep) return { phaseId: depId, outputs: {} };
@@ -213,6 +250,23 @@ function dispatchBarrier(run: RunState, phase: BarrierPhase): InlineDispatch | I
     };
   }
 
+  if (run.startedPhaseIds.includes(phase.id)) {
+    const fileResult = readRunResult(run.runId);
+    if (fileResult && fileResult.length > 0) {
+      await recordBarrierComplete(run.runId, phase.id, fileResult);
+      const refreshed = loadRun(run.runId);
+      if (refreshed?.status === "completed") {
+        return { type: "complete", runId: run.runId, result: fileResult, resultPath: getRunResultDisplayPath(run.runId) };
+      }
+      return stepInlineRun(run.runId);
+    }
+    return { type: "wait", runId: run.runId, phaseId: phase.id, pending: 1, completed: 0 };
+  }
+
+  run.startedPhaseIds.push(phase.id);
+  persistRun(touchRun(run));
+  updateRunRegistry(run);
+
   const resultPath = getRunResultPath(run.runId);
   const synthesizedPrompt = `${phase.prompt}
 
@@ -245,7 +299,7 @@ function advancePhase(run: RunState): void {
   }
 }
 
-function completeRun(run: RunState, result: string): InlineComplete {
+function completeRun(run: RunState, result: string): InlineComplete & { error?: string } {
   run.status = "completed";
   run.currentPhaseId = null;
   // If a barrier agent was instructed to write result.md, prefer that file.
@@ -253,7 +307,17 @@ function completeRun(run: RunState, result: string): InlineComplete {
   const finalResult = fileResult ?? result;
   persistRun(touchRun(run));
   updateRunRegistry(run);
-  saveRunResult(run.runId, finalResult);
+  try {
+    saveRunResult(run.runId, finalResult);
+  } catch (err) {
+    return {
+      type: "complete",
+      runId: run.runId,
+      result: finalResult,
+      resultPath: getRunResultDisplayPath(run.runId),
+      error: String(err),
+    };
+  }
   return {
     type: "complete",
     runId: run.runId,

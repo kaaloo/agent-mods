@@ -10,10 +10,9 @@ import {
   saveLibraryEntry,
   deleteLibraryEntry,
   listLibrary,
-  updateRunRegistry,
   readRunAgentOutput,
 } from "./lib/state.ts";
-import { stepInlineRun, recordAgentComplete, recordBarrierComplete } from "./lib/runner-inline.ts";
+import { stepInlineRun, type InlineStep } from "./lib/runner-inline.ts";
 import { listTemplates, loadTemplate } from "./lib/templates.ts";
 import { isNonEmptyString } from "./lib/utils.ts";
 
@@ -184,7 +183,7 @@ export default function activate(letta: LettaModContext): (() => void) {
       },
       approvalPolicy: "alwaysAsk",
       parallelSafe: false,
-      run(ctx: LettaToolContext) {
+      async run(ctx: LettaToolContext) {
         const { name, inputs } = ctx.args || {};
         if (!isNonEmptyString(name)) {
           return { status: "error", content: "name is required" };
@@ -194,14 +193,13 @@ export default function activate(letta: LettaModContext): (() => void) {
         if (!workflow) {
           return { status: "error", content: `Workflow "${name}" not found.` };
         }
-        const run = createRun(workflow, normalizeInputs(inputs), ctx.conversation?.id);
+        const run = await createRun(workflow, normalizeInputs(inputs), ctx.conversation?.id);
         activeRunId = run.runId;
         activeRunConversationId = ctx.conversation?.id;
         workflowContinuationCount = 0;
         lastTurnWorkflowActivity = false;
-        updateRunRegistry(run);
         refreshPanel();
-        const step = stepInlineRun(run.runId);
+        const step = await stepInlineRun(run.runId);
         return { status: "success", runId: run.runId, step };
       },
     }));
@@ -216,7 +214,7 @@ export default function activate(letta: LettaModContext): (() => void) {
       },
       approvalPolicy: "auto",
       parallelSafe: true,
-      run(ctx: LettaToolContext) {
+      async run(ctx: LettaToolContext) {
         const { run_id } = ctx.args || {};
         if (!isNonEmptyString(run_id)) {
           return { status: "error", content: "run_id is required" };
@@ -225,7 +223,7 @@ export default function activate(letta: LettaModContext): (() => void) {
         if (!run) {
           return { status: "error", content: `Run "${run_id}" not found.` };
         }
-        const step = stepInlineRun(run_id);
+        const step = await stepInlineRun(run_id);
         return { status: "success", run, step };
       },
     }));
@@ -239,7 +237,7 @@ export default function activate(letta: LettaModContext): (() => void) {
       description: "Dynamic Workflows: /flow [panel|new|save|list|run|delete|help] — manage multi-agent workflows.",
       args: "[subcommand] [args...]",
       runWhenBusy: true,
-      run: (ctx: LettaCommandContext) => {
+      run: async (ctx: LettaCommandContext) => {
         const raw = normalizeCommandArgs(ctx.args);
         const tokens = raw ? raw.trim().split(/\s+/) : [];
         const subcommand = tokens[0] ?? "panel";
@@ -290,14 +288,13 @@ export default function activate(letta: LettaModContext): (() => void) {
             if (!workflow) {
               return { type: "output", output: `Workflow "${rest}" not found.` };
             }
-            const run = createRun(workflow, {}, ctx.conversation?.id);
+            const run = await createRun(workflow, {}, ctx.conversation?.id);
             activeRunId = run.runId;
             activeRunConversationId = ctx.conversation?.id;
             workflowContinuationCount = 0;
             lastTurnWorkflowActivity = false;
-            updateRunRegistry(run);
             refreshPanel();
-            const step = stepInlineRun(run.runId);
+            const step = await stepInlineRun(run.runId);
             return { type: "prompt", content: buildExecutorPrompt(run.runId, workflow.name, step), systemReminder: true };
           }
           case "delete":
@@ -330,25 +327,9 @@ export default function activate(letta: LettaModContext): (() => void) {
       if (toolName !== "Agent") return;
       if (event.status === "error") return;
 
-      const raw = event.output ?? event.resultText ?? event.result;
-      const output = typeof raw === "string" ? raw : JSON.stringify(raw);
-      if (!output) return;
-
-      const run = loadRun(activeRunId);
-      if (!run) return;
-      const currentPhaseId = run.currentPhaseId;
-      if (!currentPhaseId) return;
-      const phase = run.workflow.phases.find((p) => p.id === currentPhaseId);
-      if (!phase) return;
-
-      if (isFanOutPhase(phase)) {
-        const completedIds = new Set(run.completedAgents.map((a) => a.agentId));
-        const pendingAgent = phase.agents.find((a) => !completedIds.has(a.id));
-        if (!pendingAgent) return;
-        recordAgentComplete(activeRunId, currentPhaseId, pendingAgent.id, output);
-      } else if (isBarrierPhase(phase)) {
-        recordBarrierComplete(activeRunId, currentPhaseId, output);
-      }
+      // The actual subagent output is written to the run's agent output file by
+      // the subagent itself. Completion is detected when flow_status polls the
+      // file, so we only mark activity here to trigger a continuation prompt.
       lastTurnWorkflowActivity = true;
       refreshPanel();
     });
@@ -388,12 +369,32 @@ export default function activate(letta: LettaModContext): (() => void) {
         }
       }
 
+      if (currentPhase && isFanOutPhase(currentPhase)) {
+        const ready = currentPhase.agents.every((a) => {
+          if (!run.startedAgentIds.includes(a.id)) return false;
+          const text = readRunAgentOutput(run.runId, currentPhase.id, a.id);
+          return text && text.length > 0;
+        });
+        if (!ready) {
+          lastTurnWorkflowActivity = false;
+          workflowContinuationCount++;
+          const conversation = ctx.conversation;
+          const send = conversation?.sendMessageStream;
+          if (typeof send !== "function") return;
+          try {
+            const stream = await send([{ role: "user", content: `The agents for phase "${currentPhase.id}" are still writing their reports. Call flow_status({ run_id: "${run.runId}" }) to check again.` }]);
+            void (async () => { try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ } })();
+          } catch { /* ignore */ }
+          return;
+        }
+      }
+
       lastTurnWorkflowActivity = false;
       workflowContinuationCount++;
       const conversation = ctx.conversation;
       const send = conversation?.sendMessageStream;
       if (typeof send !== "function") return;
-      const step = stepInlineRun(activeRunId);
+      const step = await stepInlineRun(activeRunId);
       const prompt = buildExecutorPrompt(activeRunId, run.workflow.name, step);
       try {
         const stream = await send([{ role: "user", content: prompt }]);
@@ -439,7 +440,7 @@ function normalizeInputs(value: unknown): Record<string, string> {
   return out;
 }
 
-function formatStep(step: ReturnType<typeof stepInlineRun>): string {
+function formatStep(step: InlineStep | null): string {
   if (!step) return "No step available.";
   if (step.type === "complete") {
     const resultPreview = step.result
@@ -491,7 +492,7 @@ budgets:
 Phase types: fan-out (parallel agents) and barrier (single agent after dependencies).`;
 }
 
-function buildExecutorPrompt(runId: string, workflowName: string, step: ReturnType<typeof stepInlineRun>): string {
+function buildExecutorPrompt(runId: string, workflowName: string, step: InlineStep | null): string {
   const base = `Workflow "${workflowName}" started. Run ID: ${runId}.\n\nYour job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the flow_status tool and the Agent tool.\n\nRules:\n1. After each batch of Agent tool calls returns, call flow_status({ run_id: "${runId}" }) to get the next step.\n2. If step.type is "complete", stop and return a concise summary of the result shown below.\n3. If step.type is "dispatch", issue the described parallel Agent tool calls with the exact prompts provided.\n4. If step.type is "wait", call flow_status again.\n5. Use the general-purpose subagent type for all Agent calls.\n\nCurrent step:`;
   return `${base}\n\n${formatStep(step)}`;
 }

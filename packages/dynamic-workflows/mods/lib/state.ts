@@ -92,6 +92,8 @@ export interface RunState {
   currentPhaseId: string | null;
   completedPhaseIds: string[];
   completedAgents: AgentRunState[];
+  startedAgentIds: string[];
+  startedPhaseIds: string[];
   outputs: Record<string, string | Record<string, string>>;
   startedAt: string;
   updatedAt: string;
@@ -289,7 +291,7 @@ export function readRunResult(runId: string): string | null {
   return readTextFile(getRunResultPath(runId));
 }
 
-export function createRun(workflow: WorkflowDefinition, inputs: Record<string, string> = {}, conversationId?: string): RunState {
+export async function createRun(workflow: WorkflowDefinition, inputs: Record<string, string> = {}, conversationId?: string): Promise<RunState> {
   const runId = generateRunId();
   const firstPhase = workflow.phases[0] ?? null;
   const run: RunState = {
@@ -300,14 +302,18 @@ export function createRun(workflow: WorkflowDefinition, inputs: Record<string, s
     currentPhaseId: firstPhase?.id ?? null,
     completedPhaseIds: [],
     completedAgents: [],
+    startedAgentIds: [],
+    startedPhaseIds: [],
     outputs: {},
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     conversationId,
   };
-  persistRun(run);
-  updateRunRegistry(run);
-  return run;
+  return withRunMutex(() => {
+    persistRun(run);
+    updateRunRegistry(run);
+    return run;
+  });
 }
 
 export function persistRun(run: RunState): void {
@@ -345,6 +351,8 @@ export function loadRun(runId: string): RunState | null {
       currentPhaseId: (data.currentPhaseId as string | null) ?? null,
       completedPhaseIds: Array.isArray(data.completedPhaseIds) ? (data.completedPhaseIds as string[]) : [],
       completedAgents: Array.isArray(data.completedAgents) ? (data.completedAgents as AgentRunState[]) : [],
+      startedAgentIds: Array.isArray(data.startedAgentIds) ? (data.startedAgentIds as string[]) : [],
+      startedPhaseIds: Array.isArray(data.startedPhaseIds) ? (data.startedPhaseIds as string[]) : [],
       outputs: (data.outputs as Record<string, string | Record<string, string>>) ?? {},
       startedAt: String(data.startedAt ?? new Date().toISOString()),
       updatedAt: String(data.updatedAt ?? new Date().toISOString()),
