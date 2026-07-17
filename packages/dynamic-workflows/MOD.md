@@ -45,7 +45,11 @@ Lists saved workflows and bundled templates.
 
 ### `/flow-run <name>`
 
-Starts an inline run of the named workflow. In practice, the agent should call the `workflow_run` tool.
+Starts a visible run in the current conversation. The model will dispatch the workflow's subagents as `Agent` tool calls (so they appear in the UI), then call `workflow_status` to advance phases until completion.
+
+### `/flow-run-fork <name>`
+
+Starts a run in a hidden forked conversation. No subagent cards appear in the current UI, but the workflow executes in the background.
 
 ## Tools
 

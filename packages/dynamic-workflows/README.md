@@ -41,10 +41,16 @@ Save it:
 /flow-save bug-sweep
 ```
 
-Run it:
+Run it (dispatches visible subagents in the current conversation):
 
 ```text
 /flow-run bug-sweep
+```
+
+Run it in a background fork (hidden, does not show subagent cards in this conversation):
+
+```text
+/flow-run-fork bug-sweep
 ```
 
 List workflows:
