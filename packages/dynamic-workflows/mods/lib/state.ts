@@ -41,22 +41,36 @@ export function getLettaHome(): string {
 let runtimeAgentId: string | undefined;
 
 export function setRuntimeAgentId(id: string | undefined): void {
+  if (id !== undefined && !isSafeIdentifier(id)) {
+    // Reject values that would otherwise escape the agent dir; this closes
+    // the inject Finding #1 (unvalidated agentId from env / readdir).
+    return;
+  }
   runtimeAgentId = id;
 }
 
 export function getAgentId(): string | undefined {
   if (runtimeAgentId) return runtimeAgentId;
   const env = process.env.LETTA_AGENT_ID ?? process.env.AGENT_ID;
-  if (env) return env;
+  if (env && isSafeIdentifier(env)) return env;
   try {
     const agentsDir = path.join(getLettaHome(), "agents");
     if (!existsSync(agentsDir)) return undefined;
     const entries = readdirSync(agentsDir, { withFileTypes: true });
-    const agentDir = entries.find((e) => e.isDirectory() && e.name.startsWith("agent-"));
+    const agentDir = entries.find((e) => e.isDirectory() && e.name.startsWith("agent-") && isSafeIdentifier(e.name));
     return agentDir?.name;
   } catch {
     return undefined;
   }
+}
+
+// Resolve the agent ID under which a run's files should be read or written.
+// Prefers the run's pinned value (captured at createRun time) so the path
+// stays stable even if the runtime agent ID changes between events. Falls
+// back to the runtime agent ID for runs created before pinning existed.
+export function resolveRunAgentId(run: RunState | null | undefined): string | undefined {
+  if (run?.agentId && isSafeIdentifier(run.agentId)) return run.agentId;
+  return getAgentId();
 }
 
 export function getWorkflowsDir(): string {
@@ -120,6 +134,11 @@ export interface RunState {
   updatedAt: string;
   conversationId?: string;
   workingDirectory?: string;
+  // The agent ID under which this run's files live. Captured at createRun
+  // time so subsequent reads/writes resolve to a stable directory even if the
+  // runtime agent ID flips between event handlers. Validated via
+  // isSafeIdentifier; never read from disk without checking.
+  agentId?: string;
   error?: string;
 }
 
@@ -264,58 +283,64 @@ export function deleteLibraryEntry(name: string): void {
   } catch { /* ignore */ }
 }
 
-export function getRunDir(runId: string): string {
+export function getRunDir(runId: string, runAgentId?: string): string {
   if (!isSafeRunId(runId)) {
     throw new Error(`Invalid run ID "${runId}".`);
   }
-  return path.join(getRunsDir(), runId);
+  const baseDir = runAgentId
+    ? path.join(getLettaHome(), "agents", runAgentId, "memory", MOD_ID, "runs")
+    : getRunsDir();
+  return path.join(baseDir, runId);
 }
 
-export function getRunPlanPath(runId: string): string {
-  return path.join(getRunDir(runId), "plan.md");
+export function getRunPlanPath(runId: string, runAgentId?: string): string {
+  return path.join(getRunDir(runId, runAgentId), "plan.md");
 }
 
-export function getRunPath(runId: string): string {
-  return path.join(getRunDir(runId), "run.md");
+export function getRunPath(runId: string, runAgentId?: string): string {
+  return path.join(getRunDir(runId, runAgentId), "run.md");
 }
 
-export function getRunAgentPath(runId: string, phaseId: string, agentId: string): string {
+export function getRunAgentPath(runId: string, phaseId: string, agentId: string, runAgentId?: string): string {
   if (!isSafePathComponent(phaseId) || !isSafePathComponent(agentId)) {
     throw new Error(`Invalid phase or agent ID "${phaseId}" / "${agentId}".`);
   }
-  return path.join(getRunDir(runId), "phases", phaseId, `${agentId}.md`);
+  return path.join(getRunDir(runId, runAgentId), "phases", phaseId, `${agentId}.md`);
 }
 
-export function getRunAgentOutputPath(runId: string, phaseId: string, agentId: string): string {
-  return getRunAgentPath(runId, phaseId, agentId);
+export function getRunAgentOutputPath(runId: string, phaseId: string, agentId: string, runAgentId?: string): string {
+  return getRunAgentPath(runId, phaseId, agentId, runAgentId);
 }
 
-export function getRunResultDisplayPath(runId: string): string {
-  const agentId = getAgentId();
+export function getRunResultDisplayPath(runId: string, runAgentId?: string): string {
+  const agentId = runAgentId ?? getAgentId();
   if (agentId) {
     return `~/.letta/agents/${agentId}/memory/${MOD_ID}/runs/${runId}/result.md`;
   }
   return `~/.letta/workflows/runs/${runId}/result.md`;
 }
 
-export function getRunResultPath(runId: string): string {
-  return path.join(getRunDir(runId), "result.md");
+export function getRunResultPath(runId: string, runAgentId?: string): string {
+  return path.join(getRunDir(runId, runAgentId), "result.md");
 }
 
-export function readRunAgentOutput(runId: string, phaseId: string, agentId: string): string | null {
-  const text = readTextFile(getRunAgentPath(runId, phaseId, agentId));
+export function readRunAgentOutput(runId: string, phaseId: string, agentId: string, runAgentId?: string): string | null {
+  const text = readTextFile(getRunAgentPath(runId, phaseId, agentId, runAgentId));
   if (!text) return null;
   const { body } = parseMarkdownFrontmatter(text);
   return body || null;
 }
 
-export function readRunResult(runId: string): string | null {
-  return readTextFile(getRunResultPath(runId));
+export function readRunResult(runId: string, runAgentId?: string): string | null {
+  return readTextFile(getRunResultPath(runId, runAgentId));
 }
 
 export async function createRun(workflow: WorkflowDefinition, inputs: Record<string, string> = {}, conversationId?: string, workingDirectory?: string): Promise<RunState> {
   const runId = generateRunId();
   const firstPhase = workflow.phases[0] ?? null;
+  // Pin the agent ID at creation so subsequent reads/writes resolve to a
+  // stable directory even if the runtime agent ID flips between events.
+  const currentAgentId = getAgentId();
   const run: RunState = {
     runId,
     workflow,
@@ -331,6 +356,7 @@ export async function createRun(workflow: WorkflowDefinition, inputs: Record<str
     updatedAt: new Date().toISOString(),
     conversationId,
     workingDirectory,
+    agentId: currentAgentId,
   };
   return withRunMutexFor(runId, () => {
     persistRun(run);
@@ -340,12 +366,12 @@ export async function createRun(workflow: WorkflowDefinition, inputs: Record<str
 }
 
 export function persistRun(run: RunState): void {
-  const runDir = getRunDir(run.runId);
+  const runDir = getRunDir(run.runId, run.agentId);
   mkdirSync(runDir, { recursive: true });
-  writeTextFileAtomically(getRunPlanPath(run.runId), serializeWorkflowMarkdown(run.workflow));
+  writeTextFileAtomically(getRunPlanPath(run.runId, run.agentId), serializeWorkflowMarkdown(run.workflow));
   const runCopy: Record<string, unknown> = { ...run };
   delete runCopy.workflow;
-  writeTextFileAtomically(getRunPath(run.runId), serializeMarkdownFrontmatter(runCopy));
+  writeTextFileAtomically(getRunPath(run.runId, run.agentId), serializeMarkdownFrontmatter(runCopy));
 }
 
 export function touchRun(run: RunState): RunState {
@@ -354,9 +380,47 @@ export function touchRun(run: RunState): RunState {
 }
 
 export function loadRun(runId: string): RunState | null {
+  if (!isSafeRunId(runId)) return null;
+  // Try the current agent first; fall back to walking other agent dirs if
+  // the run was created under a different agentId.
+  const candidates = collectRunAgentCandidates();
+  for (const agentId of candidates) {
+    const loaded = tryLoadRunFromAgent(runId, agentId);
+    if (loaded) return loaded;
+  }
+  return null;
+}
+
+function collectRunAgentCandidates(): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const current = getAgentId();
+  if (current) {
+    seen.add(current);
+    out.push(current);
+  }
   try {
-    const planPath = getRunPlanPath(runId);
-    const runPath = getRunPath(runId);
+    const agentsDir = path.join(getLettaHome(), "agents");
+    if (!existsSync(agentsDir)) return out;
+    const entries = readdirSync(agentsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (!entry.name.startsWith("agent-")) continue;
+      if (!isSafeIdentifier(entry.name)) continue;
+      if (seen.has(entry.name)) continue;
+      seen.add(entry.name);
+      out.push(entry.name);
+    }
+  } catch {
+    // ignore — best-effort fallback
+  }
+  return out;
+}
+
+function tryLoadRunFromAgent(runId: string, runAgentId: string): RunState | null {
+  try {
+    const planPath = getRunPlanPath(runId, runAgentId);
+    const runPath = getRunPath(runId, runAgentId);
     if (!existsSync(planPath) || !existsSync(runPath)) return null;
     const planText = readTextFile(planPath);
     if (!planText) return null;
@@ -381,6 +445,7 @@ export function loadRun(runId: string): RunState | null {
       updatedAt: String(data.updatedAt ?? new Date().toISOString()),
       conversationId: data.conversationId ? String(data.conversationId) : undefined,
       workingDirectory: data.workingDirectory ? String(data.workingDirectory) : undefined,
+      agentId: data.agentId ? String(data.agentId) : runAgentId,
       error: data.error ? String(data.error) : undefined,
     };
   } catch {
@@ -388,17 +453,17 @@ export function loadRun(runId: string): RunState | null {
   }
 }
 
-export function saveAgentResult(runId: string, phaseId: string, state: AgentRunState): void {
-  const filePath = getRunAgentPath(runId, phaseId, state.agentId);
+export function saveAgentResult(runId: string, phaseId: string, state: AgentRunState, runAgentId?: string): void {
+  const filePath = getRunAgentPath(runId, phaseId, state.agentId, runAgentId);
   const output = state.output;
   const stateCopy: Record<string, unknown> = { ...state };
   delete stateCopy.output;
   writeTextFileAtomically(filePath, serializeMarkdownFrontmatter(stateCopy, output ?? ""));
 }
 
-export function loadAgentResult(runId: string, phaseId: string, agentId: string): AgentRunState | null {
+export function loadAgentResult(runId: string, phaseId: string, agentId: string, runAgentId?: string): AgentRunState | null {
   try {
-    const filePath = getRunAgentPath(runId, phaseId, agentId);
+    const filePath = getRunAgentPath(runId, phaseId, agentId, runAgentId);
     if (!existsSync(filePath)) return null;
     const text = readTextFile(filePath);
     if (!text) return null;
@@ -421,8 +486,8 @@ export function loadAgentResult(runId: string, phaseId: string, agentId: string)
   }
 }
 
-export function saveRunResult(runId: string, result: string): void {
-  writeTextFileAtomically(getRunResultPath(runId), result);
+export function saveRunResult(runId: string, result: string, runAgentId?: string): void {
+  writeTextFileAtomically(getRunResultPath(runId, runAgentId), result);
 }
 
 export function updateRunRegistry(run: RunState): void {
@@ -437,9 +502,9 @@ export function updateRunRegistry(run: RunState): void {
   writeState(state);
 }
 
-export function deleteRun(runId: string): void {
+export function deleteRun(runId: string, runAgentId?: string): void {
   try {
-    rmSync(getRunDir(runId), { recursive: true, force: true });
+    rmSync(getRunDir(runId, runAgentId), { recursive: true, force: true });
   } catch { /* ignore */ }
   const state = readState();
   delete state.runs[runId];

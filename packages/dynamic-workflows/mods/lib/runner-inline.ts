@@ -63,8 +63,8 @@ export function stepInlineRun(runId: string): Promise<InlineStep | null> {
     const run = loadRun(runId);
     if (!run) return null;
     if (run.status === "completed") {
-      const result = readRunResult(runId) ?? "";
-      return { type: "complete", runId, result, resultPath: getRunResultDisplayPath(runId) };
+      const result = readRunResult(runId, run.agentId) ?? "";
+      return { type: "complete", runId, result, resultPath: getRunResultDisplayPath(runId, run.agentId) };
     }
     if (run.status !== "running") {
       return null;
@@ -113,10 +113,10 @@ export async function recordAgentComplete(runId: string, phaseId: string, agentI
     const alreadyDone = run.completedAgents.some((a) => a.phaseId === phaseId && a.agentId === agentId);
     if (alreadyDone) return run;
 
-    const fileOutput = readRunAgentOutput(runId, phaseId, agentId);
+    const fileOutput = readRunAgentOutput(runId, phaseId, agentId, run.agentId);
     const finalOutput = fileOutput ?? output;
 
-    const existing = loadAgentResult(runId, phaseId, agentId);
+    const existing = loadAgentResult(runId, phaseId, agentId, run.agentId);
     const state: AgentRunState = existing
       ? { ...existing, status: "completed", output: finalOutput, completedAt: new Date().toISOString() }
       : {
@@ -132,7 +132,7 @@ export async function recordAgentComplete(runId: string, phaseId: string, agentI
     // produced a detailed report, preserving that is more valuable than the
     // short tool-return placeholder.
     if (!fileOutput) {
-      saveAgentResult(runId, phaseId, state);
+      saveAgentResult(runId, phaseId, state, run.agentId);
     }
 
     run.completedAgents = run.completedAgents.filter((a) => !(a.phaseId === phaseId && a.agentId === agentId));
@@ -185,7 +185,7 @@ async function dispatchFanOut(run: RunState, phase: FanOutPhase): Promise<Inline
   if (pendingAgents.length === 0) {
     const runningAgents = phase.agents.filter((a) => run.startedAgentIds.includes(a.id) && !completedIds.has(a.id));
     for (const a of runningAgents) {
-      const fileOutput = readRunAgentOutput(run.runId, phase.id, a.id);
+      const fileOutput = readRunAgentOutput(run.runId, phase.id, a.id, run.agentId);
       if (fileOutput && fileOutput.length > 0) {
         await recordAgentComplete(run.runId, phase.id, a.id, fileOutput);
       }
@@ -222,7 +222,7 @@ async function dispatchFanOut(run: RunState, phase: FanOutPhase): Promise<Inline
     instructions: `Dispatch ${dispatchNow.length} parallel Agent tool call(s) for phase "${phase.id}". ${remaining > 0 ? `${remaining} agent(s) will queue after the first batch completes.` : ""}`,
     agents: dispatchNow.map((a) => ({
       id: a.id,
-      prompt: `${a.prompt}\n\n[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=${a.id}]\nWorking directory: ${run.workingDirectory ?? "the current project directory"}\n${phase.model ? `Use model: ${phase.model}\n` : ""}When you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id)}.`,
+      prompt: `${a.prompt}\n\n[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=${a.id}]\nWorking directory: ${run.workingDirectory ?? "the current project directory"}\n${phase.model ? `Use model: ${phase.model}\n` : ""}When you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id, run.agentId)}.`,
       model: phase.model,
     })),
   };
@@ -235,8 +235,8 @@ async function dispatchBarrier(run: RunState, phase: BarrierPhase): Promise<Inli
     if (isFanOutPhase(dep)) {
       const outputs: Record<string, string> = {};
       for (const agent of dep.agents) {
-        const filePath = getRunAgentOutputPath(run.runId, depId, agent.id);
-        const fileOutput = readRunAgentOutput(run.runId, depId, agent.id);
+        const filePath = getRunAgentOutputPath(run.runId, depId, agent.id, run.agentId);
+        const fileOutput = readRunAgentOutput(run.runId, depId, agent.id, run.agentId);
         outputs[agent.id] = fileOutput
           ? `Read the full report from ${filePath}:\n\n${fileOutput}`
           : String(run.outputs[`${depId}.${agent.id}`] ?? "");
@@ -251,7 +251,7 @@ async function dispatchBarrier(run: RunState, phase: BarrierPhase): Promise<Inli
     if (!dep || !isFanOutPhase(dep)) return [];
     return dep.agents
       .filter((a) => {
-        const text = readRunAgentOutput(run.runId, depId, a.id);
+        const text = readRunAgentOutput(run.runId, depId, a.id, run.agentId);
         return !text || text.length === 0;
       })
       .map((a) => `${depId}.${a.id}`);
@@ -268,12 +268,12 @@ async function dispatchBarrier(run: RunState, phase: BarrierPhase): Promise<Inli
   }
 
   if (run.startedPhaseIds.includes(phase.id)) {
-    const fileResult = readRunResult(run.runId);
+    const fileResult = readRunResult(run.runId, run.agentId);
     if (fileResult && fileResult.length > 0) {
       await recordBarrierComplete(run.runId, phase.id, fileResult);
       const refreshed = loadRun(run.runId);
       if (refreshed?.status === "completed") {
-        return { type: "complete", runId: run.runId, result: fileResult, resultPath: getRunResultDisplayPath(run.runId) };
+        return { type: "complete", runId: run.runId, result: fileResult, resultPath: getRunResultDisplayPath(run.runId, run.agentId) };
       }
       return stepInlineRun(run.runId);
     }
@@ -284,7 +284,7 @@ async function dispatchBarrier(run: RunState, phase: BarrierPhase): Promise<Inli
   persistRun(touchRun(run));
   updateRunRegistry(run);
 
-  const resultPath = getRunResultPath(run.runId);
+  const resultPath = getRunResultPath(run.runId, run.agentId);
   const synthesizedPrompt = `${phase.prompt}
 
 [FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=synthesize]
@@ -322,18 +322,18 @@ function completeRun(run: RunState, result: string): InlineComplete & { error?: 
   run.status = "completed";
   run.currentPhaseId = null;
   // If a barrier agent was instructed to write result.md, prefer that file.
-  const fileResult = readRunResult(run.runId);
+  const fileResult = readRunResult(run.runId, run.agentId);
   const finalResult = fileResult ?? result;
   persistRun(touchRun(run));
   updateRunRegistry(run);
   try {
-    saveRunResult(run.runId, finalResult);
+    saveRunResult(run.runId, finalResult, run.agentId);
   } catch (err) {
     return {
       type: "complete",
       runId: run.runId,
       result: finalResult,
-      resultPath: getRunResultDisplayPath(run.runId),
+      resultPath: getRunResultDisplayPath(run.runId, run.agentId),
       error: String(err),
     };
   }
@@ -341,6 +341,6 @@ function completeRun(run: RunState, result: string): InlineComplete & { error?: 
     type: "complete",
     runId: run.runId,
     result: finalResult,
-    resultPath: getRunResultDisplayPath(run.runId),
+    resultPath: getRunResultDisplayPath(run.runId, run.agentId),
   };
 }

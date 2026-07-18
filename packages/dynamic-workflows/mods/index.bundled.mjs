@@ -7369,20 +7369,23 @@ function getLettaHome() {
 }
 var runtimeAgentId;
 function setRuntimeAgentId(id) {
+  if (id !== undefined && !isSafeIdentifier(id)) {
+    return;
+  }
   runtimeAgentId = id;
 }
 function getAgentId() {
   if (runtimeAgentId)
     return runtimeAgentId;
   const env = process.env.LETTA_AGENT_ID ?? process.env.AGENT_ID;
-  if (env)
+  if (env && isSafeIdentifier(env))
     return env;
   try {
     const agentsDir = path2.join(getLettaHome(), "agents");
     if (!existsSync(agentsDir))
       return;
     const entries = readdirSync(agentsDir, { withFileTypes: true });
-    const agentDir = entries.find((e) => e.isDirectory() && e.name.startsWith("agent-"));
+    const agentDir = entries.find((e) => e.isDirectory() && e.name.startsWith("agent-") && isSafeIdentifier(e.name));
     return agentDir?.name;
   } catch {
     return;
@@ -7540,50 +7543,52 @@ function deleteLibraryEntry(name) {
     unlinkSync(filePath);
   } catch {}
 }
-function getRunDir(runId) {
+function getRunDir(runId, runAgentId) {
   if (!isSafeRunId(runId)) {
     throw new Error(`Invalid run ID "${runId}".`);
   }
-  return path2.join(getRunsDir(), runId);
+  const baseDir = runAgentId ? path2.join(getLettaHome(), "agents", runAgentId, "memory", MOD_ID, "runs") : getRunsDir();
+  return path2.join(baseDir, runId);
 }
-function getRunPlanPath(runId) {
-  return path2.join(getRunDir(runId), "plan.md");
+function getRunPlanPath(runId, runAgentId) {
+  return path2.join(getRunDir(runId, runAgentId), "plan.md");
 }
-function getRunPath(runId) {
-  return path2.join(getRunDir(runId), "run.md");
+function getRunPath(runId, runAgentId) {
+  return path2.join(getRunDir(runId, runAgentId), "run.md");
 }
-function getRunAgentPath(runId, phaseId, agentId) {
+function getRunAgentPath(runId, phaseId, agentId, runAgentId) {
   if (!isSafePathComponent(phaseId) || !isSafePathComponent(agentId)) {
     throw new Error(`Invalid phase or agent ID "${phaseId}" / "${agentId}".`);
   }
-  return path2.join(getRunDir(runId), "phases", phaseId, `${agentId}.md`);
+  return path2.join(getRunDir(runId, runAgentId), "phases", phaseId, `${agentId}.md`);
 }
-function getRunAgentOutputPath(runId, phaseId, agentId) {
-  return getRunAgentPath(runId, phaseId, agentId);
+function getRunAgentOutputPath(runId, phaseId, agentId, runAgentId) {
+  return getRunAgentPath(runId, phaseId, agentId, runAgentId);
 }
-function getRunResultDisplayPath(runId) {
-  const agentId = getAgentId();
+function getRunResultDisplayPath(runId, runAgentId) {
+  const agentId = runAgentId ?? getAgentId();
   if (agentId) {
     return `~/.letta/agents/${agentId}/memory/${MOD_ID}/runs/${runId}/result.md`;
   }
   return `~/.letta/workflows/runs/${runId}/result.md`;
 }
-function getRunResultPath(runId) {
-  return path2.join(getRunDir(runId), "result.md");
+function getRunResultPath(runId, runAgentId) {
+  return path2.join(getRunDir(runId, runAgentId), "result.md");
 }
-function readRunAgentOutput(runId, phaseId, agentId) {
-  const text = readTextFile(getRunAgentPath(runId, phaseId, agentId));
+function readRunAgentOutput(runId, phaseId, agentId, runAgentId) {
+  const text = readTextFile(getRunAgentPath(runId, phaseId, agentId, runAgentId));
   if (!text)
     return null;
   const { body } = parseMarkdownFrontmatter(text);
   return body || null;
 }
-function readRunResult(runId) {
-  return readTextFile(getRunResultPath(runId));
+function readRunResult(runId, runAgentId) {
+  return readTextFile(getRunResultPath(runId, runAgentId));
 }
 async function createRun(workflow, inputs = {}, conversationId, workingDirectory) {
   const runId = generateRunId();
   const firstPhase = workflow.phases[0] ?? null;
+  const currentAgentId = getAgentId();
   const run = {
     runId,
     workflow,
@@ -7598,7 +7603,8 @@ async function createRun(workflow, inputs = {}, conversationId, workingDirectory
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     conversationId,
-    workingDirectory
+    workingDirectory,
+    agentId: currentAgentId
   };
   return withRunMutexFor(runId, () => {
     persistRun(run);
@@ -7607,21 +7613,60 @@ async function createRun(workflow, inputs = {}, conversationId, workingDirectory
   });
 }
 function persistRun(run) {
-  const runDir = getRunDir(run.runId);
+  const runDir = getRunDir(run.runId, run.agentId);
   mkdirSync(runDir, { recursive: true });
-  writeTextFileAtomically(getRunPlanPath(run.runId), serializeWorkflowMarkdown(run.workflow));
+  writeTextFileAtomically(getRunPlanPath(run.runId, run.agentId), serializeWorkflowMarkdown(run.workflow));
   const runCopy = { ...run };
   delete runCopy.workflow;
-  writeTextFileAtomically(getRunPath(run.runId), serializeMarkdownFrontmatter(runCopy));
+  writeTextFileAtomically(getRunPath(run.runId, run.agentId), serializeMarkdownFrontmatter(runCopy));
 }
 function touchRun(run) {
   run.updatedAt = new Date().toISOString();
   return run;
 }
 function loadRun(runId) {
+  if (!isSafeRunId(runId))
+    return null;
+  const candidates = collectRunAgentCandidates();
+  for (const agentId of candidates) {
+    const loaded = tryLoadRunFromAgent(runId, agentId);
+    if (loaded)
+      return loaded;
+  }
+  return null;
+}
+function collectRunAgentCandidates() {
+  const seen = new Set;
+  const out = [];
+  const current = getAgentId();
+  if (current) {
+    seen.add(current);
+    out.push(current);
+  }
   try {
-    const planPath = getRunPlanPath(runId);
-    const runPath = getRunPath(runId);
+    const agentsDir = path2.join(getLettaHome(), "agents");
+    if (!existsSync(agentsDir))
+      return out;
+    const entries = readdirSync(agentsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory())
+        continue;
+      if (!entry.name.startsWith("agent-"))
+        continue;
+      if (!isSafeIdentifier(entry.name))
+        continue;
+      if (seen.has(entry.name))
+        continue;
+      seen.add(entry.name);
+      out.push(entry.name);
+    }
+  } catch {}
+  return out;
+}
+function tryLoadRunFromAgent(runId, runAgentId) {
+  try {
+    const planPath = getRunPlanPath(runId, runAgentId);
+    const runPath = getRunPath(runId, runAgentId);
     if (!existsSync(planPath) || !existsSync(runPath))
       return null;
     const planText = readTextFile(planPath);
@@ -7651,22 +7696,23 @@ function loadRun(runId) {
       updatedAt: String(data.updatedAt ?? new Date().toISOString()),
       conversationId: data.conversationId ? String(data.conversationId) : undefined,
       workingDirectory: data.workingDirectory ? String(data.workingDirectory) : undefined,
+      agentId: data.agentId ? String(data.agentId) : runAgentId,
       error: data.error ? String(data.error) : undefined
     };
   } catch {
     return null;
   }
 }
-function saveAgentResult(runId, phaseId, state) {
-  const filePath = getRunAgentPath(runId, phaseId, state.agentId);
+function saveAgentResult(runId, phaseId, state, runAgentId) {
+  const filePath = getRunAgentPath(runId, phaseId, state.agentId, runAgentId);
   const output = state.output;
   const stateCopy = { ...state };
   delete stateCopy.output;
   writeTextFileAtomically(filePath, serializeMarkdownFrontmatter(stateCopy, output ?? ""));
 }
-function loadAgentResult(runId, phaseId, agentId) {
+function loadAgentResult(runId, phaseId, agentId, runAgentId) {
   try {
-    const filePath = getRunAgentPath(runId, phaseId, agentId);
+    const filePath = getRunAgentPath(runId, phaseId, agentId, runAgentId);
     if (!existsSync(filePath))
       return null;
     const text = readTextFile(filePath);
@@ -7691,8 +7737,8 @@ function loadAgentResult(runId, phaseId, agentId) {
     return null;
   }
 }
-function saveRunResult(runId, result) {
-  writeTextFileAtomically(getRunResultPath(runId), result);
+function saveRunResult(runId, result, runAgentId) {
+  writeTextFileAtomically(getRunResultPath(runId, runAgentId), result);
 }
 function updateRunRegistry(run) {
   const state = readState();
@@ -7765,8 +7811,8 @@ function stepInlineRun(runId) {
     if (!run)
       return null;
     if (run.status === "completed") {
-      const result = readRunResult(runId) ?? "";
-      return { type: "complete", runId, result, resultPath: getRunResultDisplayPath(runId) };
+      const result = readRunResult(runId, run.agentId) ?? "";
+      return { type: "complete", runId, result, resultPath: getRunResultDisplayPath(runId, run.agentId) };
     }
     if (run.status !== "running") {
       return null;
@@ -7808,9 +7854,9 @@ async function recordAgentComplete(runId, phaseId, agentId, output) {
     const alreadyDone = run.completedAgents.some((a) => a.phaseId === phaseId && a.agentId === agentId);
     if (alreadyDone)
       return run;
-    const fileOutput = readRunAgentOutput(runId, phaseId, agentId);
+    const fileOutput = readRunAgentOutput(runId, phaseId, agentId, run.agentId);
     const finalOutput = fileOutput ?? output;
-    const existing = loadAgentResult(runId, phaseId, agentId);
+    const existing = loadAgentResult(runId, phaseId, agentId, run.agentId);
     const state = existing ? { ...existing, status: "completed", output: finalOutput, completedAt: new Date().toISOString() } : {
       phaseId,
       agentId,
@@ -7820,7 +7866,7 @@ async function recordAgentComplete(runId, phaseId, agentId, output) {
       completedAt: new Date().toISOString()
     };
     if (!fileOutput) {
-      saveAgentResult(runId, phaseId, state);
+      saveAgentResult(runId, phaseId, state, run.agentId);
     }
     run.completedAgents = run.completedAgents.filter((a) => !(a.phaseId === phaseId && a.agentId === agentId));
     run.completedAgents.push(state);
@@ -7868,7 +7914,7 @@ async function dispatchFanOut(run, phase) {
   if (pendingAgents.length === 0) {
     const runningAgents = phase.agents.filter((a) => run.startedAgentIds.includes(a.id) && !completedIds.has(a.id));
     for (const a of runningAgents) {
-      const fileOutput = readRunAgentOutput(run.runId, phase.id, a.id);
+      const fileOutput = readRunAgentOutput(run.runId, phase.id, a.id, run.agentId);
       if (fileOutput && fileOutput.length > 0) {
         await recordAgentComplete(run.runId, phase.id, a.id, fileOutput);
       }
@@ -7907,7 +7953,7 @@ async function dispatchFanOut(run, phase) {
 [FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=${a.id}]
 Working directory: ${run.workingDirectory ?? "the current project directory"}
 ${phase.model ? `Use model: ${phase.model}
-` : ""}When you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id)}.`,
+` : ""}When you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id, run.agentId)}.`,
       model: phase.model
     }))
   };
@@ -7920,8 +7966,8 @@ async function dispatchBarrier(run, phase) {
     if (isFanOutPhase(dep)) {
       const outputs = {};
       for (const agent of dep.agents) {
-        const filePath = getRunAgentOutputPath(run.runId, depId, agent.id);
-        const fileOutput = readRunAgentOutput(run.runId, depId, agent.id);
+        const filePath = getRunAgentOutputPath(run.runId, depId, agent.id, run.agentId);
+        const fileOutput = readRunAgentOutput(run.runId, depId, agent.id, run.agentId);
         outputs[agent.id] = fileOutput ? `Read the full report from ${filePath}:
 
 ${fileOutput}` : String(run.outputs[`${depId}.${agent.id}`] ?? "");
@@ -7935,7 +7981,7 @@ ${fileOutput}` : String(run.outputs[`${depId}.${agent.id}`] ?? "");
     if (!dep || !isFanOutPhase(dep))
       return [];
     return dep.agents.filter((a) => {
-      const text = readRunAgentOutput(run.runId, depId, a.id);
+      const text = readRunAgentOutput(run.runId, depId, a.id, run.agentId);
       return !text || text.length === 0;
     }).map((a) => `${depId}.${a.id}`);
   });
@@ -7949,12 +7995,12 @@ ${fileOutput}` : String(run.outputs[`${depId}.${agent.id}`] ?? "");
     };
   }
   if (run.startedPhaseIds.includes(phase.id)) {
-    const fileResult = readRunResult(run.runId);
+    const fileResult = readRunResult(run.runId, run.agentId);
     if (fileResult && fileResult.length > 0) {
       await recordBarrierComplete(run.runId, phase.id, fileResult);
       const refreshed = loadRun(run.runId);
       if (refreshed?.status === "completed") {
-        return { type: "complete", runId: run.runId, result: fileResult, resultPath: getRunResultDisplayPath(run.runId) };
+        return { type: "complete", runId: run.runId, result: fileResult, resultPath: getRunResultDisplayPath(run.runId, run.agentId) };
       }
       return stepInlineRun(run.runId);
     }
@@ -7963,7 +8009,7 @@ ${fileOutput}` : String(run.outputs[`${depId}.${agent.id}`] ?? "");
   run.startedPhaseIds.push(phase.id);
   persistRun(touchRun(run));
   updateRunRegistry(run);
-  const resultPath = getRunResultPath(run.runId);
+  const resultPath = getRunResultPath(run.runId, run.agentId);
   const synthesizedPrompt = `${phase.prompt}
 
 [FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=synthesize]
@@ -7998,18 +8044,18 @@ function advancePhase(run) {
 function completeRun(run, result) {
   run.status = "completed";
   run.currentPhaseId = null;
-  const fileResult = readRunResult(run.runId);
+  const fileResult = readRunResult(run.runId, run.agentId);
   const finalResult = fileResult ?? result;
   persistRun(touchRun(run));
   updateRunRegistry(run);
   try {
-    saveRunResult(run.runId, finalResult);
+    saveRunResult(run.runId, finalResult, run.agentId);
   } catch (err) {
     return {
       type: "complete",
       runId: run.runId,
       result: finalResult,
-      resultPath: getRunResultDisplayPath(run.runId),
+      resultPath: getRunResultDisplayPath(run.runId, run.agentId),
       error: String(err)
     };
   }
@@ -8017,7 +8063,7 @@ function completeRun(run, result) {
     type: "complete",
     runId: run.runId,
     result: finalResult,
-    resultPath: getRunResultDisplayPath(run.runId)
+    resultPath: getRunResultDisplayPath(run.runId, run.agentId)
   };
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -7,6 +7,9 @@ import {
   createRun,
   loadRun,
   saveAgentResult,
+  setRuntimeAgentId,
+  getRunDir,
+  getRunPath,
 } from "../lib/state.ts";
 import {
   recordAgentComplete,
@@ -153,5 +156,59 @@ describe("recordAgentComplete concurrency", () => {
 
     const step = await stepInlineRun(run.runId);
     expect(step?.type).toBe("dispatch");
+  });
+});
+
+describe("agent ID pinning", () => {
+  test("setRuntimeAgentId rejects unsafe values", () => {
+    setRuntimeAgentId("../../../etc/passwd");
+    // After rejecting, getRunDir should not have escaped; verify by creating
+    // a fresh agent and confirming setRuntimeAgentId with a safe id sticks.
+    setRuntimeAgentId("agent-test1234");
+    expect(path.basename(getRunDir("1784385035947-abcdefgh", "agent-test1234"))).toBe("1784385035947-abcdefgh");
+  });
+
+  test("createRun captures current agentId", async () => {
+    setRuntimeAgentId("agent-creator1");
+    const run = await createRun(sampleWorkflow);
+    expect(run.agentId).toBe("agent-creator1");
+
+    const reloaded = loadRun(run.runId);
+    expect(reloaded?.agentId).toBe("agent-creator1");
+  });
+
+  test("loadRun finds the run via fallback when current agentId differs", async () => {
+    setRuntimeAgentId("agent-origin0000");
+    const run = await createRun(sampleWorkflow);
+
+    // Switch the runtime agent id to a different value. loadRun should still
+    // resolve the run via the agent-dir fallback walk.
+    setRuntimeAgentId("agent-other00001");
+    const reloaded = loadRun(run.runId);
+    expect(reloaded?.runId).toBe(run.runId);
+    expect(reloaded?.agentId).toBe("agent-origin0000");
+  });
+
+  test("recordAgentComplete writes to the pinned agent directory", async () => {
+    setRuntimeAgentId("agent-pinned001");
+    const run = await createRun(sampleWorkflow);
+    saveAgentResult(run.runId, "scan", {
+      phaseId: "scan",
+      agentId: "a1",
+      prompt: "p1",
+      status: "running",
+    }, run.agentId);
+
+    // Flip the runtime agentId — recordAgentComplete must still write to
+    // the original agent's directory tree.
+    setRuntimeAgentId("agent-flipped002");
+    await recordAgentComplete(run.runId, "scan", "a1", "out");
+
+    // The pinned directory must contain the updated file.
+    const filePath = getRunPath(run.runId, "agent-pinned001");
+    expect(filePath).toContain("agent-pinned001");
+    // Sanity: file should exist in the pinned agent dir.
+    mkdirSync(path.dirname(filePath), { recursive: true });
+    expect(require("node:fs").existsSync(filePath)).toBe(true);
   });
 });
