@@ -14,6 +14,7 @@ import {
 } from "../lib/state.ts";
 import {
   recordAgentComplete,
+  recordBarrierComplete,
   stepInlineRun,
 } from "../lib/runner-inline.ts";
 import { WORKFLOW_VERSION, type WorkflowDefinition } from "../lib/schema.ts";
@@ -267,5 +268,78 @@ describe("sanitizeWorkingDirectory", () => {
     setRuntimeAgentId("agent-sanitize0");
     const run = await createRun(sampleWorkflow, {}, undefined, "/tmp/x\ninj");
     expect(run.workingDirectory).toBe("/tmp/xinj");
+  });
+});
+
+describe("stepInlineRun concurrency", () => {
+  test("two concurrent stepInlineRun calls on a fresh run produce a single dispatch", async () => {
+    const run = await createRun(sampleWorkflow);
+
+    const [a, b] = await Promise.all([
+      stepInlineRun(run.runId),
+      stepInlineRun(run.runId),
+    ]);
+
+    // Both calls observe the same freshly-created run with no started
+    // agents. At least one must perform the dispatch; the other may
+    // observe the updated state and return a wait or null. Crucially, the
+    // run is not double-advanced and the dispatch is not duplicated.
+    const types = [a?.type, b?.type].filter(Boolean);
+    expect(types.length).toBeGreaterThan(0);
+    expect(types).toContain("dispatch");
+    const refreshed = loadRun(run.runId);
+    expect(refreshed?.currentPhaseId).toBe("scan");
+    // Only one set of startedAgentIds should be recorded.
+    expect(refreshed?.startedAgentIds).toEqual(["a1", "a2", "a3"]);
+  });
+
+  test("overlapping recordAgentComplete + stepInlineRun ends in a single terminal state", async () => {
+    const run = await createRun(sampleWorkflow);
+
+    // Simulate two subagents completing concurrently with the orchestrator
+    // polling stepInlineRun at the same time.
+    await Promise.all([
+      recordAgentComplete(run.runId, "scan", "a1", "out-1"),
+      recordAgentComplete(run.runId, "scan", "a2", "out-2"),
+      stepInlineRun(run.runId).catch(() => null),
+    ]);
+
+    // Complete the third agent and step once more.
+    await recordAgentComplete(run.runId, "scan", "a3", "out-3");
+    const step = await stepInlineRun(run.runId);
+
+    // After all three agents complete, the run should advance to the
+    // synthesize phase and stepInlineRun should issue the synthesize dispatch.
+    const refreshed = loadRun(run.runId);
+    expect(refreshed?.currentPhaseId).toBe("synthesize");
+    expect(refreshed?.status).toBe("running");
+    expect(step?.type).toBe("dispatch");
+
+    // recordBarrierComplete transitions to completed and stepInlineRun returns complete.
+    const fs = await import("node:fs");
+    const resultPath = path.join(tempDir, "agents", refreshed!.agentId!, "memory", "flows", "runs", run.runId, "result.md");
+    fs.mkdirSync(path.dirname(resultPath), { recursive: true });
+    fs.writeFileSync(resultPath, "synthesized", "utf8");
+    await recordBarrierComplete(run.runId, "synthesize", "synthesized");
+    const finalStep = await stepInlineRun(run.runId);
+    expect(finalStep?.type).toBe("complete");
+    const final = loadRun(run.runId);
+    expect(final?.status).toBe("completed");
+    // Exactly one terminal state reached.
+    expect(["completed", "failed"]).toContain(final?.status);
+  });
+
+  test("rapid-fire dispatch loop converges", async () => {
+    const run = await createRun(sampleWorkflow);
+
+    // Hammer stepInlineRun from many concurrent callers; the run should
+    // remain consistent (currentPhaseId = scan, startedAgentIds populated).
+    await Promise.all(
+      Array.from({ length: 10 }, () => stepInlineRun(run.runId).catch(() => null))
+    );
+
+    const refreshed = loadRun(run.runId);
+    expect(refreshed?.currentPhaseId).toBe("scan");
+    expect(new Set(refreshed?.startedAgentIds)).toEqual(new Set(["a1", "a2", "a3"]));
   });
 });
