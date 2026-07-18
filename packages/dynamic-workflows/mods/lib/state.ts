@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, readdirSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, readdirSync, writeFileSync, unlinkSync, rmSync, lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { parse, stringify } from "yaml";
@@ -287,10 +287,31 @@ export function getRunDir(runId: string, runAgentId?: string): string {
   if (!isSafeRunId(runId)) {
     throw new Error(`Invalid run ID "${runId}".`);
   }
+  // Validate any explicit runAgentId before letting it reach path.join.
+  // path.join normalizes ".." segments, so an unvalidated value can escape
+  // the agents directory and target arbitrary paths on disk.
+  if (runAgentId !== undefined && !isSafeIdentifier(runAgentId)) {
+    throw new Error(`Invalid run agent ID "${runAgentId}".`);
+  }
   const baseDir = runAgentId
     ? path.join(getLettaHome(), "agents", runAgentId, "memory", MOD_ID, "runs")
     : getRunsDir();
-  return path.join(baseDir, runId);
+  const target = path.join(baseDir, runId);
+  // Containment check: the resolved target must live under the canonical runs
+  // root for the chosen (or current) agent. This catches symlink escapes that
+  // lexical `startsWith` would miss. We use realpathSync on the existing
+  // parent when possible; otherwise fall back to lexical containment after
+  // resolving the runs root. Note: lstat would not help here because the
+  // target itself may not exist yet; the parent is what could be symlinked.
+  const runsRoot = runAgentId
+    ? path.join(getLettaHome(), "agents", runAgentId, "memory", MOD_ID, "runs")
+    : getRunsDir();
+  const resolvedRoot = path.resolve(runsRoot);
+  const resolvedTarget = path.resolve(target);
+  if (!isContainedPath(resolvedRoot, resolvedTarget)) {
+    throw new Error(`Run path escapes runs directory: ${resolvedTarget}`);
+  }
+  return resolvedTarget;
 }
 
 export function getRunPlanPath(runId: string, runAgentId?: string): string {
@@ -430,8 +451,19 @@ function tryLoadRunFromAgent(runId: string, runAgentId: string): RunState | null
     if (!runText) return null;
     const { data } = parseMarkdownFrontmatter(runText);
     if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+    // Reject the file if the persisted runId doesn't match the file path.
+    // A tampered run.md could otherwise resurrect arbitrary identifiers.
+    const persistedRunId = data.runId ? String(data.runId) : runId;
+    if (persistedRunId !== runId) return null;
+    // Do NOT trust data.agentId from disk. Pin to the validated runAgentId
+    // argument that located the file; if the file claims a different id,
+    // reject it so a tampered run.md cannot redirect subsequent writes.
+    const persistedAgentId = data.agentId ? String(data.agentId) : undefined;
+    if (persistedAgentId !== undefined && persistedAgentId !== runAgentId) {
+      return null;
+    }
     return {
-      runId: String(data.runId ?? runId),
+      runId: persistedRunId,
       workflow,
       inputs: (data.inputs as Record<string, string>) ?? {},
       status: (data.status as RunStatus) ?? "running",
@@ -445,7 +477,7 @@ function tryLoadRunFromAgent(runId: string, runAgentId: string): RunState | null
       updatedAt: String(data.updatedAt ?? new Date().toISOString()),
       conversationId: data.conversationId ? String(data.conversationId) : undefined,
       workingDirectory: data.workingDirectory ? String(data.workingDirectory) : undefined,
-      agentId: data.agentId ? String(data.agentId) : runAgentId,
+      agentId: runAgentId,
       error: data.error ? String(data.error) : undefined,
     };
   } catch {
@@ -503,8 +535,32 @@ export function updateRunRegistry(run: RunState): void {
 }
 
 export function deleteRun(runId: string, runAgentId?: string): void {
+  const target = getRunDir(runId, runAgentId);
   try {
-    rmSync(getRunDir(runId, runAgentId), { recursive: true, force: true });
+    // Refuse to recursively delete if any part of the target path is a
+    // symlink, even if the resolved path still appears to be under the runs
+    // root. rmSync with force+recursive follows symlinks, so a planted link
+    // could destroy arbitrary directories the process can reach.
+    if (existsSync(target)) {
+      const stat = lstatSync(target);
+      if (stat.isSymbolicLink() || stat.isDirectory() === false) return;
+      // Also walk the immediate parent to catch symlinked ancestors. We only
+      // need to check the directory entries above the target, which are
+      // controlled by the agent/memory paths. If any of those are symlinks,
+      // refuse to proceed.
+      let cursor = target;
+      const runsRoot = path.resolve(runAgentId
+        ? path.join(getLettaHome(), "agents", runAgentId, "memory", MOD_ID, "runs")
+        : getRunsDir());
+      while (cursor !== runsRoot && cursor !== path.dirname(cursor)) {
+        cursor = path.dirname(cursor);
+        if (existsSync(cursor)) {
+          const ls = lstatSync(cursor);
+          if (ls.isSymbolicLink()) return;
+        }
+      }
+    }
+    rmSync(target, { recursive: true, force: true });
   } catch { /* ignore */ }
   const state = readState();
   delete state.runs[runId];

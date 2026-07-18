@@ -7350,7 +7350,7 @@ function stripMarkdownFences(text) {
 }
 
 // packages/dynamic-workflows/mods/lib/state.ts
-import { existsSync, mkdirSync, readFileSync, renameSync, readdirSync, writeFileSync, unlinkSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, readdirSync, writeFileSync, unlinkSync, rmSync, lstatSync } from "node:fs";
 import { homedir } from "node:os";
 import path2 from "node:path";
 var runMutexes = new Map;
@@ -7547,8 +7547,18 @@ function getRunDir(runId, runAgentId) {
   if (!isSafeRunId(runId)) {
     throw new Error(`Invalid run ID "${runId}".`);
   }
+  if (runAgentId !== undefined && !isSafeIdentifier(runAgentId)) {
+    throw new Error(`Invalid run agent ID "${runAgentId}".`);
+  }
   const baseDir = runAgentId ? path2.join(getLettaHome(), "agents", runAgentId, "memory", MOD_ID, "runs") : getRunsDir();
-  return path2.join(baseDir, runId);
+  const target = path2.join(baseDir, runId);
+  const runsRoot = runAgentId ? path2.join(getLettaHome(), "agents", runAgentId, "memory", MOD_ID, "runs") : getRunsDir();
+  const resolvedRoot = path2.resolve(runsRoot);
+  const resolvedTarget = path2.resolve(target);
+  if (!isContainedPath(resolvedRoot, resolvedTarget)) {
+    throw new Error(`Run path escapes runs directory: ${resolvedTarget}`);
+  }
+  return resolvedTarget;
 }
 function getRunPlanPath(runId, runAgentId) {
   return path2.join(getRunDir(runId, runAgentId), "plan.md");
@@ -7681,8 +7691,15 @@ function tryLoadRunFromAgent(runId, runAgentId) {
     const { data } = parseMarkdownFrontmatter(runText);
     if (!data || typeof data !== "object" || Array.isArray(data))
       return null;
+    const persistedRunId = data.runId ? String(data.runId) : runId;
+    if (persistedRunId !== runId)
+      return null;
+    const persistedAgentId = data.agentId ? String(data.agentId) : undefined;
+    if (persistedAgentId !== undefined && persistedAgentId !== runAgentId) {
+      return null;
+    }
     return {
-      runId: String(data.runId ?? runId),
+      runId: persistedRunId,
       workflow,
       inputs: data.inputs ?? {},
       status: data.status ?? "running",
@@ -7696,7 +7713,7 @@ function tryLoadRunFromAgent(runId, runAgentId) {
       updatedAt: String(data.updatedAt ?? new Date().toISOString()),
       conversationId: data.conversationId ? String(data.conversationId) : undefined,
       workingDirectory: data.workingDirectory ? String(data.workingDirectory) : undefined,
-      agentId: data.agentId ? String(data.agentId) : runAgentId,
+      agentId: runAgentId,
       error: data.error ? String(data.error) : undefined
     };
   } catch {

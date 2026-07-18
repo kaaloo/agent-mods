@@ -212,3 +212,36 @@ describe("agent ID pinning", () => {
     expect(require("node:fs").existsSync(filePath)).toBe(true);
   });
 });
+
+describe("H1 runAgentId validation", () => {
+  test("getRunDir rejects an unsafe runAgentId arg", () => {
+    expect(() => getRunDir("1784385035947-abcdefgh", "../../etc")).toThrow(/Invalid run agent ID/);
+    expect(() => getRunDir("1784385035947-abcdefgh", "agent-with-slash/foo")).toThrow(/Invalid run agent ID/);
+  });
+
+  test("loadRun rejects a tampered run.md whose persisted runId differs", async () => {
+    setRuntimeAgentId("agent-clean0001");
+    const run = await createRun(sampleWorkflow);
+
+    // Tamper with the persisted run.md: claim a different runId. The loader
+    // must reject the file rather than resurrect the foreign identifier.
+    const { writeFileSync } = await import("node:fs");
+    const runPath = getRunPath(run.runId, run.agentId);
+    writeFileSync(runPath, "---\nrunId: 9999999999999-zzzzzzzz\nstatus: running\n---\n", "utf8");
+
+    const reloaded = loadRun(run.runId);
+    expect(reloaded).toBeNull();
+  });
+
+  test("loadRun rejects a tampered run.md whose persisted agentId differs", async () => {
+    setRuntimeAgentId("agent-clean0002");
+    const run = await createRun(sampleWorkflow);
+
+    const { writeFileSync } = await import("node:fs");
+    const runPath = getRunPath(run.runId, run.agentId);
+    writeFileSync(runPath, `---\nrunId: ${run.runId}\nagentId: agent-evil0001\nstatus: running\n---\n`, "utf8");
+
+    const reloaded = loadRun(run.runId);
+    expect(reloaded).toBeNull();
+  });
+});
