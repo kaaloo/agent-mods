@@ -164,11 +164,22 @@ export default function activate(letta: LettaModContext): (() => void) {
           ...entries.map((e) => ({ name: e.name, description: e.description, source: "library" as const, savedAt: e.savedAt })),
           ...templates.map((t) => ({ name: t.name, description: t.description, source: t.source, savedAt: undefined })),
         ];
-        const filtered = all.filter((e) =>
-          !filter ||
-          e.name.toLowerCase().includes(String(filter).toLowerCase()) ||
-          e.description.toLowerCase().includes(String(filter).toLowerCase())
-        );
+        // Defensive: a malformed library entry or template could surface with
+        // missing name/description. Coerce to safe strings rather than letting
+        // toLowerCase() throw on undefined. Closes H1 from the bug-sweep.
+        const safeAll = all.map((e) => ({
+          name: typeof e.name === "string" && e.name.length > 0 ? e.name : "(unnamed)",
+          description: typeof e.description === "string" ? e.description : "",
+          source: e.source,
+          savedAt: e.savedAt,
+        }));
+        const filterText = filter ? String(filter).toLowerCase() : "";
+        const filtered = !filterText
+          ? safeAll
+          : safeAll.filter((e) =>
+              e.name.toLowerCase().includes(filterText) ||
+              e.description.toLowerCase().includes(filterText)
+            );
         return { status: "success", workflows: filtered };
       },
     }));
@@ -276,11 +287,16 @@ export default function activate(letta: LettaModContext): (() => void) {
           case "ls": {
             const entries = listLibrary();
             const templates = listTemplates(TEMPLATE_DIR);
+            const format = (e: { name?: unknown; description?: unknown }) => {
+              const name = typeof e.name === "string" && e.name.length > 0 ? e.name : "(unnamed)";
+              const description = typeof e.description === "string" ? e.description : "";
+              return description.length > 0 ? `  • ${name} — ${description}` : `  • ${name}`;
+            };
             const lines = [
               "Saved workflows:",
-              ...entries.map((e) => `  • ${e.name} — ${e.description}`),
+              ...entries.map(format),
               "Bundled templates:",
-              ...templates.map((t) => `  • ${t.name} — ${t.description}`),
+              ...templates.map(format),
             ];
             return { type: "output", output: lines.join("\n") };
           }
