@@ -15,7 +15,10 @@ import {
 import {
   recordAgentComplete,
   recordBarrierComplete,
+  recordAgentCompleteLocked,
+  recordBarrierCompleteLocked,
   stepInlineRun,
+  stepInlineRunLocked,
 } from "../lib/runner-inline.ts";
 import { WORKFLOW_VERSION, type WorkflowDefinition } from "../lib/schema.ts";
 
@@ -341,5 +344,74 @@ describe("stepInlineRun concurrency", () => {
     const refreshed = loadRun(run.runId);
     expect(refreshed?.currentPhaseId).toBe("scan");
     expect(new Set(refreshed?.startedAgentIds)).toEqual(new Set(["a1", "a2", "a3"]));
+  });
+});
+
+describe("C1 mutex re-entry safety", () => {
+  // Regression for the third bug-sweep's Critical: nested acquisition of the
+  // non-reentrant per-run mutex in dispatchFanOut/dispatchBarrier would
+  // deadlock under any refactor that breaks the .then-scheduling assumption.
+  // The fix splits public APIs (stepInlineRun, recordAgentComplete,
+  // recordBarrierComplete) from internal *Locked helpers that assume the
+  // caller already holds the mutex. This test exercises the locked helpers
+  // directly inside a single withRunMutexFor slot, which would deadlock if
+  // any nested acquisition remained.
+  test("recordAgentCompleteLocked inside stepInlineRunLocked does not deadlock", async () => {
+    const run = await createRun(sampleWorkflow);
+
+    // Run the entire fan-out completion path inside one mutex slot, exactly
+    // as dispatchFanOutLocked does. If the locked variants re-acquired the
+    // mutex, this would hang.
+    const result = withRunMutexFor(run.runId, () => {
+      const step1 = stepInlineRunLocked(run.runId);
+      // Use the locked variants directly so all writes happen synchronously
+      // inside this mutex slot, matching dispatchFanOutLocked's pattern.
+      recordAgentCompleteLocked(run.runId, "scan", "a1", "out-1");
+      recordAgentCompleteLocked(run.runId, "scan", "a2", "out-2");
+      recordAgentCompleteLocked(run.runId, "scan", "a3", "out-3");
+      const step2 = stepInlineRunLocked(run.runId);
+      return { step1, step2 };
+    });
+    const raced = await Promise.race([
+      result,
+      new Promise<{ step1: null; step2: null }>((_, reject) =>
+        setTimeout(() => reject(new Error("deadlock: locked variants re-acquired the mutex")), 5000)
+      ),
+    ]);
+    expect(raced.step1?.type).toBe("dispatch");
+    expect(raced.step2?.type).toBe("dispatch"); // should now advance to synthesize
+
+    const refreshed = loadRun(run.runId);
+    expect(refreshed?.currentPhaseId).toBe("synthesize");
+    expect(refreshed?.completedAgents).toHaveLength(3);
+  });
+
+  test("recordBarrierCompleteLocked inside stepInlineRunLocked does not deadlock", async () => {
+    const run = await createRun(sampleWorkflow);
+
+    // Drive the run to the synthesize phase and complete the barrier, all
+    // inside one mutex slot. The deadlock test is: does this resolve in
+    // bounded time? If any nested acquisition remains it hangs.
+    const result = withRunMutexFor(run.runId, () => {
+      const step1 = stepInlineRunLocked(run.runId);
+      recordAgentCompleteLocked(run.runId, "scan", "a1", "out-1");
+      recordAgentCompleteLocked(run.runId, "scan", "a2", "out-2");
+      recordAgentCompleteLocked(run.runId, "scan", "a3", "out-3");
+      // After three completions the fan-out advances the run to synthesize;
+      // call recordBarrierCompleteLocked directly with a result string and
+      // verify it transitions the run to "completed" without re-acquiring.
+      recordBarrierCompleteLocked(run.runId, "synthesize", "synthesized");
+      return { step1 };
+    });
+    const raced = await Promise.race([
+      result,
+      new Promise<{ step1: null }>((_, reject) =>
+        setTimeout(() => reject(new Error("deadlock: locked variants re-acquired the mutex")), 5000)
+      ),
+    ]);
+    expect(raced.step1?.type).toBe("dispatch");
+
+    const final = loadRun(run.runId);
+    expect(final?.status).toBe("completed");
   });
 });

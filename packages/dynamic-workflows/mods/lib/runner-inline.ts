@@ -62,127 +62,162 @@ export interface InlineWait {
 
 export type InlineStep = InlineDispatch | InlineComplete | InlineWait;
 
+// ---------------------------------------------------------------------------
+// Locking contract.
+//
+// All three public functions (stepInlineRun, recordAgentComplete,
+// recordBarrierComplete) acquire the per-run mutex via withRunMutexFor before
+// touching run state. They then delegate to a `*Locked` helper that ASSUMES
+// the caller already holds the mutex.
+//
+// This split closes C1 (deterministic deadlock under refactor): when
+// dispatchFanOut / dispatchBarrier call into recordAgentCompleteLocked /
+// recordBarrierCompleteLocked / stepInlineRunLocked directly, no second
+// acquisition happens, so the runner is safe regardless of how the
+// withRunMutexFor implementation schedules its callback.
+//
+// Public entry points stay the same; the change is purely structural.
+// ---------------------------------------------------------------------------
+
 export function stepInlineRun(runId: string): Promise<InlineStep | null> {
-  return withRunMutexFor(runId, async () => {
-    const run = loadRun(runId);
-    if (!run) return null;
-    if (run.status === "completed") {
-      const result = readRunResult(runId, run.agentId) ?? "";
-      return { type: "complete", runId, result, resultPath: getRunResultDisplayPath(runId, run.agentId) };
-    }
-    if (run.status !== "running") {
-      return null;
-    }
+  return withRunMutexFor(runId, () => stepInlineRunLocked(runId));
+}
 
-    const currentPhaseId = run.currentPhaseId;
-    if (!currentPhaseId) {
-      return completeRun(run, "No phases remaining.");
-    }
+export async function recordAgentComplete(runId: string, phaseId: string, agentId: string, output: string): Promise<RunState | null> {
+  return withRunMutexFor(runId, () => recordAgentCompleteLocked(runId, phaseId, agentId, output));
+}
 
-    const phase = phaseById(run.workflow, currentPhaseId);
-    if (!phase) {
+export async function recordBarrierComplete(runId: string, phaseId: string, output: string): Promise<RunState | null> {
+  return withRunMutexFor(runId, () => recordBarrierCompleteLocked(runId, phaseId, output));
+}
+
+// Internal: assumes caller holds the per-run mutex. Reads run state from
+// disk, advances the run, and returns the next inline step. Used by both
+// stepInlineRun (public) and dispatchFanOut/dispatchBarrier (after they
+// mutate run state inside their own mutex slot). Exported for tests; the
+// public API is stepInlineRun.
+export function stepInlineRunLocked(runId: string): InlineStep | null {
+  const run = loadRun(runId);
+  if (!run) return null;
+  if (run.status === "completed") {
+    const result = readRunResult(runId, run.agentId) ?? "";
+    return { type: "complete", runId, result, resultPath: getRunResultDisplayPath(runId, run.agentId) };
+  }
+  if (run.status !== "running") {
+    return null;
+  }
+
+  const currentPhaseId = run.currentPhaseId;
+  if (!currentPhaseId) {
+    return completeRunLocked(run, "No phases remaining.");
+  }
+
+  const phase = phaseById(run.workflow, currentPhaseId);
+  if (!phase) {
+    run.status = "failed";
+    run.error = `Unknown phase "${currentPhaseId}".`;
+    persistRun(touchRun(run));
+    updateRunRegistry(run);
+    return null;
+  }
+
+  if (isFanOutPhase(phase)) {
+    return dispatchFanOutLocked(run, phase);
+  }
+
+  if (isBarrierPhase(phase)) {
+    return dispatchBarrierLocked(run, phase);
+  }
+
+  return null;
+}
+
+// Internal: assumes caller holds the per-run mutex. Reads the run from disk,
+// mutates it to record the agent completion, and returns the run. Used by
+// both recordAgentComplete (public) and the late-pickup branch in
+// dispatchFanOutLocked. Exported for tests; the public API is
+// recordAgentComplete.
+export function recordAgentCompleteLocked(runId: string, phaseId: string, agentId: string, output: string): RunState | null {
+  const run = loadRun(runId);
+  if (!run) return null;
+  if (run.status !== "running") return run;
+  const phase = phaseById(run.workflow, phaseId);
+  if (!phase || !isFanOutPhase(phase)) return run;
+
+  const agent = phase.agents.find((a) => a.id === agentId);
+  if (!agent) return run;
+
+  // If this agent has already been recorded as completed, treat this call
+  // as a no-op. Concurrent tool_end deliveries from subagents and the late
+  // pickup branch in dispatchFanOut can both arrive for the same agent.
+  const alreadyDone = run.completedAgents.some((a) => a.phaseId === phaseId && a.agentId === agentId);
+  if (alreadyDone) return run;
+
+  const fileOutput = readRunAgentOutput(runId, phaseId, agentId, run.agentId);
+  const finalOutput = fileOutput ?? output;
+
+  const existing = loadAgentResult(runId, phaseId, agentId, run.agentId);
+  const state: AgentRunState = existing
+    ? { ...existing, status: "completed", output: finalOutput, completedAt: new Date().toISOString() }
+    : {
+        phaseId,
+        agentId,
+        prompt: agent.prompt,
+        status: "completed",
+        output: finalOutput,
+        completedAt: new Date().toISOString(),
+      };
+
+  // Only write the file if the agent did not already write it. If the agent
+  // produced a detailed report, preserving that is more valuable than the
+  // short tool-return placeholder.
+  if (!fileOutput) {
+    saveAgentResult(runId, phaseId, state, run.agentId);
+  }
+
+  run.completedAgents = run.completedAgents.filter((a) => !(a.phaseId === phaseId && a.agentId === agentId));
+  run.completedAgents.push(state);
+
+  run.outputs[`${phaseId}.${agentId}`] = finalOutput;
+
+  const completedAgentIds = new Set(run.completedAgents.map((a) => a.agentId));
+  if (isPhaseComplete(run.workflow, phaseId, completedAgentIds)) {
+    advancePhase(run);
+  }
+
+  persistRun(touchRun(run));
+  updateRunRegistry(run);
+  return run;
+}
+
+// Internal: assumes caller holds the per-run mutex. Exported for tests; the
+// public API is recordBarrierComplete.
+export function recordBarrierCompleteLocked(runId: string, phaseId: string, output: string): RunState | null {
+  const run = loadRun(runId);
+  if (!run) return null;
+  if (run.status !== "running") return run;
+  const phase = phaseById(run.workflow, phaseId);
+  if (!phase || !isBarrierPhase(phase)) return run;
+
+  run.outputs[phaseId] = output;
+  advancePhase(run);
+  if ((run.status as RunState["status"]) === "completed") {
+    const complete = completeRunLocked(run, output);
+    if (complete.error) {
       run.status = "failed";
-      run.error = `Unknown phase "${currentPhaseId}".`;
+      run.error = complete.error;
       persistRun(touchRun(run));
       updateRunRegistry(run);
       return null;
     }
-
-    if (isFanOutPhase(phase)) {
-      return dispatchFanOut(run, phase);
-    }
-
-    if (isBarrierPhase(phase)) {
-      return dispatchBarrier(run, phase);
-    }
-
-    return null;
-  });
-}
-
-export async function recordAgentComplete(runId: string, phaseId: string, agentId: string, output: string): Promise<RunState | null> {
-  return withRunMutexFor(runId, async () => {
-    const run = loadRun(runId);
-    if (!run) return null;
-    if (run.status !== "running") return run;
-    const phase = phaseById(run.workflow, phaseId);
-    if (!phase || !isFanOutPhase(phase)) return run;
-
-    const agent = phase.agents.find((a) => a.id === agentId);
-    if (!agent) return run;
-
-    // If this agent has already been recorded as completed, treat this call
-    // as a no-op. Concurrent tool_end deliveries from subagents and the late
-    // pickup branch in dispatchFanOut can both arrive for the same agent.
-    const alreadyDone = run.completedAgents.some((a) => a.phaseId === phaseId && a.agentId === agentId);
-    if (alreadyDone) return run;
-
-    const fileOutput = readRunAgentOutput(runId, phaseId, agentId, run.agentId);
-    const finalOutput = fileOutput ?? output;
-
-    const existing = loadAgentResult(runId, phaseId, agentId, run.agentId);
-    const state: AgentRunState = existing
-      ? { ...existing, status: "completed", output: finalOutput, completedAt: new Date().toISOString() }
-      : {
-          phaseId,
-          agentId,
-          prompt: agent.prompt,
-          status: "completed",
-          output: finalOutput,
-          completedAt: new Date().toISOString(),
-        };
-
-    // Only write the file if the agent did not already write it. If the agent
-    // produced a detailed report, preserving that is more valuable than the
-    // short tool-return placeholder.
-    if (!fileOutput) {
-      saveAgentResult(runId, phaseId, state, run.agentId);
-    }
-
-    run.completedAgents = run.completedAgents.filter((a) => !(a.phaseId === phaseId && a.agentId === agentId));
-    run.completedAgents.push(state);
-
-    run.outputs[`${phaseId}.${agentId}`] = finalOutput;
-
-    const completedAgentIds = new Set(run.completedAgents.map((a) => a.agentId));
-    if (isPhaseComplete(run.workflow, phaseId, completedAgentIds)) {
-      advancePhase(run);
-    }
-
-    persistRun(touchRun(run));
-    updateRunRegistry(run);
     return run;
-  });
+  }
+  persistRun(touchRun(run));
+  updateRunRegistry(run);
+  return run;
 }
 
-export async function recordBarrierComplete(runId: string, phaseId: string, output: string): Promise<RunState | null> {
-  return withRunMutexFor(runId, async () => {
-    const run = loadRun(runId);
-    if (!run) return null;
-    if (run.status !== "running") return run;
-    const phase = phaseById(run.workflow, phaseId);
-    if (!phase || !isBarrierPhase(phase)) return run;
-
-    run.outputs[phaseId] = output;
-    advancePhase(run);
-    if ((run.status as RunState["status"]) === "completed") {
-      const complete = completeRun(run, output);
-      if (complete.error) {
-        run.status = "failed";
-        run.error = complete.error;
-        persistRun(touchRun(run));
-        updateRunRegistry(run);
-        return null;
-      }
-      return run;
-    }
-    persistRun(touchRun(run));
-    updateRunRegistry(run);
-    return run;
-  });
-}
-
-async function dispatchFanOut(run: RunState, phase: FanOutPhase): Promise<InlineStep | null> {
+function dispatchFanOutLocked(run: RunState, phase: FanOutPhase): InlineStep | null {
   const completedIds = new Set(run.completedAgents.map((a) => a.agentId));
   const pendingAgents = phase.agents.filter((a) => !completedIds.has(a.id) && !run.startedAgentIds.includes(a.id));
 
@@ -191,7 +226,9 @@ async function dispatchFanOut(run: RunState, phase: FanOutPhase): Promise<Inline
     for (const a of runningAgents) {
       const fileOutput = readRunAgentOutput(run.runId, phase.id, a.id, run.agentId);
       if (fileOutput && fileOutput.length > 0) {
-        await recordAgentComplete(run.runId, phase.id, a.id, fileOutput);
+        // Call the locked variant: caller (this function) is already inside
+        // the per-run mutex slot via stepInlineRunLocked, so no re-acquire.
+        recordAgentCompleteLocked(run.runId, phase.id, a.id, fileOutput);
       }
     }
     const refreshed = loadRun(run.runId);
@@ -199,7 +236,9 @@ async function dispatchFanOut(run: RunState, phase: FanOutPhase): Promise<Inline
       advancePhase(refreshed);
       persistRun(touchRun(refreshed));
       updateRunRegistry(refreshed);
-      return stepInlineRun(refreshed.runId);
+      // Step inline using the locked variant to avoid re-acquiring the mutex
+      // we already hold.
+      return stepInlineRunLocked(refreshed.runId);
     }
     const remaining = runningAgents.length;
     const done = phase.agents.length - remaining;
@@ -232,7 +271,7 @@ async function dispatchFanOut(run: RunState, phase: FanOutPhase): Promise<Inline
   };
 }
 
-async function dispatchBarrier(run: RunState, phase: BarrierPhase): Promise<InlineStep | null> {
+function dispatchBarrierLocked(run: RunState, phase: BarrierPhase): InlineStep | null {
   const inputs = phase.depends_on.map((depId) => {
     const dep = phaseById(run.workflow, depId);
     if (!dep) return { phaseId: depId, outputs: {} };
@@ -274,12 +313,14 @@ async function dispatchBarrier(run: RunState, phase: BarrierPhase): Promise<Inli
   if (run.startedPhaseIds.includes(phase.id)) {
     const fileResult = readRunResult(run.runId, run.agentId);
     if (fileResult && fileResult.length > 0) {
-      await recordBarrierComplete(run.runId, phase.id, fileResult);
+      // Use the locked variants — caller already holds the per-run mutex
+      // via stepInlineRunLocked.
+      recordBarrierCompleteLocked(run.runId, phase.id, fileResult);
       const refreshed = loadRun(run.runId);
       if (refreshed?.status === "completed") {
         return { type: "complete", runId: run.runId, result: fileResult, resultPath: getRunResultDisplayPath(run.runId, run.agentId) };
       }
-      return stepInlineRun(run.runId);
+      return stepInlineRunLocked(refreshed?.runId ?? run.runId);
     }
     return { type: "wait", runId: run.runId, phaseId: phase.id, pending: 1, completed: 0 };
   }
@@ -322,7 +363,7 @@ function advancePhase(run: RunState): void {
   }
 }
 
-function completeRun(run: RunState, result: string): InlineComplete & { error?: string } {
+function completeRunLocked(run: RunState, result: string): InlineComplete & { error?: string } {
   run.status = "completed";
   run.currentPhaseId = null;
   // If a barrier agent was instructed to write result.md, prefer that file.
