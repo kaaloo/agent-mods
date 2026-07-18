@@ -6,12 +6,30 @@ import { serializeWorkflowMarkdown, loadWorkflowFromMarkdown } from "./markdown.
 import { generateRunId, isSafeIdentifier, isSafePathComponent, isSafeRunId, isContainedPath } from "./utils.ts";
 import type { WorkflowDefinition } from "./schema.ts";
 
-let runMutex = Promise.resolve();
+// Per-run mutexes serialize all read-modify-write operations against a given
+// run. Independent runs proceed concurrently; mutations within a single run
+// are strictly ordered. The chain releases between awaits, so a function that
+// awaits another mutexed helper does not deadlock on its own chain.
+//
+// The map is keyed by runId and entries are never removed; they hold only the
+// tail of the promise chain, not the result, so memory cost is bounded by the
+// number of distinct runIds ever observed. For long-lived processes this could
+// grow; revisit if it becomes a concern.
+const runMutexes = new Map<string, Promise<unknown>>();
 
-export function withRunMutex<T>(fn: () => Promise<T> | T): Promise<T> {
-  const promise = runMutex.then(() => fn());
-  runMutex = promise.then(() => {}, () => {});
-  return promise;
+export function withRunMutexFor<T>(runId: string, fn: () => Promise<T> | T): Promise<T> {
+  if (!isSafeRunId(runId)) {
+    // Defensive: reject unknown / unsafe runIds so a typo can't route work to
+    // the shared "global" key by accident. Callers should validate upstream.
+    return Promise.reject(new Error(`Refusing to take per-run mutex for unsafe runId: ${runId}`));
+  }
+  const previous = runMutexes.get(runId) ?? Promise.resolve();
+  const next = previous.then(() => fn(), () => fn());
+  // Swallow rejections on the tail so a single failed call does not poison
+  // subsequent calls on the same run. Each caller still observes its own
+  // rejection via the returned promise.
+  runMutexes.set(runId, next.then(() => {}, () => {}));
+  return next as Promise<T>;
 }
 
 export const MOD_ID = "flows";
@@ -314,7 +332,7 @@ export async function createRun(workflow: WorkflowDefinition, inputs: Record<str
     conversationId,
     workingDirectory,
   };
-  return withRunMutex(() => {
+  return withRunMutexFor(runId, () => {
     persistRun(run);
     updateRunRegistry(run);
     return run;

@@ -10,7 +10,7 @@ import {
   getPhaseMaxConcurrent,
 } from "./schema.ts";
 import {
-  withRunMutex,
+  withRunMutexFor,
   loadRun,
   loadAgentResult,
   saveAgentResult,
@@ -59,7 +59,7 @@ export interface InlineWait {
 export type InlineStep = InlineDispatch | InlineComplete | InlineWait;
 
 export function stepInlineRun(runId: string): Promise<InlineStep | null> {
-  return withRunMutex(async () => {
+  return withRunMutexFor(runId, async () => {
     const run = loadRun(runId);
     if (!run) return null;
     if (run.status === "completed") {
@@ -97,73 +97,85 @@ export function stepInlineRun(runId: string): Promise<InlineStep | null> {
 }
 
 export async function recordAgentComplete(runId: string, phaseId: string, agentId: string, output: string): Promise<RunState | null> {
-  const run = loadRun(runId);
-  if (!run) return null;
-  const phase = phaseById(run.workflow, phaseId);
-  if (!phase || !isFanOutPhase(phase)) return null;
+  return withRunMutexFor(runId, async () => {
+    const run = loadRun(runId);
+    if (!run) return null;
+    if (run.status !== "running") return run;
+    const phase = phaseById(run.workflow, phaseId);
+    if (!phase || !isFanOutPhase(phase)) return run;
 
-  const agent = phase.agents.find((a) => a.id === agentId);
-  if (!agent) return null;
+    const agent = phase.agents.find((a) => a.id === agentId);
+    if (!agent) return run;
 
-  const fileOutput = readRunAgentOutput(runId, phaseId, agentId);
-  const finalOutput = fileOutput ?? output;
+    // If this agent has already been recorded as completed, treat this call
+    // as a no-op. Concurrent tool_end deliveries from subagents and the late
+    // pickup branch in dispatchFanOut can both arrive for the same agent.
+    const alreadyDone = run.completedAgents.some((a) => a.phaseId === phaseId && a.agentId === agentId);
+    if (alreadyDone) return run;
 
-  const existing = loadAgentResult(runId, phaseId, agentId);
-  const state: AgentRunState = existing
-    ? { ...existing, status: "completed", output: finalOutput, completedAt: new Date().toISOString() }
-    : {
-        phaseId,
-        agentId,
-        prompt: agent.prompt,
-        status: "completed",
-        output: finalOutput,
-        completedAt: new Date().toISOString(),
-      };
+    const fileOutput = readRunAgentOutput(runId, phaseId, agentId);
+    const finalOutput = fileOutput ?? output;
 
-  // Only write the file if the agent did not already write it. If the agent
-  // produced a detailed report, preserving that is more valuable than the
-  // short tool-return placeholder.
-  if (!fileOutput) {
-    saveAgentResult(runId, phaseId, state);
-  }
+    const existing = loadAgentResult(runId, phaseId, agentId);
+    const state: AgentRunState = existing
+      ? { ...existing, status: "completed", output: finalOutput, completedAt: new Date().toISOString() }
+      : {
+          phaseId,
+          agentId,
+          prompt: agent.prompt,
+          status: "completed",
+          output: finalOutput,
+          completedAt: new Date().toISOString(),
+        };
 
-  run.completedAgents = run.completedAgents.filter((a) => !(a.phaseId === phaseId && a.agentId === agentId));
-  run.completedAgents.push(state);
+    // Only write the file if the agent did not already write it. If the agent
+    // produced a detailed report, preserving that is more valuable than the
+    // short tool-return placeholder.
+    if (!fileOutput) {
+      saveAgentResult(runId, phaseId, state);
+    }
 
-  run.outputs[`${phaseId}.${agentId}`] = finalOutput;
+    run.completedAgents = run.completedAgents.filter((a) => !(a.phaseId === phaseId && a.agentId === agentId));
+    run.completedAgents.push(state);
 
-  const completedAgentIds = new Set(run.completedAgents.map((a) => a.agentId));
-  if (isPhaseComplete(run.workflow, phaseId, completedAgentIds)) {
-    advancePhase(run);
-  }
+    run.outputs[`${phaseId}.${agentId}`] = finalOutput;
 
-  persistRun(touchRun(run));
-  updateRunRegistry(run);
-  return run;
+    const completedAgentIds = new Set(run.completedAgents.map((a) => a.agentId));
+    if (isPhaseComplete(run.workflow, phaseId, completedAgentIds)) {
+      advancePhase(run);
+    }
+
+    persistRun(touchRun(run));
+    updateRunRegistry(run);
+    return run;
+  });
 }
 
 export async function recordBarrierComplete(runId: string, phaseId: string, output: string): Promise<RunState | null> {
-  const run = loadRun(runId);
-  if (!run) return null;
-  const phase = phaseById(run.workflow, phaseId);
-  if (!phase || !isBarrierPhase(phase)) return null;
+  return withRunMutexFor(runId, async () => {
+    const run = loadRun(runId);
+    if (!run) return null;
+    if (run.status !== "running") return run;
+    const phase = phaseById(run.workflow, phaseId);
+    if (!phase || !isBarrierPhase(phase)) return run;
 
-  run.outputs[phaseId] = output;
-  advancePhase(run);
-  if (run.status === "completed") {
-    const complete = completeRun(run, output);
-    if (complete.error) {
-      run.status = "failed";
-      run.error = complete.error;
-      persistRun(touchRun(run));
-      updateRunRegistry(run);
-      return null;
+    run.outputs[phaseId] = output;
+    advancePhase(run);
+    if ((run.status as RunState["status"]) === "completed") {
+      const complete = completeRun(run, output);
+      if (complete.error) {
+        run.status = "failed";
+        run.error = complete.error;
+        persistRun(touchRun(run));
+        updateRunRegistry(run);
+        return null;
+      }
+      return run;
     }
+    persistRun(touchRun(run));
+    updateRunRegistry(run);
     return run;
-  }
-  persistRun(touchRun(run));
-  updateRunRegistry(run);
-  return run;
+  });
 }
 
 async function dispatchFanOut(run: RunState, phase: FanOutPhase): Promise<InlineStep | null> {

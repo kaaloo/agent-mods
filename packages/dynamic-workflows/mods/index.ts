@@ -14,6 +14,7 @@ import {
   setRuntimeAgentId,
   touchRun,
   updateRunRegistry,
+  withRunMutexFor,
 } from "./lib/state.ts";
 import { stepInlineRun, recordAgentComplete, recordBarrierComplete, parseFlowAgentMarker, type InlineStep } from "./lib/runner-inline.ts";
 import { listTemplates, loadTemplate } from "./lib/templates.ts";
@@ -359,10 +360,14 @@ export default function activate(letta: LettaModContext): (() => void) {
       };
 
       if (workflowContinuationCount >= MAX_WORKFLOW_CONTINUATIONS) {
-        run.status = "failed";
-        run.error = `Exceeded maximum workflow continuations (${MAX_WORKFLOW_CONTINUATIONS}).`;
-        persistRun(touchRun(run));
-        updateRunRegistry(run);
+        await withRunMutexFor(currentRunId, async () => {
+          const refreshed = loadRun(currentRunId);
+          if (!refreshed || refreshed.status !== "running") return;
+          refreshed.status = "failed";
+          refreshed.error = `Exceeded maximum workflow continuations (${MAX_WORKFLOW_CONTINUATIONS}).`;
+          persistRun(touchRun(refreshed));
+          updateRunRegistry(refreshed);
+        });
         await sendPrompt(`Workflow "${run.workflow.name}" stopped: exceeded maximum continuations.`);
         return;
       }
