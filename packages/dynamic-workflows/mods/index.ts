@@ -15,7 +15,7 @@ import {
   touchRun,
   updateRunRegistry,
 } from "./lib/state.ts";
-import { stepInlineRun, type InlineStep } from "./lib/runner-inline.ts";
+import { stepInlineRun, recordAgentComplete, recordBarrierComplete, parseFlowAgentMarker, type InlineStep } from "./lib/runner-inline.ts";
 import { listTemplates, loadTemplate } from "./lib/templates.ts";
 import { isNonEmptyString } from "./lib/utils.ts";
 
@@ -196,7 +196,7 @@ export default function activate(letta: LettaModContext): (() => void) {
         if (!workflow) {
           return { status: "error", content: `Workflow "${name}" not found.` };
         }
-        const run = await createRun(workflow, normalizeInputs(inputs), ctx.conversation?.id);
+        const run = await createRun(workflow, normalizeInputs(inputs), ctx.conversation?.id, ctx.cwd ?? ctx.workingDirectory);
         activeRunId = run.runId;
         activeRunConversationId = ctx.conversation?.id;
         workflowContinuationCount = 0;
@@ -292,7 +292,7 @@ export default function activate(letta: LettaModContext): (() => void) {
             if (!workflow) {
               return { type: "output", output: `Workflow "${rest}" not found.` };
             }
-            const run = await createRun(workflow, {}, ctx.conversation?.id);
+            const run = await createRun(workflow, {}, ctx.conversation?.id, ctx.cwd ?? ctx.workingDirectory);
             activeRunId = run.runId;
             activeRunConversationId = ctx.conversation?.id;
             workflowContinuationCount = 0;
@@ -318,18 +318,23 @@ export default function activate(letta: LettaModContext): (() => void) {
 
   // ── Events ──
   if (letta.capabilities?.events?.tools) {
-    safeOn("tool_end", (event: LettaEvent, ctx: LettaEventHandlerContext) => {
+    safeOn("tool_end", async (event: LettaEvent, ctx: LettaEventHandlerContext) => {
       if (ctx.agent?.id) setRuntimeAgentId(ctx.agent.id);
       if (!activeRunId || !event || typeof event !== "object") return;
       if (ctx.conversation?.id !== activeRunConversationId) return;
-      const toolName = event.toolName;
-      if (typeof toolName !== "string") return;
-      if (toolName === "Agent" && event.status !== "error") {
-        // Subagent output is written to the run's agent output file by the
-        // subagent itself. The turn_end handler drives the next step, but we
-        // refresh the panel here so progress is visible immediately.
-        refreshPanel();
+      if (event.toolName !== "Agent" || event.status === "error") return;
+
+      const marker = parseFlowAgentMarker(event.args?.prompt);
+      if (!marker || marker.runId !== activeRunId) return;
+      const output = typeof event.output === "string" ? event.output : "";
+      if (!output.trim()) return;
+
+      if (marker.agentId === "synthesize") {
+        await recordBarrierComplete(marker.runId, marker.phaseId, output);
+      } else {
+        await recordAgentComplete(marker.runId, marker.phaseId, marker.agentId, output);
       }
+      refreshPanel();
     });
   }
 
@@ -486,7 +491,8 @@ Phase types: fan-out (parallel agents) and barrier (single agent after dependenc
 }
 
 function buildExecutorPrompt(runId: string, workflowName: string, step: InlineStep | null): string {
-  const base = `Workflow "${workflowName}" started. Run ID: ${runId}.\n\nYour job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the Agent tool.\n\nRules:\n1. If step.type is "complete", stop and return a concise summary of the result shown below.\n2. If step.type is "dispatch", issue the described parallel Agent tool calls with the exact prompts provided.\n3. If step.type is "wait", wait for the next prompt from the orchestrator. Do not call any tools.\n4. Use the general-purpose subagent type for all Agent calls.\n\nCurrent step:`;
+  const run = loadRun(runId);
+  const base = `Workflow "${workflowName}" started. Run ID: ${runId}.\n\nYour job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the Agent tool.\n\nExecution context:\n- Working directory: ${run?.workingDirectory ?? "the current project directory"}\n- Preserve the requested model and working-directory instructions included in each Agent prompt.\n\nRules:\n1. If step.type is "complete", stop and return a concise summary of the result shown below.\n2. If step.type is "dispatch", issue the described parallel Agent tool calls with the exact prompts provided.\n3. If step.type is "wait", wait for the next prompt from the orchestrator. Do not call any tools.\n4. Use the general-purpose subagent type for all Agent calls.\n\nCurrent step:`;
   return `${base}\n\n${formatStep(step)}`;
 }
 

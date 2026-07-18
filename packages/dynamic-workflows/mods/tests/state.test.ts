@@ -16,6 +16,7 @@ import {
   getRunDir,
   getRegistryPath,
   getLibraryDir,
+  readRunAgentOutput,
 } from "../lib/state.ts";
 import { WORKFLOW_VERSION, type WorkflowDefinition } from "../lib/schema.ts";
 
@@ -120,6 +121,7 @@ describe("runs", () => {
     });
     const loaded = loadAgentResult(run.runId, "scan", "a1");
     expect(loaded?.output).toBe("found nothing");
+    expect(readRunAgentOutput(run.runId, "scan", "a1")).toBe("found nothing");
   });
 });
 

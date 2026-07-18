@@ -101,6 +101,7 @@ export interface RunState {
   startedAt: string;
   updatedAt: string;
   conversationId?: string;
+  workingDirectory?: string;
   error?: string;
 }
 
@@ -294,7 +295,7 @@ export function readRunResult(runId: string): string | null {
   return readTextFile(getRunResultPath(runId));
 }
 
-export async function createRun(workflow: WorkflowDefinition, inputs: Record<string, string> = {}, conversationId?: string): Promise<RunState> {
+export async function createRun(workflow: WorkflowDefinition, inputs: Record<string, string> = {}, conversationId?: string, workingDirectory?: string): Promise<RunState> {
   const runId = generateRunId();
   const firstPhase = workflow.phases[0] ?? null;
   const run: RunState = {
@@ -311,6 +312,7 @@ export async function createRun(workflow: WorkflowDefinition, inputs: Record<str
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     conversationId,
+    workingDirectory,
   };
   return withRunMutex(() => {
     persistRun(run);
@@ -360,6 +362,7 @@ export function loadRun(runId: string): RunState | null {
       startedAt: String(data.startedAt ?? new Date().toISOString()),
       updatedAt: String(data.updatedAt ?? new Date().toISOString()),
       conversationId: data.conversationId ? String(data.conversationId) : undefined,
+      workingDirectory: data.workingDirectory ? String(data.workingDirectory) : undefined,
       error: data.error ? String(data.error) : undefined,
     };
   } catch {

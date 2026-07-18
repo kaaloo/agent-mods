@@ -7577,7 +7577,7 @@ function readRunAgentOutput(runId, phaseId, agentId) {
 function readRunResult(runId) {
   return readTextFile(getRunResultPath(runId));
 }
-async function createRun(workflow, inputs = {}, conversationId) {
+async function createRun(workflow, inputs = {}, conversationId, workingDirectory) {
   const runId = generateRunId();
   const firstPhase = workflow.phases[0] ?? null;
   const run = {
@@ -7593,7 +7593,8 @@ async function createRun(workflow, inputs = {}, conversationId) {
     outputs: {},
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    conversationId
+    conversationId,
+    workingDirectory
   };
   return withRunMutex(() => {
     persistRun(run);
@@ -7645,6 +7646,7 @@ function loadRun(runId) {
       startedAt: String(data.startedAt ?? new Date().toISOString()),
       updatedAt: String(data.updatedAt ?? new Date().toISOString()),
       conversationId: data.conversationId ? String(data.conversationId) : undefined,
+      workingDirectory: data.workingDirectory ? String(data.workingDirectory) : undefined,
       error: data.error ? String(data.error) : undefined
     };
   } catch {
@@ -7745,6 +7747,14 @@ function progressBar(completed, total, width) {
 import { setTimeout as sleep } from "node:timers/promises";
 
 // mods/lib/runner-inline.ts
+function parseFlowAgentMarker(prompt) {
+  if (typeof prompt !== "string")
+    return null;
+  const match = prompt.match(/\[FLOW_AGENT run_id=([^\s]+) phase_id=([^\s]+) agent_id=([^\s\]]+)\]/);
+  if (!match)
+    return null;
+  return { runId: match[1], phaseId: match[2], agentId: match[3] };
+}
 function stepInlineRun(runId) {
   return withRunMutex(async () => {
     const run = loadRun(runId);
@@ -7879,7 +7889,10 @@ async function dispatchFanOut(run, phase) {
       id: a.id,
       prompt: `${a.prompt}
 
-When you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id)}.`,
+[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=${a.id}]
+Working directory: ${run.workingDirectory ?? "the current project directory"}
+${phase.model ? `Use model: ${phase.model}
+` : ""}When you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id)}.`,
       model: phase.model
     }))
   };
@@ -7938,7 +7951,10 @@ ${fileOutput}` : String(run.outputs[`${depId}.${agent.id}`] ?? "");
   const resultPath = getRunResultPath(run.runId);
   const synthesizedPrompt = `${phase.prompt}
 
-Inputs from prior phases (read from the full .md reports where available):
+[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=synthesize]
+Working directory: ${run.workingDirectory ?? "the current project directory"}
+${phase.model ? `Use model: ${phase.model}
+` : ""}Inputs from prior phases (read from the full .md reports where available):
 ${JSON.stringify(inputs, null, 2)}
 
 When you are done, write your final synthesized report to ${resultPath}.`;
@@ -8213,7 +8229,7 @@ function activate(letta) {
         if (!workflow) {
           return { status: "error", content: `Workflow "${name}" not found.` };
         }
-        const run = await createRun(workflow, normalizeInputs(inputs), ctx.conversation?.id);
+        const run = await createRun(workflow, normalizeInputs(inputs), ctx.conversation?.id, ctx.cwd ?? ctx.workingDirectory);
         activeRunId = run.runId;
         activeRunConversationId = ctx.conversation?.id;
         workflowContinuationCount = 0;
@@ -8313,7 +8329,7 @@ Run a saved workflow or bundled template.` };
             if (!workflow) {
               return { type: "output", output: `Workflow "${rest}" not found.` };
             }
-            const run = await createRun(workflow, {}, ctx.conversation?.id);
+            const run = await createRun(workflow, {}, ctx.conversation?.id, ctx.cwd ?? ctx.workingDirectory);
             activeRunId = run.runId;
             activeRunConversationId = ctx.conversation?.id;
             workflowContinuationCount = 0;
@@ -8339,19 +8355,27 @@ ${buildFlowHelp()}` };
     }));
   }
   if (letta.capabilities?.events?.tools) {
-    safeOn("tool_end", (event, ctx) => {
+    safeOn("tool_end", async (event, ctx) => {
       if (ctx.agent?.id)
         setRuntimeAgentId(ctx.agent.id);
       if (!activeRunId || !event || typeof event !== "object")
         return;
       if (ctx.conversation?.id !== activeRunConversationId)
         return;
-      const toolName = event.toolName;
-      if (typeof toolName !== "string")
+      if (event.toolName !== "Agent" || event.status === "error")
         return;
-      if (toolName === "Agent" && event.status !== "error") {
-        refreshPanel();
+      const marker = parseFlowAgentMarker(event.args?.prompt);
+      if (!marker || marker.runId !== activeRunId)
+        return;
+      const output = typeof event.output === "string" ? event.output : "";
+      if (!output.trim())
+        return;
+      if (marker.agentId === "synthesize") {
+        await recordBarrierComplete(marker.runId, marker.phaseId, output);
+      } else {
+        await recordAgentComplete(marker.runId, marker.phaseId, marker.agentId, output);
       }
+      refreshPanel();
     });
   }
   if (letta.capabilities?.events?.turns) {
@@ -8509,9 +8533,14 @@ budgets:
 Phase types: fan-out (parallel agents) and barrier (single agent after dependencies).`;
 }
 function buildExecutorPrompt(runId, workflowName, step) {
+  const run = loadRun(runId);
   const base = `Workflow "${workflowName}" started. Run ID: ${runId}.
 
 Your job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the Agent tool.
+
+Execution context:
+- Working directory: ${run?.workingDirectory ?? "the current project directory"}
+- Preserve the requested model and working-directory instructions included in each Agent prompt.
 
 Rules:
 1. If step.type is "complete", stop and return a concise summary of the result shown below.

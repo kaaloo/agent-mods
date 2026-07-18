@@ -25,13 +25,20 @@ import {
   getRunResultDisplayPath,
 } from "./state.ts";
 
+export function parseFlowAgentMarker(prompt: unknown): { runId: string; phaseId: string; agentId: string } | null {
+  if (typeof prompt !== "string") return null;
+  const match = prompt.match(/\[FLOW_AGENT run_id=([^\s]+) phase_id=([^\s]+) agent_id=([^\s\]]+)\]/);
+  if (!match) return null;
+  return { runId: match[1], phaseId: match[2], agentId: match[3] };
+}
+
 export interface InlineDispatch {
   type: "dispatch";
   runId: string;
   phaseId: string;
   phaseType: "fan-out" | "barrier";
   instructions: string;
-  agents?: Array<{ id: string; prompt: string; model?: string } >;
+  agents?: Array<{ id: string; prompt: string; model?: string }>;
 }
 
 export interface InlineComplete {
@@ -203,7 +210,7 @@ async function dispatchFanOut(run: RunState, phase: FanOutPhase): Promise<Inline
     instructions: `Dispatch ${dispatchNow.length} parallel Agent tool call(s) for phase "${phase.id}". ${remaining > 0 ? `${remaining} agent(s) will queue after the first batch completes.` : ""}`,
     agents: dispatchNow.map((a) => ({
       id: a.id,
-      prompt: `${a.prompt}\n\nWhen you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id)}.`,
+      prompt: `${a.prompt}\n\n[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=${a.id}]\nWorking directory: ${run.workingDirectory ?? "the current project directory"}\n${phase.model ? `Use model: ${phase.model}\n` : ""}When you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id)}.`,
       model: phase.model,
     })),
   };
@@ -268,7 +275,9 @@ async function dispatchBarrier(run: RunState, phase: BarrierPhase): Promise<Inli
   const resultPath = getRunResultPath(run.runId);
   const synthesizedPrompt = `${phase.prompt}
 
-Inputs from prior phases (read from the full .md reports where available):
+[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=synthesize]
+Working directory: ${run.workingDirectory ?? "the current project directory"}
+${phase.model ? `Use model: ${phase.model}\n` : ""}Inputs from prior phases (read from the full .md reports where available):
 ${JSON.stringify(inputs, null, 2)}
 
 When you are done, write your final synthesized report to ${resultPath}.`;
