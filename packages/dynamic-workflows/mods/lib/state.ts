@@ -376,7 +376,7 @@ export async function createRun(workflow: WorkflowDefinition, inputs: Record<str
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     conversationId,
-    workingDirectory,
+    workingDirectory: sanitizeWorkingDirectory(workingDirectory),
     agentId: currentAgentId,
   };
   return withRunMutexFor(runId, () => {
@@ -384,6 +384,20 @@ export async function createRun(workflow: WorkflowDefinition, inputs: Record<str
     updateRunRegistry(run);
     return run;
   });
+}
+
+// Strip control characters (including newlines) from a working-directory
+// value before persisting or replaying it. Sub-agent prompts interpolate
+// this value verbatim, so a control-character payload could split the
+// instruction and inject additional directives. Closes H5 from the
+// bug-sweep report (workingDirectory persisted verbatim and replayed into
+// sub-agent instructions).
+export function sanitizeWorkingDirectory(value: string | undefined): string | undefined {
+  if (typeof value !== "string") return undefined;
+  // Remove ASCII control characters (0x00-0x1F, 0x7F) and Unicode line/paragraph
+  // separators. Keeps printable characters, spaces, and standard path punctuation.
+  const cleaned = value.replace(/[\x00-\x1F\x7F\u2028\u2029]/g, "").trim();
+  return cleaned.length > 0 ? cleaned : undefined;
 }
 
 export function persistRun(run: RunState): void {
@@ -476,7 +490,7 @@ function tryLoadRunFromAgent(runId: string, runAgentId: string): RunState | null
       startedAt: String(data.startedAt ?? new Date().toISOString()),
       updatedAt: String(data.updatedAt ?? new Date().toISOString()),
       conversationId: data.conversationId ? String(data.conversationId) : undefined,
-      workingDirectory: data.workingDirectory ? String(data.workingDirectory) : undefined,
+      workingDirectory: sanitizeWorkingDirectory(data.workingDirectory ? String(data.workingDirectory) : undefined),
       agentId: runAgentId,
       error: data.error ? String(data.error) : undefined,
     };

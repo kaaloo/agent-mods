@@ -27,7 +27,11 @@ import {
 
 export function parseFlowAgentMarker(prompt: unknown): { runId: string; phaseId: string; agentId: string } | null {
   if (typeof prompt !== "string") return null;
-  const match = prompt.match(/\[FLOW_AGENT run_id=([^\s]+) phase_id=([^\s]+) agent_id=([^\s\]]+)\]/);
+  // Tight captures to match isSafeIdentifier / isSafeRunId invariants. The
+  // original `[^\s]+` accepted any non-whitespace, including ".." and other
+  // traversal tokens. Downstream path guards closed the practical risk, but
+  // tightening the parser is defense-in-depth (closes M9).
+  const match = prompt.match(/\[FLOW_AGENT run_id=(\d{13,}-[A-Za-z0-9]{8,}) phase_id=([A-Za-z0-9_-]{1,64}) agent_id=([A-Za-z0-9_-]{1,64})\]/);
   if (!match) return null;
   return { runId: match[1], phaseId: match[2], agentId: match[3] };
 }

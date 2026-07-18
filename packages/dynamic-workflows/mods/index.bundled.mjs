@@ -7613,7 +7613,7 @@ async function createRun(workflow, inputs = {}, conversationId, workingDirectory
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     conversationId,
-    workingDirectory,
+    workingDirectory: sanitizeWorkingDirectory(workingDirectory),
     agentId: currentAgentId
   };
   return withRunMutexFor(runId, () => {
@@ -7621,6 +7621,12 @@ async function createRun(workflow, inputs = {}, conversationId, workingDirectory
     updateRunRegistry(run);
     return run;
   });
+}
+function sanitizeWorkingDirectory(value) {
+  if (typeof value !== "string")
+    return;
+  const cleaned = value.replace(/[\x00-\x1F\x7F\u2028\u2029]/g, "").trim();
+  return cleaned.length > 0 ? cleaned : undefined;
 }
 function persistRun(run) {
   const runDir = getRunDir(run.runId, run.agentId);
@@ -7712,7 +7718,7 @@ function tryLoadRunFromAgent(runId, runAgentId) {
       startedAt: String(data.startedAt ?? new Date().toISOString()),
       updatedAt: String(data.updatedAt ?? new Date().toISOString()),
       conversationId: data.conversationId ? String(data.conversationId) : undefined,
-      workingDirectory: data.workingDirectory ? String(data.workingDirectory) : undefined,
+      workingDirectory: sanitizeWorkingDirectory(data.workingDirectory ? String(data.workingDirectory) : undefined),
       agentId: runAgentId,
       error: data.error ? String(data.error) : undefined
     };
@@ -7817,7 +7823,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 function parseFlowAgentMarker(prompt) {
   if (typeof prompt !== "string")
     return null;
-  const match = prompt.match(/\[FLOW_AGENT run_id=([^\s]+) phase_id=([^\s]+) agent_id=([^\s\]]+)\]/);
+  const match = prompt.match(/\[FLOW_AGENT run_id=(\d{13,}-[A-Za-z0-9]{8,}) phase_id=([A-Za-z0-9_-]{1,64}) agent_id=([A-Za-z0-9_-]{1,64})\]/);
   if (!match)
     return null;
   return { runId: match[1], phaseId: match[2], agentId: match[3] };
