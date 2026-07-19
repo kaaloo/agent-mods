@@ -44,19 +44,11 @@ export function getLettaHome(): string {
   return resolved;
 }
 
-let runtimeAgentId: string | undefined;
-
-export function setRuntimeAgentId(id: string | undefined): void {
-  if (id !== undefined && !isSafeIdentifier(id)) {
-    // Reject values that would otherwise escape the agent dir; this closes
-    // the inject Finding #1 (unvalidated agentId from env / readdir).
-    return;
-  }
-  runtimeAgentId = id;
-}
-
+// Resolve the current agent ID from environment / filesystem. Used only for
+// non-run-scoped paths (library, templates, registry) and for createRun,
+// where no run exists yet to pin against. Run-scoped paths (plan.md,
+// run.md, phases/, result.md) take their agentId from RunState.agentId.
 export function getAgentId(): string | undefined {
-  if (runtimeAgentId) return runtimeAgentId;
   const env = process.env.LETTA_AGENT_ID ?? process.env.AGENT_ID;
   if (env && isSafeIdentifier(env)) return env;
   try {

@@ -7,7 +7,6 @@ import {
   createRun,
   loadRun,
   saveAgentResult,
-  setRuntimeAgentId,
   getRunDir,
   getRunPath,
   sanitizeWorkingDirectory,
@@ -26,6 +25,8 @@ import {
 import { WORKFLOW_VERSION, type WorkflowDefinition } from "../lib/schema.ts";
 
 let originalLettaHome: string | undefined;
+let originalLettaAgentId: string | undefined;
+let originalAgentId: string | undefined;
 let tempDir: string;
 
 const sampleWorkflow = {
@@ -53,8 +54,14 @@ const sampleWorkflow = {
 
 beforeEach(() => {
   originalLettaHome = process.env.LETTA_HOME;
+  originalLettaAgentId = process.env.LETTA_AGENT_ID;
+  originalAgentId = process.env.AGENT_ID;
   tempDir = mkdtempSync(path.join(tmpdir(), "dw-concurrency-"));
   process.env.LETTA_HOME = tempDir;
+  // Default to a known agent id so runs land at a predictable path. Tests
+  // that need a specific agent id override this in their setup.
+  process.env.LETTA_AGENT_ID = "agent-test0001";
+  delete process.env.AGENT_ID;
 });
 
 afterEach(() => {
@@ -62,6 +69,16 @@ afterEach(() => {
     delete process.env.LETTA_HOME;
   } else {
     process.env.LETTA_HOME = originalLettaHome;
+  }
+  if (originalLettaAgentId === undefined) {
+    delete process.env.LETTA_AGENT_ID;
+  } else {
+    process.env.LETTA_AGENT_ID = originalLettaAgentId;
+  }
+  if (originalAgentId === undefined) {
+    delete process.env.AGENT_ID;
+  } else {
+    process.env.AGENT_ID = originalAgentId;
   }
   rmSync(tempDir, { recursive: true, force: true });
 });
@@ -168,16 +185,8 @@ describe("recordAgentComplete concurrency", () => {
 });
 
 describe("agent ID pinning", () => {
-  test("setRuntimeAgentId rejects unsafe values", () => {
-    setRuntimeAgentId("../../../etc/passwd");
-    // After rejecting, getRunDir should not have escaped; verify by creating
-    // a fresh agent and confirming setRuntimeAgentId with a safe id sticks.
-    setRuntimeAgentId("agent-test1234");
-    expect(path.basename(getRunDir("1784385035947-abcdefgh", "agent-test1234"))).toBe("1784385035947-abcdefgh");
-  });
-
-  test("createRun captures current agentId", async () => {
-    setRuntimeAgentId("agent-creator1");
+  test("createRun captures current agentId from LETTA_AGENT_ID", async () => {
+    process.env.LETTA_AGENT_ID = "agent-creator1";
     const run = await createRun(sampleWorkflow);
     expect(run.agentId).toBe("agent-creator1");
 
@@ -186,19 +195,19 @@ describe("agent ID pinning", () => {
   });
 
   test("loadRun finds the run via fallback when current agentId differs", async () => {
-    setRuntimeAgentId("agent-origin0000");
+    process.env.LETTA_AGENT_ID = "agent-origin0000";
     const run = await createRun(sampleWorkflow);
 
     // Switch the runtime agent id to a different value. loadRun should still
     // resolve the run via the agent-dir fallback walk.
-    setRuntimeAgentId("agent-other00001");
+    process.env.LETTA_AGENT_ID = "agent-other00001";
     const reloaded = loadRun(run.runId);
     expect(reloaded?.runId).toBe(run.runId);
     expect(reloaded?.agentId).toBe("agent-origin0000");
   });
 
   test("recordAgentComplete writes to the pinned agent directory", async () => {
-    setRuntimeAgentId("agent-pinned001");
+    process.env.LETTA_AGENT_ID = "agent-pinned001";
     const run = await createRun(sampleWorkflow);
     saveAgentResult(run.runId, "scan", {
       phaseId: "scan",
@@ -209,7 +218,7 @@ describe("agent ID pinning", () => {
 
     // Flip the runtime agentId — recordAgentComplete must still write to
     // the original agent's directory tree.
-    setRuntimeAgentId("agent-flipped002");
+    process.env.LETTA_AGENT_ID = "agent-flipped002";
     await recordAgentComplete(run.runId, "scan", "a1", "out");
 
     // The pinned directory must contain the updated file.
@@ -228,7 +237,7 @@ describe("H1 runAgentId validation", () => {
   });
 
   test("loadRun rejects a tampered run.md whose persisted runId differs", async () => {
-    setRuntimeAgentId("agent-clean0001");
+    process.env.LETTA_AGENT_ID = "agent-clean0001";
     const run = await createRun(sampleWorkflow);
 
     // Tamper with the persisted run.md: claim a different runId. The loader
@@ -242,7 +251,7 @@ describe("H1 runAgentId validation", () => {
   });
 
   test("loadRun rejects a tampered run.md whose persisted agentId differs", async () => {
-    setRuntimeAgentId("agent-clean0002");
+    process.env.LETTA_AGENT_ID = "agent-clean0002";
     const run = await createRun(sampleWorkflow);
 
     const { writeFileSync } = await import("node:fs");
@@ -271,7 +280,7 @@ describe("sanitizeWorkingDirectory", () => {
   });
 
   test("createRun sanitizes the workingDirectory it persists", async () => {
-    setRuntimeAgentId("agent-sanitize0");
+    process.env.LETTA_AGENT_ID = "agent-sanitize0";
     const run = await createRun(sampleWorkflow, {}, undefined, "/tmp/x\ninj");
     expect(run.workingDirectory).toBe("/tmp/xinj");
   });
