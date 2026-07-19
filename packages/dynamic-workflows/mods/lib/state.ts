@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, readdirSync, writeFileSync, unlinkSync, rmSync, lstatSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, readdirSync, writeFileSync, unlinkSync, rmSync, lstatSync, openSync, closeSync, constants } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { parse, stringify } from "yaml";
@@ -179,27 +179,64 @@ export function readTextFile(filePath: string): string | null {
   }
 }
 
+// Pick a unique temp filename inside `dir`, creating it with O_EXCL so two
+// concurrent writers can't collide on the same name. Retries with a fresh
+// name on EEXIST. Closes M1 (temp-name collision + silent non-atomic
+// fallback) from bug-sweep 1784445631272-bdac05f1.
+function pickTempPath(dir: string, suffix: string): string {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const candidate = path.join(dir, `.tmp-${process.pid}-${Date.now()}-${generateRunId().slice(-8)}-${attempt}.${suffix}`);
+    try {
+      const fd = openSync(candidate, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL);
+      closeSync(fd);
+      return candidate;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST") throw err;
+    }
+  }
+  throw new Error(`Failed to allocate a unique temp file in ${dir} after 8 attempts`);
+}
+
 export function writeTextFileAtomically(filePath: string, text: string): void {
   const dir = path.dirname(filePath);
   mkdirSync(dir, { recursive: true });
-  const tmp = path.join(dir, `.tmp-${process.pid}-${Date.now()}-${generateRunId().slice(-8)}.md`);
-  writeFileSync(tmp, text, "utf8");
+  const tmp = pickTempPath(dir, "md");
   try {
-    renameSync(tmp, filePath);
-  } catch {
-    writeFileSync(filePath, text, "utf8");
+    writeFileSync(tmp, text, "utf8");
+    try {
+      renameSync(tmp, filePath);
+    } catch (err) {
+      // Surface rename failure rather than silently falling back to a
+      // non-atomic in-place write. A concurrent reader mid-write would
+      // otherwise see a partial file and parseMarkdownFrontmatter would
+      // silently swallow the parse error to {}, wiping registry entries.
+      unlinkSync(tmp);
+      throw err;
+    }
+  } catch (err) {
+    // Best-effort cleanup; surface the underlying error.
+    try { unlinkSync(tmp); } catch { /* ignore */ }
+    throw err;
   }
 }
 
 export function writeJsonAtomically(filePath: string, value: unknown): void {
   const dir = path.dirname(filePath);
   mkdirSync(dir, { recursive: true });
-  const tmp = path.join(dir, `.tmp-${process.pid}-${Date.now()}-${generateRunId().slice(-8)}.json`);
-  writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  const tmp = pickTempPath(dir, "json");
+  const body = `${JSON.stringify(value, null, 2)}\n`;
   try {
-    renameSync(tmp, filePath);
-  } catch {
-    writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    writeFileSync(tmp, body, "utf8");
+    try {
+      renameSync(tmp, filePath);
+    } catch (err) {
+      unlinkSync(tmp);
+      throw err;
+    }
+  } catch (err) {
+    try { unlinkSync(tmp); } catch { /* ignore */ }
+    throw err;
   }
 }
 

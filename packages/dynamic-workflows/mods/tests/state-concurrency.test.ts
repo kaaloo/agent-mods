@@ -509,3 +509,46 @@ describe("H2 budget atomicity", () => {
     expect(failed).toBe(10 - cap);
   });
 });
+
+describe("M1 atomic-write fallback", () => {
+  // Regression for sweep 5 M1: temp-name collisions and silent non-atomic
+  // fallback in writeTextFileAtomically. The new implementation uses
+  // openSync with O_EXCL to atomically claim a unique temp name, and
+  // surfaces rename failures rather than falling back to a torn write.
+  test("rapid-fire writes do not collide on temp filenames", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const target = path.join(tempDir, "agents", "agent-test0001", "memory", "flows", "atomic-test.md");
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+
+    const { writeTextFileAtomically } = await import("../lib/state.ts");
+    // Fire 50 concurrent writes. Each must land at the same target
+    // without colliding on temp names.
+    await Promise.all(
+      Array.from({ length: 50 }, (_, i) =>
+        writeTextFileAtomically(target, `payload-${i}`)
+      )
+    );
+    const final = fs.readFileSync(target, "utf8");
+    expect(final).toMatch(/^payload-\d+$/);
+    // No temp files left behind in the parent directory.
+    const leftover = fs.readdirSync(path.dirname(target)).filter((f) => f.startsWith(".tmp-"));
+    expect(leftover).toEqual([]);
+  });
+
+  test("writeTextFileAtomically throws on rename failure", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    // Target path inside a directory that does not exist as a parent.
+    // renameSync will fail with ENOENT.
+    const target = path.join(tempDir, "no-such-dir", "atomic-test.md");
+    const { writeTextFileAtomically } = await import("../lib/state.ts");
+    // mkdirSync happens inside the helper; target's parent must be
+    // creatable, so to provoke renameSync failure we make the target
+    // path a directory itself.
+    fs.mkdirSync(target, { recursive: true });
+    expect(() => writeTextFileAtomically(target, "payload")).toThrow();
+    // Clean up.
+    fs.rmdirSync(target);
+  });
+});

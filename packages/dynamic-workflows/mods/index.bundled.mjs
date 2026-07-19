@@ -7350,7 +7350,7 @@ function stripMarkdownFences(text) {
 }
 
 // packages/dynamic-workflows/mods/lib/state.ts
-import { existsSync, mkdirSync, readFileSync, renameSync, readdirSync, writeFileSync, unlinkSync, rmSync, lstatSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, readdirSync, writeFileSync, unlinkSync, rmSync, lstatSync, openSync, closeSync, constants } from "node:fs";
 import { homedir } from "node:os";
 import path2 from "node:path";
 var runMutexes = new Map;
@@ -7442,15 +7442,38 @@ function readTextFile(filePath) {
     return null;
   }
 }
+function pickTempPath(dir, suffix) {
+  for (let attempt = 0;attempt < 8; attempt++) {
+    const candidate = path2.join(dir, `.tmp-${process.pid}-${Date.now()}-${generateRunId().slice(-8)}-${attempt}.${suffix}`);
+    try {
+      const fd = openSync(candidate, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL);
+      closeSync(fd);
+      return candidate;
+    } catch (err) {
+      const code = err.code;
+      if (code !== "EEXIST")
+        throw err;
+    }
+  }
+  throw new Error(`Failed to allocate a unique temp file in ${dir} after 8 attempts`);
+}
 function writeTextFileAtomically(filePath, text) {
   const dir = path2.dirname(filePath);
   mkdirSync(dir, { recursive: true });
-  const tmp = path2.join(dir, `.tmp-${process.pid}-${Date.now()}-${generateRunId().slice(-8)}.md`);
-  writeFileSync(tmp, text, "utf8");
+  const tmp = pickTempPath(dir, "md");
   try {
-    renameSync(tmp, filePath);
-  } catch {
-    writeFileSync(filePath, text, "utf8");
+    writeFileSync(tmp, text, "utf8");
+    try {
+      renameSync(tmp, filePath);
+    } catch (err) {
+      unlinkSync(tmp);
+      throw err;
+    }
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {}
+    throw err;
   }
 }
 function readState() {
