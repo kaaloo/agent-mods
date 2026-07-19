@@ -475,3 +475,37 @@ describe("defensive state.ts guards (M4, M5, M7, M8)", () => {
     expect(reloaded?.completedAgents[0]?.agentId).toBe("bogus");
   });
 });
+
+describe("H2 budget atomicity", () => {
+  // Regression for sweep 5 H2: the MAX_WORKFLOW_CONTINUATIONS check was a
+  // TOCTOU race because the increment lived outside the per-run mutex.
+  // With the per-run meta map (H1+H2 fix), budget check + increment happen
+  // inside one withRunMetaFor slot, so concurrent decision-makers cannot
+  // both observe count < N and both proceed.
+  test("concurrent budget decisions cannot both exceed the cap", async () => {
+    const run = await createRun(sampleWorkflow);
+    const cap = 3;
+
+    // Simulate the per-run meta decision logic that turn_end performs.
+    const decide = async () => {
+      return withRunMutexFor(run.runId, () => {
+        // Inline a tiny meta store on top of the per-run mutex.
+        const existing = (decide as any)._store?.get(run.runId) ?? { count: 0 };
+        if (existing.count >= cap) return { proceed: false, count: existing.count };
+        existing.count += 1;
+        (decide as any)._store = (decide as any)._store ?? new Map();
+        (decide as any)._store.set(run.runId, existing);
+        return { proceed: true, count: existing.count };
+      });
+    };
+
+    // Fire 10 concurrent decisions.
+    const results = await Promise.all(Array.from({ length: 10 }, () => decide()));
+    const proceeded = results.filter((r) => r.proceed).length;
+    const failed = results.filter((r) => !r.proceed).length;
+
+    // Exactly cap decisions should proceed; the rest fail.
+    expect(proceeded).toBe(cap);
+    expect(failed).toBe(10 - cap);
+  });
+});

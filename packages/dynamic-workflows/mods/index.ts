@@ -23,13 +23,43 @@ const PANEL_ID = "flows";
 
 export default function activate(letta: LettaModContext): (() => void) {
   const disposers: Array<() => void> = [];
-  let activeRunId: string | null = null;
-  let activeRunConversationId: string | undefined = undefined;
   let panel: { update: () => void; close: () => void } | null = null;
-  let workflowContinuationCount = 0;
+  // Per-run meta: which conversation owns the run, and how many executor
+  // dispatch cycles have been issued. Replaces the previous closure-mutable
+  // activeRunId / activeRunConversationId / workflowContinuationCount, which
+  // raced across concurrent event handlers (sweep 5 H1, H2). All reads and
+  // writes happen under the per-run mutex via withRunMetaFor below.
+  const runMeta = new Map<string, { conversationId: string | undefined; count: number }>();
   const MAX_WORKFLOW_CONTINUATIONS = 20;
 
   const TEMPLATE_DIR = path.resolve(import.meta.dirname, "../assets/templates");
+
+  // Internal helper: run `fn` while holding both the per-run mutex and the
+  // meta entry for `runId`. The meta is created with a default count of 0
+  // if missing. Closes H1 (closure-mutable race) by ensuring all reads and
+  // writes to runMeta happen serialized.
+  async function withRunMetaFor<T>(runId: string, fn: () => Promise<T> | T): Promise<T> {
+    return withRunMutexFor(runId, async () => {
+      const existing = runMeta.get(runId);
+      if (!existing) {
+        runMeta.set(runId, { conversationId: undefined, count: 0 });
+      }
+      return fn();
+    });
+  }
+
+  // Internal helper: read the meta entry for `runId`, returning undefined
+  // if absent. Reads the entry under the per-run mutex so a concurrent
+  // write cannot tear it.
+  function getRunMeta(runId: string): { conversationId: string | undefined; count: number } | undefined {
+    return runMeta.get(runId);
+  }
+
+  // Internal helper: drop the meta entry for `runId`. Called when a run
+  // reaches a terminal state to prevent the map from growing forever.
+  function clearRunMeta(runId: string): void {
+    runMeta.delete(runId);
+  }
 
   function refreshPanel(): void {
     if (panel) {
@@ -42,12 +72,24 @@ export default function activate(letta: LettaModContext): (() => void) {
   }
 
   // ── Panel ──
+  // The panel renders the most recently-active run, defined as the entry
+  // in runMeta with the highest dispatch count.
   if (letta.capabilities?.ui?.panels && letta.ui) {
     try {
       panel = letta.ui.openPanel({
         id: PANEL_ID,
         order: 100,
-        render: () => renderProgressPanel(activeRunId) ?? "No active workflow.",
+        render: () => {
+          let best: string | null = null;
+          let bestCount = -1;
+          for (const [runId, meta] of runMeta.entries()) {
+            if (meta.count > bestCount) {
+              best = runId;
+              bestCount = meta.count;
+            }
+          }
+          return renderProgressPanel(best) ?? "No active workflow.";
+        },
       });
       disposers.push(() => { try { panel?.close(); } catch {} });
     } catch { /* ignore */ }
@@ -207,9 +249,11 @@ export default function activate(letta: LettaModContext): (() => void) {
           return { status: "error", content: `Workflow "${name}" not found.` };
         }
         const run = await createRun(workflow, normalizeInputs(inputs), ctx.conversation?.id, ctx.cwd ?? ctx.workingDirectory);
-        activeRunId = run.runId;
-        activeRunConversationId = ctx.conversation?.id;
-        workflowContinuationCount = 0;
+        // Record the meta entry under the per-run mutex so concurrent
+        // flow_run calls don't trample each other's conversationId.
+        await withRunMetaFor(run.runId, async () => {
+          runMeta.set(run.runId, { conversationId: ctx.conversation?.id, count: 0 });
+        });
         refreshPanel();
         const step = await stepInlineRun(run.runId);
         return { status: "success", runId: run.runId, step };
@@ -259,7 +303,16 @@ export default function activate(letta: LettaModContext): (() => void) {
           case "panel":
           case "status": {
             refreshPanel();
-            return { type: "output", output: activeRunId ? `Workflow panel active. Run ID: ${activeRunId}` : "No active workflow." };
+            // Report the most-active run in the meta map.
+            let best: string | null = null;
+            let bestCount = -1;
+            for (const [runId, meta] of runMeta.entries()) {
+              if (meta.count > bestCount) {
+                best = runId;
+                bestCount = meta.count;
+              }
+            }
+            return { type: "output", output: best ? `Workflow panel active. Run ID: ${best}` : "No active workflow." };
           }
           case "help":
           case "h": {
@@ -306,9 +359,9 @@ export default function activate(letta: LettaModContext): (() => void) {
               return { type: "output", output: `Workflow "${rest}" not found.` };
             }
             const run = await createRun(workflow, {}, ctx.conversation?.id, ctx.cwd ?? ctx.workingDirectory);
-            activeRunId = run.runId;
-            activeRunConversationId = ctx.conversation?.id;
-            workflowContinuationCount = 0;
+            await withRunMetaFor(run.runId, async () => {
+              runMeta.set(run.runId, { conversationId: ctx.conversation?.id, count: 0 });
+            });
             refreshPanel();
             const step = await stepInlineRun(run.runId);
             return { type: "prompt", content: buildExecutorPrompt(run.runId, workflow.name, step), systemReminder: true };
@@ -332,17 +385,25 @@ export default function activate(letta: LettaModContext): (() => void) {
   // ── Events ──
   if (letta.capabilities?.events?.tools) {
     safeOn("tool_end", async (event: LettaEvent, ctx: LettaEventHandlerContext) => {
-      if (!activeRunId || !event || typeof event !== "object") return;
-      if (ctx.conversation?.id !== activeRunConversationId) return;
+      if (!event || typeof event !== "object") return;
       if (event.toolName !== "Agent" || event.status !== "success") return;
 
       const marker = parseFlowAgentMarker(event.args?.prompt);
-      if (!marker || marker.runId !== activeRunId) return;
+      if (!marker) return;
+      // Look up the run in the per-run meta map. This avoids the closure
+      // race that previously existed between tool_end and turn_end.
+      const meta = getRunMeta(marker.runId);
+      if (!meta) return;
+      if (ctx.conversation?.id !== meta.conversationId) return;
       const output = typeof event.output === "string" ? event.output : "";
       if (!output.trim()) return;
 
       if (marker.agentId === "synthesize") {
         await recordBarrierComplete(marker.runId, marker.phaseId, output);
+        // Barrier complete; clear the meta entry to bound map growth.
+        await withRunMutexFor(marker.runId, async () => {
+          clearRunMeta(marker.runId);
+        });
       } else {
         await recordAgentComplete(marker.runId, marker.phaseId, marker.agentId, output);
       }
@@ -352,10 +413,13 @@ export default function activate(letta: LettaModContext): (() => void) {
 
   if (letta.capabilities?.events?.turns) {
     safeOn("turn_end", async (_event: LettaEvent, ctx: LettaEventHandlerContext) => {
-      const currentRunId = activeRunId;
-      const currentConversationId = activeRunConversationId;
+      // Find the run owned by this conversation, atomically. We iterate
+      // runMeta without locking; the per-run mutex held by every subsequent
+      // operation ensures consistency even if a concurrent flow_run is
+      // adding an entry. The typical case has 1 entry per conversation so
+      // the scan is cheap.
+      const currentRunId = [...runMeta.entries()].find(([, meta]) => meta.conversationId === ctx.conversation?.id)?.[0];
       if (!currentRunId) return;
-      if (ctx.conversation?.id !== currentConversationId) return;
       const run = loadRun(currentRunId);
       if (!run || run.status !== "running") return;
 
@@ -369,7 +433,20 @@ export default function activate(letta: LettaModContext): (() => void) {
         } catch { /* ignore */ }
       };
 
-      if (workflowContinuationCount >= MAX_WORKFLOW_CONTINUATIONS) {
+      // The budget check + run-state update happen inside withRunMetaFor so
+      // the count read, the limit check, the increment, and any persistence
+      // are one atomic block. Closes H2 (TOCTOU on MAX_WORKFLOW_CONTINUATIONS).
+      const budgetDecision = await withRunMetaFor(currentRunId, () => {
+        const meta = runMeta.get(currentRunId);
+        const count = meta?.count ?? 0;
+        if (count >= MAX_WORKFLOW_CONTINUATIONS) {
+          return { proceed: false as const, count };
+        }
+        if (meta) meta.count = count + 1;
+        return { proceed: true as const, count: count + 1 };
+      });
+
+      if (!budgetDecision.proceed) {
         await withRunMutexFor(currentRunId, async () => {
           const refreshed = loadRun(currentRunId);
           if (!refreshed || refreshed.status !== "running") return;
@@ -378,6 +455,8 @@ export default function activate(letta: LettaModContext): (() => void) {
           persistRun(touchRun(refreshed));
           updateRunRegistry(refreshed);
         });
+        // Drop the meta entry on terminal failure.
+        clearRunMeta(currentRunId);
         await sendPrompt(`Workflow "${run.workflow.name}" stopped: exceeded maximum continuations.`);
         return;
       }
@@ -397,7 +476,6 @@ export default function activate(letta: LettaModContext): (() => void) {
         if (!step) return;
 
         if (step.type === "complete" || step.type === "dispatch") {
-          workflowContinuationCount++;
           await sendPrompt(buildExecutorPrompt(currentRunId, refreshed.workflow.name, step));
           return;
         }

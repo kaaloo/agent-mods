@@ -8169,12 +8169,25 @@ function loadTemplate(templateDir, name) {
 var PANEL_ID = "flows";
 function activate(letta) {
   const disposers = [];
-  let activeRunId = null;
-  let activeRunConversationId = undefined;
   let panel = null;
-  let workflowContinuationCount = 0;
+  const runMeta = new Map;
   const MAX_WORKFLOW_CONTINUATIONS = 20;
   const TEMPLATE_DIR = path4.resolve(import.meta.dirname, "../assets/templates");
+  async function withRunMetaFor(runId, fn) {
+    return withRunMutexFor(runId, async () => {
+      const existing = runMeta.get(runId);
+      if (!existing) {
+        runMeta.set(runId, { conversationId: undefined, count: 0 });
+      }
+      return fn();
+    });
+  }
+  function getRunMeta(runId) {
+    return runMeta.get(runId);
+  }
+  function clearRunMeta(runId) {
+    runMeta.delete(runId);
+  }
   function refreshPanel() {
     if (panel) {
       try {
@@ -8192,7 +8205,17 @@ function activate(letta) {
       panel = letta.ui.openPanel({
         id: PANEL_ID,
         order: 100,
-        render: () => renderProgressPanel(activeRunId) ?? "No active workflow."
+        render: () => {
+          let best = null;
+          let bestCount = -1;
+          for (const [runId, meta] of runMeta.entries()) {
+            if (meta.count > bestCount) {
+              best = runId;
+              bestCount = meta.count;
+            }
+          }
+          return renderProgressPanel(best) ?? "No active workflow.";
+        }
       });
       disposers.push(() => {
         try {
@@ -8342,9 +8365,9 @@ function activate(letta) {
           return { status: "error", content: `Workflow "${name}" not found.` };
         }
         const run = await createRun(workflow, normalizeInputs(inputs), ctx.conversation?.id, ctx.cwd ?? ctx.workingDirectory);
-        activeRunId = run.runId;
-        activeRunConversationId = ctx.conversation?.id;
-        workflowContinuationCount = 0;
+        await withRunMetaFor(run.runId, async () => {
+          runMeta.set(run.runId, { conversationId: ctx.conversation?.id, count: 0 });
+        });
         refreshPanel();
         const step = await stepInlineRun(run.runId);
         return { status: "success", runId: run.runId, step };
@@ -8389,7 +8412,15 @@ function activate(letta) {
           case "panel":
           case "status": {
             refreshPanel();
-            return { type: "output", output: activeRunId ? `Workflow panel active. Run ID: ${activeRunId}` : "No active workflow." };
+            let best = null;
+            let bestCount = -1;
+            for (const [runId, meta] of runMeta.entries()) {
+              if (meta.count > bestCount) {
+                best = runId;
+                bestCount = meta.count;
+              }
+            }
+            return { type: "output", output: best ? `Workflow panel active. Run ID: ${best}` : "No active workflow." };
           }
           case "help":
           case "h": {
@@ -8443,9 +8474,9 @@ Run a saved workflow or bundled template.` };
               return { type: "output", output: `Workflow "${rest}" not found.` };
             }
             const run = await createRun(workflow, {}, ctx.conversation?.id, ctx.cwd ?? ctx.workingDirectory);
-            activeRunId = run.runId;
-            activeRunConversationId = ctx.conversation?.id;
-            workflowContinuationCount = 0;
+            await withRunMetaFor(run.runId, async () => {
+              runMeta.set(run.runId, { conversationId: ctx.conversation?.id, count: 0 });
+            });
             refreshPanel();
             const step = await stepInlineRun(run.runId);
             return { type: "prompt", content: buildExecutorPrompt(run.runId, workflow.name, step), systemReminder: true };
@@ -8469,20 +8500,26 @@ ${buildFlowHelp()}` };
   }
   if (letta.capabilities?.events?.tools) {
     safeOn("tool_end", async (event, ctx) => {
-      if (!activeRunId || !event || typeof event !== "object")
-        return;
-      if (ctx.conversation?.id !== activeRunConversationId)
+      if (!event || typeof event !== "object")
         return;
       if (event.toolName !== "Agent" || event.status !== "success")
         return;
       const marker = parseFlowAgentMarker(event.args?.prompt);
-      if (!marker || marker.runId !== activeRunId)
+      if (!marker)
+        return;
+      const meta = getRunMeta(marker.runId);
+      if (!meta)
+        return;
+      if (ctx.conversation?.id !== meta.conversationId)
         return;
       const output = typeof event.output === "string" ? event.output : "";
       if (!output.trim())
         return;
       if (marker.agentId === "synthesize") {
         await recordBarrierComplete(marker.runId, marker.phaseId, output);
+        await withRunMutexFor(marker.runId, async () => {
+          clearRunMeta(marker.runId);
+        });
       } else {
         await recordAgentComplete(marker.runId, marker.phaseId, marker.agentId, output);
       }
@@ -8491,11 +8528,8 @@ ${buildFlowHelp()}` };
   }
   if (letta.capabilities?.events?.turns) {
     safeOn("turn_end", async (_event, ctx) => {
-      const currentRunId = activeRunId;
-      const currentConversationId = activeRunConversationId;
+      const currentRunId = [...runMeta.entries()].find(([, meta]) => meta.conversationId === ctx.conversation?.id)?.[0];
       if (!currentRunId)
-        return;
-      if (ctx.conversation?.id !== currentConversationId)
         return;
       const run = loadRun(currentRunId);
       if (!run || run.status !== "running")
@@ -8514,7 +8548,17 @@ ${buildFlowHelp()}` };
           })();
         } catch {}
       };
-      if (workflowContinuationCount >= MAX_WORKFLOW_CONTINUATIONS) {
+      const budgetDecision = await withRunMetaFor(currentRunId, () => {
+        const meta = runMeta.get(currentRunId);
+        const count = meta?.count ?? 0;
+        if (count >= MAX_WORKFLOW_CONTINUATIONS) {
+          return { proceed: false, count };
+        }
+        if (meta)
+          meta.count = count + 1;
+        return { proceed: true, count: count + 1 };
+      });
+      if (!budgetDecision.proceed) {
         await withRunMutexFor(currentRunId, async () => {
           const refreshed = loadRun(currentRunId);
           if (!refreshed || refreshed.status !== "running")
@@ -8524,6 +8568,7 @@ ${buildFlowHelp()}` };
           persistRun(touchRun(refreshed));
           updateRunRegistry(refreshed);
         });
+        clearRunMeta(currentRunId);
         await sendPrompt(`Workflow "${run.workflow.name}" stopped: exceeded maximum continuations.`);
         return;
       }
@@ -8538,7 +8583,6 @@ ${buildFlowHelp()}` };
         if (!step)
           return;
         if (step.type === "complete" || step.type === "dispatch") {
-          workflowContinuationCount++;
           await sendPrompt(buildExecutorPrompt(currentRunId, refreshed.workflow.name, step));
           return;
         }
