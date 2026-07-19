@@ -7866,10 +7866,17 @@ import { setTimeout as sleep } from "node:timers/promises";
 function parseFlowAgentMarker(prompt) {
   if (typeof prompt !== "string")
     return null;
-  const match = prompt.match(/\[FLOW_AGENT run_id=(\d{13,}-[A-Za-z0-9]{8,}) phase_id=([A-Za-z0-9_-]{1,64}) agent_id=([A-Za-z0-9_-]{1,64})\]/);
+  const match = prompt.match(/\[FLOW_AGENT run_id=(\d{13,}-[A-Za-z0-9]{8,}) phase_id=([A-Za-z0-9_-]{1,64}) agent_id=([A-Za-z0-9_-]{1,64})\]\s*$/);
   if (!match)
     return null;
   return { runId: match[1], phaseId: match[2], agentId: match[3] };
+}
+function sanitizePromptField(value) {
+  if (typeof value !== "string")
+    return;
+  let cleaned = value.replace(/[\x00-\x1F\x7F\u2028\u2029]/g, "");
+  cleaned = cleaned.replace(/\[FLOW_AGENT[^\]]*\]/g, "[FLOW_AGENT_REDACTED]");
+  return cleaned.length > 0 ? cleaned : undefined;
 }
 function stepInlineRun(runId) {
   return withRunMutexFor(runId, () => stepInlineRunLocked(runId));
@@ -7989,7 +7996,7 @@ function dispatchFanOutLocked(run, phase) {
       }
     }
     const refreshed = loadRun(run.runId);
-    if (refreshed && isPhaseComplete(refreshed.workflow, phase.id, new Set(refreshed.completedAgents.map((a) => a.agentId)))) {
+    if (refreshed && refreshed.currentPhaseId === phase.id && isPhaseComplete(refreshed.workflow, phase.id, new Set(refreshed.completedAgents.map((a) => a.agentId)))) {
       advancePhase(refreshed);
       persistRun(touchRun(refreshed));
       updateRunRegistry(refreshed);
@@ -8017,11 +8024,11 @@ function dispatchFanOutLocked(run, phase) {
     instructions: `Dispatch ${dispatchNow.length} parallel Agent tool call(s) for phase "${phase.id}". ${remaining > 0 ? `${remaining} agent(s) will queue after the first batch completes.` : ""}`,
     agents: dispatchNow.map((a) => ({
       id: a.id,
-      prompt: `${a.prompt}
+      prompt: `${sanitizePromptField(a.prompt) ?? ""}
 
 [FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=${a.id}]
 Working directory: ${run.workingDirectory ?? "the current project directory"}
-${phase.model ? `Use model: ${phase.model}
+${phase.model ? `Use model: ${sanitizePromptField(phase.model) ?? ""}
 ` : ""}When you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id, run.agentId)}.`,
       model: phase.model
     }))
@@ -8079,11 +8086,11 @@ ${fileOutput}` : String(run.outputs[`${depId}.${agent.id}`] ?? "");
   persistRun(touchRun(run));
   updateRunRegistry(run);
   const resultPath = getRunResultPath(run.runId, run.agentId);
-  const synthesizedPrompt = `${phase.prompt}
+  const synthesizedPrompt = `${sanitizePromptField(phase.prompt) ?? ""}
 
 [FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=synthesize]
 Working directory: ${run.workingDirectory ?? "the current project directory"}
-${phase.model ? `Use model: ${phase.model}
+${phase.model ? `Use model: ${sanitizePromptField(phase.model) ?? ""}
 ` : ""}Inputs from prior phases (read from the full .md reports where available):
 ${JSON.stringify(inputs, null, 2)}
 
@@ -8205,8 +8212,8 @@ function activate(letta) {
       return fn();
     });
   }
-  function getRunMeta(runId) {
-    return runMeta.get(runId);
+  async function getRunMeta(runId) {
+    return withRunMutexFor(runId, async () => runMeta.get(runId));
   }
   function clearRunMeta(runId) {
     runMeta.delete(runId);
@@ -8530,7 +8537,7 @@ ${buildFlowHelp()}` };
       const marker = parseFlowAgentMarker(event.args?.prompt);
       if (!marker)
         return;
-      const meta = getRunMeta(marker.runId);
+      const meta = await getRunMeta(marker.runId);
       if (!meta)
         return;
       if (ctx.conversation?.id !== meta.conversationId)

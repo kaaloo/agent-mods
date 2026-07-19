@@ -50,9 +50,12 @@ export default function activate(letta: LettaModContext): (() => void) {
 
   // Internal helper: read the meta entry for `runId`, returning undefined
   // if absent. Reads the entry under the per-run mutex so a concurrent
-  // write cannot tear it.
-  function getRunMeta(runId: string): { conversationId: string | undefined; count: number } | undefined {
-    return runMeta.get(runId);
+  // write cannot tear it. Note: withRunMutexFor is async, so this returns
+  // a Promise. Synchronous callers (e.g. the panel render) should use the
+  // un-mutexed runMeta directly with the understanding that the worst case
+  // is a stale read, not a torn read.
+  async function getRunMeta(runId: string): Promise<{ conversationId: string | undefined; count: number } | undefined> {
+    return withRunMutexFor(runId, async () => runMeta.get(runId));
   }
 
   // Internal helper: drop the meta entry for `runId`. Called when a run
@@ -390,9 +393,11 @@ export default function activate(letta: LettaModContext): (() => void) {
 
       const marker = parseFlowAgentMarker(event.args?.prompt);
       if (!marker) return;
-      // Look up the run in the per-run meta map. This avoids the closure
-      // race that previously existed between tool_end and turn_end.
-      const meta = getRunMeta(marker.runId);
+      // Look up the run in the per-run meta map under the mutex. This
+      // closes H-A from sweep 6: the previous getRunMeta was sync and read
+      // outside the mutex, allowing a concurrent clearRunMeta to drop the
+      // entry mid-completion.
+      const meta = await getRunMeta(marker.runId);
       if (!meta) return;
       if (ctx.conversation?.id !== meta.conversationId) return;
       const output = typeof event.output === "string" ? event.output : "";

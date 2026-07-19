@@ -13,6 +13,7 @@ import {
   getLibraryEntryPath,
   getLettaHome,
   readState,
+  persistRun,
 } from "../lib/state.ts";
 import {
   recordAgentComplete,
@@ -550,5 +551,77 @@ describe("M1 atomic-write fallback", () => {
     expect(() => writeTextFileAtomically(target, "payload")).toThrow();
     // Clean up.
     fs.rmdirSync(target);
+  });
+});
+
+describe("H-B late-pickup double-advance guard", () => {
+  // Regression for sweep 6 H-B: dispatchFanOutLocked's late-pickup branch
+  // could double-advance a 3+ phase workflow when a concurrent
+  // recordAgentComplete had already moved currentPhaseId past phase.id.
+  // The fix is the `refreshed.currentPhaseId === phase.id` guard.
+  test("3-phase workflow does not skip a phase on late pickup", async () => {
+    const threePhaseWorkflow = {
+      name: "three-phase",
+      version: WORKFLOW_VERSION,
+      description: "Three-phase workflow for H-B regression.",
+      phases: [
+        {
+          id: "phase1",
+          type: "fan-out" as const,
+          agents: [{ id: "a1", prompt: "p1" }],
+        },
+        {
+          id: "phase2",
+          type: "fan-out" as const,
+          agents: [{ id: "a2", prompt: "p2" }],
+        },
+        {
+          id: "phase3",
+          type: "barrier" as const,
+          depends_on: ["phase1", "phase2"],
+          prompt: "merge",
+        },
+      ],
+    } satisfies WorkflowDefinition;
+
+    const run = await createRun(threePhaseWorkflow);
+    const refreshed = loadRun(run.runId);
+    expect(refreshed?.currentPhaseId).toBe("phase1");
+    // Simulate concurrent completion that advances past phase1 while
+    // dispatchFanOutLocked's late-pickup branch is mid-execution.
+    // First, mark phase1's agent as completed in advance.
+    if (refreshed) {
+      refreshed.completedAgents = [{
+        phaseId: "phase1",
+        agentId: "a1",
+        prompt: "p1",
+        status: "completed",
+        output: "phase1-out",
+        completedAt: new Date().toISOString(),
+      }];
+      refreshed.outputs["phase1.a1"] = "phase1-out";
+      // Pretend a concurrent handler advanced the run already.
+      refreshed.startedPhaseIds.push("phase2");
+      refreshed.startedAgentIds.push("a2");
+      refreshed.completedPhaseIds.push("phase1");
+      persistRun(refreshed);
+    }
+    // Now call stepInlineRunLocked — it must observe currentPhaseId="phase2"
+    // (after a single advancePhase) and not double-advance to phase3.
+    // The phase2 fan-out has a2 in startedAgentIds but not completedAgents,
+    // so dispatchFanOutLocked returns a `wait` step rather than dispatching.
+    // The critical assertion: currentPhaseId stays at "phase2", not jumped
+    // to "phase3".
+    const step = stepInlineRunLocked(run.runId);
+    // Either wait (no ready agents) or dispatch (if a2 was unmarked) — both
+    // are fine; what matters is currentPhaseId below.
+    expect(["wait", "dispatch"]).toContain(step?.type);
+    // The run should be at phase2, not phase3 — the H-B double-advance would
+    // have moved it to phase3.
+    const after = loadRun(run.runId);
+    expect(after?.currentPhaseId).toBe("phase2");
+    // And phase2 should not be in completedPhaseIds twice (no double-add).
+    const completedCount = (after?.completedPhaseIds ?? []).filter((id) => id === "phase1").length;
+    expect(completedCount).toBe(1);
   });
 });

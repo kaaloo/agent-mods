@@ -28,12 +28,26 @@ import {
 export function parseFlowAgentMarker(prompt: unknown): { runId: string; phaseId: string; agentId: string } | null {
   if (typeof prompt !== "string") return null;
   // Tight captures to match isSafeIdentifier / isSafeRunId invariants. The
-  // original `[^\s]+` accepted any non-whitespace, including ".." and other
-  // traversal tokens. Downstream path guards closed the practical risk, but
-  // tightening the parser is defense-in-depth (closes M9).
-  const match = prompt.match(/\[FLOW_AGENT run_id=(\d{13,}-[A-Za-z0-9]{8,}) phase_id=([A-Za-z0-9_-]{1,64}) agent_id=([A-Za-z0-9_-]{1,64})\]/);
+  // marker must appear at the end of the prompt so a malicious workflow
+  // author cannot embed a spoofed marker inside a.prompt / phase.prompt to
+  // redirect completion routing. Closes M-A from sweep 6.
+  const match = prompt.match(/\[FLOW_AGENT run_id=(\d{13,}-[A-Za-z0-9]{8,}) phase_id=([A-Za-z0-9_-]{1,64}) agent_id=([A-Za-z0-9_-]{1,64})\]\s*$/);
   if (!match) return null;
   return { runId: match[1], phaseId: match[2], agentId: match[3] };
+}
+
+// Sanitize a value before interpolation into a sub-agent prompt. Strips
+// ASCII control characters and Unicode line/paragraph separators, mirrors
+// sanitizeWorkingDirectory but stricter (also collapses embedded [FLOW_AGENT
+// markers so a workflow author cannot spoof a routing marker). Closes M-A
+// (marker spoofing) and H-C (phase.model control chars).
+export function sanitizePromptField(value: string | undefined): string | undefined {
+  if (typeof value !== "string") return undefined;
+  let cleaned = value.replace(/[\x00-\x1F\x7F\u2028\u2029]/g, "");
+  // Strip embedded [FLOW_AGENT markers that could be mis-parsed. Replace
+  // them with a benign placeholder so length is preserved for debugging.
+  cleaned = cleaned.replace(/\[FLOW_AGENT[^\]]*\]/g, "[FLOW_AGENT_REDACTED]");
+  return cleaned.length > 0 ? cleaned : undefined;
 }
 
 export interface InlineDispatch {
@@ -232,7 +246,12 @@ function dispatchFanOutLocked(run: RunState, phase: FanOutPhase): InlineStep | n
       }
     }
     const refreshed = loadRun(run.runId);
-    if (refreshed && isPhaseComplete(refreshed.workflow, phase.id, new Set(refreshed.completedAgents.map((a) => a.agentId)))) {
+    // Guard against double-advance: if a concurrent recordAgentComplete
+    // already moved past this phase, refreshed.currentPhaseId is no longer
+    // phase.id. Skip the advance and re-step. Closes H-B from sweep 6.
+    if (refreshed
+        && refreshed.currentPhaseId === phase.id
+        && isPhaseComplete(refreshed.workflow, phase.id, new Set(refreshed.completedAgents.map((a) => a.agentId)))) {
       advancePhase(refreshed);
       persistRun(touchRun(refreshed));
       updateRunRegistry(refreshed);
@@ -265,7 +284,7 @@ function dispatchFanOutLocked(run: RunState, phase: FanOutPhase): InlineStep | n
     instructions: `Dispatch ${dispatchNow.length} parallel Agent tool call(s) for phase "${phase.id}". ${remaining > 0 ? `${remaining} agent(s) will queue after the first batch completes.` : ""}`,
     agents: dispatchNow.map((a) => ({
       id: a.id,
-      prompt: `${a.prompt}\n\n[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=${a.id}]\nWorking directory: ${run.workingDirectory ?? "the current project directory"}\n${phase.model ? `Use model: ${phase.model}\n` : ""}When you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id, run.agentId)}.`,
+      prompt: `${sanitizePromptField(a.prompt) ?? ""}\n\n[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=${a.id}]\nWorking directory: ${run.workingDirectory ?? "the current project directory"}\n${phase.model ? `Use model: ${sanitizePromptField(phase.model) ?? ""}\n` : ""}When you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id, run.agentId)}.`,
       model: phase.model,
     })),
   };
@@ -330,11 +349,11 @@ function dispatchBarrierLocked(run: RunState, phase: BarrierPhase): InlineStep |
   updateRunRegistry(run);
 
   const resultPath = getRunResultPath(run.runId, run.agentId);
-  const synthesizedPrompt = `${phase.prompt}
+  const synthesizedPrompt = `${sanitizePromptField(phase.prompt) ?? ""}
 
 [FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=synthesize]
 Working directory: ${run.workingDirectory ?? "the current project directory"}
-${phase.model ? `Use model: ${phase.model}\n` : ""}Inputs from prior phases (read from the full .md reports where available):
+${phase.model ? `Use model: ${sanitizePromptField(phase.model) ?? ""}\n` : ""}Inputs from prior phases (read from the full .md reports where available):
 ${JSON.stringify(inputs, null, 2)}
 
 When you are done, write your final synthesized report to ${resultPath}.`;
