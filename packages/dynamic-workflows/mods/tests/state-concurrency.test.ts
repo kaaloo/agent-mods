@@ -22,6 +22,7 @@ import {
   recordBarrierCompleteLocked,
   stepInlineRun,
   stepInlineRunLocked,
+  parseFlowAgentMarker,
 } from "../lib/runner-inline.ts";
 import { WORKFLOW_VERSION, type WorkflowDefinition } from "../lib/schema.ts";
 
@@ -357,6 +358,49 @@ describe("stepInlineRun concurrency", () => {
     const refreshed = loadRun(run.runId);
     expect(refreshed?.currentPhaseId).toBe("scan");
     expect(new Set(refreshed?.startedAgentIds)).toEqual(new Set(["a1", "a2", "a3"]));
+  });
+});
+
+describe("M-A marker anchoring in dispatch prompts", () => {
+  // Regression for the runtime mismatch between parseFlowAgentMarker (which
+  // requires the marker at the end of the prompt) and the dispatch templates
+  // that originally placed the marker in the middle of instructions. Without
+  // the marker at the end, tool_end cannot route subagent completions back to
+  // the run, so the workflow hangs forever.
+  test("fan-out dispatch prompt ends with a parseable marker", async () => {
+    const run = await createRun(sampleWorkflow);
+    const step = await stepInlineRun(run.runId);
+    expect(step?.type).toBe("dispatch");
+    if (step?.type !== "dispatch") return;
+    for (const agent of step.agents ?? []) {
+      expect(parseFlowAgentMarker(agent.prompt)).toEqual({
+        runId: run.runId,
+        phaseId: "scan",
+        agentId: agent.id,
+      });
+      // The marker must be the last non-whitespace content in the prompt.
+      expect(agent.prompt.trim().endsWith("]")).toBe(true);
+    }
+  });
+
+  test("barrier dispatch prompt ends with a parseable marker", async () => {
+    const run = await createRun(sampleWorkflow);
+    // Complete the fan-out so the next step is the barrier.
+    await recordAgentComplete(run.runId, "scan", "a1", "out-1");
+    await recordAgentComplete(run.runId, "scan", "a2", "out-2");
+    await recordAgentComplete(run.runId, "scan", "a3", "out-3");
+    const step = await stepInlineRun(run.runId);
+    expect(step?.type).toBe("dispatch");
+    if (step?.type !== "dispatch") return;
+    expect(step.phaseType).toBe("barrier");
+    const synthesize = step.agents?.find((a) => a.id === "synthesize");
+    expect(synthesize).toBeTruthy();
+    expect(parseFlowAgentMarker(synthesize?.prompt ?? "")).toEqual({
+      runId: run.runId,
+      phaseId: "synthesize",
+      agentId: "synthesize",
+    });
+    expect(synthesize?.prompt.trim().endsWith("]")).toBe(true);
   });
 });
 

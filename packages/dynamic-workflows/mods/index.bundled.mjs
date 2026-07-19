@@ -8060,10 +8060,11 @@ function dispatchFanOutLocked(run, phase) {
       id: a.id,
       prompt: `${sanitizePromptField(a.prompt) ?? ""}
 
-[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=${a.id}]
 Working directory: ${run.workingDirectory ?? "the current project directory"}
 ${phase.model ? `Use model: ${sanitizePromptField(phase.model) ?? ""}
-` : ""}When you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id, run.agentId)}.`,
+` : ""}When you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id, run.agentId)}.
+
+[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=${a.id}]`,
       model: phase.model
     }))
   };
@@ -8122,13 +8123,14 @@ ${fileOutput}` : String(run.outputs[`${depId}.${agent.id}`] ?? "");
   const resultPath = getRunResultPath(run.runId, run.agentId);
   const synthesizedPrompt = `${sanitizePromptField(phase.prompt) ?? ""}
 
-[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=synthesize]
 Working directory: ${run.workingDirectory ?? "the current project directory"}
 ${phase.model ? `Use model: ${sanitizePromptField(phase.model) ?? ""}
 ` : ""}Inputs from prior phases (read from the full .md reports where available):
 ${JSON.stringify(inputs, null, 2)}
 
-When you are done, write your final synthesized report to ${resultPath}.`;
+When you are done, write your final synthesized report to ${resultPath}.
+
+[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=synthesize]`;
   return {
     type: "dispatch",
     runId: run.runId,

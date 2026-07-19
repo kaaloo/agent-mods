@@ -308,7 +308,7 @@ function dispatchFanOutLocked(run: RunState, phase: FanOutPhase): InlineStep | n
     instructions: `Dispatch ${dispatchNow.length} parallel Agent tool call(s) for phase "${phase.id}". ${remaining > 0 ? `${remaining} agent(s) will queue after the first batch completes.` : ""}`,
     agents: dispatchNow.map((a) => ({
       id: a.id,
-      prompt: `${sanitizePromptField(a.prompt) ?? ""}\n\n[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=${a.id}]\nWorking directory: ${run.workingDirectory ?? "the current project directory"}\n${phase.model ? `Use model: ${sanitizePromptField(phase.model) ?? ""}\n` : ""}When you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id, run.agentId)}.`,
+      prompt: `${sanitizePromptField(a.prompt) ?? ""}\n\nWorking directory: ${run.workingDirectory ?? "the current project directory"}\n${phase.model ? `Use model: ${sanitizePromptField(phase.model) ?? ""}\n` : ""}When you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id, run.agentId)}.\n\n[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=${a.id}]`,
       model: phase.model,
     })),
   };
@@ -375,12 +375,13 @@ function dispatchBarrierLocked(run: RunState, phase: BarrierPhase): InlineStep |
   const resultPath = getRunResultPath(run.runId, run.agentId);
   const synthesizedPrompt = `${sanitizePromptField(phase.prompt) ?? ""}
 
-[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=synthesize]
 Working directory: ${run.workingDirectory ?? "the current project directory"}
 ${phase.model ? `Use model: ${sanitizePromptField(phase.model) ?? ""}\n` : ""}Inputs from prior phases (read from the full .md reports where available):
 ${JSON.stringify(inputs, null, 2)}
 
-When you are done, write your final synthesized report to ${resultPath}.`;
+When you are done, write your final synthesized report to ${resultPath}.
+
+[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=synthesize]`;
 
   return {
     type: "dispatch",
