@@ -339,7 +339,7 @@ export default function activate(letta: LettaModContext): (() => void) {
       if (ctx.agent?.id) setRuntimeAgentId(ctx.agent.id);
       if (!activeRunId || !event || typeof event !== "object") return;
       if (ctx.conversation?.id !== activeRunConversationId) return;
-      if (event.toolName !== "Agent" || event.status === "error") return;
+      if (event.toolName !== "Agent" || event.status !== "success") return;
 
       const marker = parseFlowAgentMarker(event.args?.prompt);
       if (!marker || marker.runId !== activeRunId) return;

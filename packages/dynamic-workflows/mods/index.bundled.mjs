@@ -8461,7 +8461,7 @@ ${buildFlowHelp()}` };
         return;
       if (ctx.conversation?.id !== activeRunConversationId)
         return;
-      if (event.toolName !== "Agent" || event.status === "error")
+      if (event.toolName !== "Agent" || event.status !== "success")
         return;
       const marker = parseFlowAgentMarker(event.args?.prompt);
       if (!marker || marker.runId !== activeRunId)

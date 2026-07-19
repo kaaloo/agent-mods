@@ -25,3 +25,31 @@ describe("parseFlowAgentMarker", () => {
     expect(parseFlowAgentMarker(undefined)).toBeNull();
   });
 });
+
+// Mirrors the tool_end handler predicate in mods/index.ts: only proceed when
+// the event is for the Agent tool with a successful status. Regression test
+// for H3 (fifth bug-sweep 1784445631272-bdac05f1): the original
+// `event.status === "error"` check was a false-negative for missing status.
+describe("tool_end status predicate (H3 regression)", () => {
+  function shouldRecord(event: { toolName?: string; status?: unknown }): boolean {
+    return event.toolName === "Agent" && event.status === "success";
+  }
+
+  test("accepts a successful Agent tool_end", () => {
+    expect(shouldRecord({ toolName: "Agent", status: "success" })).toBe(true);
+  });
+
+  test("rejects an explicit error", () => {
+    expect(shouldRecord({ toolName: "Agent", status: "error" })).toBe(false);
+  });
+
+  test("rejects an undefined status (the H3 fix)", () => {
+    expect(shouldRecord({ toolName: "Agent" })).toBe(false);
+    expect(shouldRecord({ toolName: "Agent", status: undefined })).toBe(false);
+  });
+
+  test("rejects non-Agent tools regardless of status", () => {
+    expect(shouldRecord({ toolName: "Bash", status: "success" })).toBe(false);
+    expect(shouldRecord({ toolName: undefined, status: "success" })).toBe(false);
+  });
+});
