@@ -7808,7 +7808,7 @@ function parseFlowAgentMarker(prompt) {
 function sanitizePromptField(value) {
   if (typeof value !== "string")
     return;
-  let cleaned = value.replace(/[\x00-\x1F\x7F\u2028\u2029]/g, "");
+  let cleaned = value.replace(/[\x00-\x1F\x7F\u0085\u200B-\u200F\u2028\u2029\u202E\uFEFF]/g, "");
   cleaned = cleaned.replace(/\[FLOW_AGENT[^\]]*\]/g, "[FLOW_AGENT_REDACTED]");
   return cleaned.length > 0 ? cleaned : undefined;
 }
@@ -8305,7 +8305,7 @@ function activate(letta) {
       }
     });
   }
-  function clearRunMeta(runId) {
+  function clearRunMetaLocked(runId) {
     runMeta.delete(runId);
     refreshMetaView();
   }
@@ -8399,12 +8399,16 @@ function activate(letta) {
         if (!validated) {
           return { status: "error", content: "Validation failed" };
         }
-        saveLibraryEntry({
-          name,
-          description: isNonEmptyString(description) ? description : validated.description,
-          workflow: validated,
-          savedAt: new Date().toISOString()
-        });
+        try {
+          saveLibraryEntry({
+            name,
+            description: sanitizePromptField(isNonEmptyString(description) ? description : validated.description) ?? validated.description,
+            workflow: validated,
+            savedAt: new Date().toISOString()
+          });
+        } catch (err) {
+          return { status: "error", content: `Could not save workflow "${name}": ${err instanceof Error ? err.message : String(err)}` };
+        }
         return { status: "success", content: `Saved workflow "${name}".` };
       }
     }));
@@ -8646,7 +8650,7 @@ ${buildFlowHelp()}` };
           if (result && "type" in result && result.type === "complete") {
             sendPrompt(ctx, formatStep(result));
           }
-          clearRunMeta(marker.runId);
+          clearRunMetaLocked(marker.runId);
         });
       } else {
         await withRunMutexFor(marker.runId, async () => {
@@ -8696,7 +8700,7 @@ ${buildFlowHelp()}` };
           refreshed.error = `Exceeded maximum workflow continuations (${MAX_WORKFLOW_CONTINUATIONS}).`;
           persistRun(touchRun(refreshed));
           updateRunRegistry(refreshed);
-          clearRunMeta(currentRunId);
+          clearRunMetaLocked(currentRunId);
         });
         await sendPromptLocal(`Workflow "${run.workflow.name}" stopped: exceeded maximum continuations.`);
         return;

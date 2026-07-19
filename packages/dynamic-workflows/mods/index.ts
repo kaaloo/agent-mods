@@ -15,7 +15,7 @@ import {
   updateRunRegistry,
   withRunMutexFor,
 } from "./lib/state.ts";
-import { stepInlineRun, recordAgentCompleteLocked, recordBarrierCompleteLocked, parseFlowAgentMarker, type InlineStep } from "./lib/runner-inline.ts";
+import { stepInlineRun, recordAgentCompleteLocked, recordBarrierCompleteLocked, parseFlowAgentMarker, sanitizePromptField, type InlineStep } from "./lib/runner-inline.ts";
 import { listTemplates, loadTemplate } from "./lib/templates.ts";
 import { isNonEmptyString } from "./lib/utils.ts";
 
@@ -81,9 +81,9 @@ export default function activate(letta: LettaModContext): (() => void) {
     });
   }
 
-  // Internal helper: drop the meta entry for `runId`. Called when a run
-  // reaches a terminal state to prevent the map from growing forever.
-  function clearRunMeta(runId: string): void {
+  // Internal helper: drop the meta entry for `runId`. Caller must hold the
+  // per-run mutex; the "Locked" suffix documents this contract.
+  function clearRunMetaLocked(runId: string): void {
     runMeta.delete(runId);
     refreshMetaView();
   }
@@ -183,12 +183,16 @@ export default function activate(letta: LettaModContext): (() => void) {
         if (!validated) {
           return { status: "error", content: "Validation failed" };
         }
-        saveLibraryEntry({
-          name,
-          description: isNonEmptyString(description) ? description : validated.description,
-          workflow: validated,
-          savedAt: new Date().toISOString(),
-        });
+        try {
+          saveLibraryEntry({
+            name,
+            description: sanitizePromptField(isNonEmptyString(description) ? description : validated.description) ?? validated.description,
+            workflow: validated,
+            savedAt: new Date().toISOString(),
+          });
+        } catch (err) {
+          return { status: "error", content: `Could not save workflow "${name}": ${err instanceof Error ? err.message : String(err)}` };
+        }
         return { status: "success", content: `Saved workflow "${name}".` };
       },
     }));
@@ -443,7 +447,7 @@ export default function activate(letta: LettaModContext): (() => void) {
           if (result && "type" in result && result.type === "complete") {
             sendPrompt(ctx, formatStep(result));
           }
-          clearRunMeta(marker.runId);
+          clearRunMetaLocked(marker.runId);
         });
       } else {
         await withRunMutexFor(marker.runId, async () => {
@@ -502,7 +506,7 @@ export default function activate(letta: LettaModContext): (() => void) {
           // Drop the meta entry on terminal failure. Must run under the
           // mutex so a concurrent tool_end handler can't observe the meta
           // entry after the run has been marked failed.
-          clearRunMeta(currentRunId);
+          clearRunMetaLocked(currentRunId);
         });
         await sendPromptLocal(`Workflow "${run.workflow.name}" stopped: exceeded maximum continuations.`);
         return;

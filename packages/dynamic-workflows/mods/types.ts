@@ -97,10 +97,10 @@ export interface LettaCapabilities {
 
 export interface LettaModContext {
   capabilities?: LettaCapabilities;
-  tools: {
+  tools?: {
     register: (tool: LettaToolDefinition) => (() => void);
   };
-  commands: {
+  commands?: {
     register: (command: LettaCommandDefinition) => (() => void);
   };
   events: {

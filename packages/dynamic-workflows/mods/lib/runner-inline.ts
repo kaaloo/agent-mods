@@ -43,7 +43,7 @@ export function parseFlowAgentMarker(prompt: unknown): { runId: string; phaseId:
 // (marker spoofing) and H-C (phase.model control chars).
 export function sanitizePromptField(value: string | undefined): string | undefined {
   if (typeof value !== "string") return undefined;
-  let cleaned = value.replace(/[\x00-\x1F\x7F\u2028\u2029]/g, "");
+  let cleaned = value.replace(/[\x00-\x1F\x7F\u0085\u200B-\u200F\u2028\u2029\u202E\uFEFF]/g, "");
   // Strip embedded [FLOW_AGENT markers that could be mis-parsed. Replace
   // them with a benign placeholder so length is preserved for debugging.
   cleaned = cleaned.replace(/\[FLOW_AGENT[^\]]*\]/g, "[FLOW_AGENT_REDACTED]");

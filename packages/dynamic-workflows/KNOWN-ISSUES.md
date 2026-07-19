@@ -71,15 +71,32 @@ so concurrent writes cannot lose entries.
 
 **Status:** Closed in sweep-12.
 
-## 4. Sweep 5 closure-map fix (closed)
+## 5. Accepted hardening gaps from follow-up audit (run `1784469622075-7097da38`)
 
-The fifth bug-sweep flagged `activeRunId`, `activeRunConversationId`,
-and `workflowContinuationCount` as closure-local mutable state (H1) and
-the `MAX_WORKFLOW_CONTINUATIONS` check as a TOCTOU race (H2). Both
-closed by replacing the closure variables with a per-run
-`runMeta: Map<runId, { conversationId, count }>` accessed under
-`withRunMutexFor`. The budget check + increment are one atomic block;
-the meta entry is cleared when a run reaches terminal state to bound
-map growth.
+The follow-up audit after sweeps 13-17 confirmed that all previous High and
+Medium findings are closed. The remaining findings are Low/Info hardening
+suggestions and accepted limitations for a prototype. We document them here
+so they are not re-discovered and re-prioritized in every sweep.
 
-**Status:** Closed in commit `c56f367`.
+| ID | Finding | Status | Rationale |
+|---|---|---|---|
+| L-REG | `clearRunMetaLocked` rename | Closed in sweep-17 | Function renamed to document the mutex contract. |
+| L-TYPE | `LettaModContext.tools`/`commands` optional | Closed in sweep-17 | Types updated to match the defensive runtime guards. |
+| L-SAN1 | `sanitizePromptField` Unicode coverage | Closed in sweep-17 | Regex expanded to include RLO, zero-width spaces, BOM, NEL. |
+| L-SAN2 | `flow_save` description sanitization | Closed in sweep-17 | Description sanitized and `saveLibraryEntry` wrapped in try/catch. |
+| L-PROMPT | Prior-phase outputs in barrier prompts | Accepted | Sub-agent outputs are part of the intended synthesis input. Applying `sanitizePromptField` would strip legitimate content; delimiter wrapping would be a bigger change. Risk is low because outputs are only used inside the same conversation. |
+| L-MODEL | `phase.model` pattern validation | Accepted | `sanitizePromptField` already strips control characters. A model whitelist is too brittle for a prototype because supported model identifiers vary by deployment. |
+| L-WDIR | Working directory as arbitrary string | Accepted | The working directory comes from the Letta runtime context (`ctx.cwd` / `ctx.workingDirectory`), which is semi-trusted. The control-character stripping prevents prompt splitting. Validating it as an existing filesystem path would fail workflows launched before the directory exists. |
+| L-MEM | Unbounded `runMutexes` map | Accepted | Each entry is a resolved `Promise<void>` with negligible memory cost. The prototype does not run long enough for this to matter. Cleanup can be added if the mod is promoted to production. |
+| L-YAML | YAML schema restrictions | Accepted | The `yaml` npm package is safe by default (no `!!js/function`). `validateWorkflow` rejects malformed shapes. Unknown fields pass through but are not accessed. |
+| L-DISP | `getRunResultDisplayPath` display-path validation | Accepted | The path is display-only; actual file operations use `getRunDir` which validates both `runId` and `runAgentId`. |
+| L-INPUT | `flow_run` inputs not sanitized | Accepted | Inputs are stored in `run.inputs` but are not used in any path, command, or prompt interpolation. Sanitization will be added if a future feature consumes them. |
+| L-COERCE | `String()` coercion on YAML fields | Accepted | Remaining `String()` calls are in `loadAgentResult` and similar display fields where equality checks reject mismatches. The fields are not used for path construction or command execution. |
+| I-STREAM | Silent `sendMessageStream` failures | Accepted | The fire-and-forget `sendPrompt` pattern is intentional. If the stream fails, the prompt is simply not delivered and the orchestrator will continue on the next `turn_end` poll. |
+| I-META | `latestMetaView` stale reads | Accepted | Panel rendering is intentionally asynchronous and best-effort. The worst case is a stale display for one render cycle. |
+| I-LOAD | `loadRun` agent directory walk without mutex | Accepted | The directory walk is best-effort. Try/catch blocks prevent crashes, and a transient miss self-corrects on the next poll. |
+| I-ERROR | Error messages include user input | Accepted | Tool return values are not public-facing logs; the risk is limited to display issues in the same conversation. |
+
+**Status of these items:** Accepted limitations for the prototype. Re-evaluate if
+the mod is promoted to a production-grade feature or if a specific threat model
+requires closing one of them.
