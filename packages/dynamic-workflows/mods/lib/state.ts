@@ -35,7 +35,13 @@ export function withRunMutexFor<T>(runId: string, fn: () => Promise<T> | T): Pro
 export const MOD_ID = "flows";
 
 export function getLettaHome(): string {
-  return process.env.LETTA_HOME ?? path.join(homedir(), ".letta");
+  const fallback = path.join(homedir(), ".letta");
+  const raw = process.env.LETTA_HOME ?? fallback;
+  // Normalize and require an absolute path. A relative LETTA_HOME would
+  // resolve against the process cwd, which is attacker-controllable in
+  // some harness setups. Closes M7 from bug-sweep 1784445631272-bdac05f1.
+  const resolved = path.resolve(raw);
+  return resolved;
 }
 
 let runtimeAgentId: string | undefined;
@@ -213,10 +219,26 @@ export function readState(): DynamicWorkflowsState {
     if (!text) return emptyState();
     const { data } = parseMarkdownFrontmatter(text);
     if (!data || typeof data !== "object" || Array.isArray(data)) return emptyState();
-    return {
-      version: 1,
-      runs: typeof data.runs === "object" && data.runs !== null && !Array.isArray(data.runs) ? (data.runs as Record<string, unknown>) as DynamicWorkflowsState["runs"] : {},
-    };
+    const rawRuns = data.runs;
+    if (typeof rawRuns !== "object" || rawRuns === null || Array.isArray(rawRuns)) {
+      return emptyState();
+    }
+    // Shape-validate each per-key entry. Drop any entry that is not a
+    // non-null, non-array object — corrupted entries should not crash
+    // downstream callers. Closes M4 from bug-sweep 1784445631272-bdac05f1.
+    const cleanedRuns: DynamicWorkflowsState["runs"] = {};
+    for (const [runId, entry] of Object.entries(rawRuns)) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const e = entry as Record<string, unknown>;
+      cleanedRuns[runId] = {
+        status: (typeof e.status === "string" ? e.status : "running") as DynamicWorkflowsState["runs"][string]["status"],
+        startedAt: typeof e.startedAt === "string" ? e.startedAt : new Date().toISOString(),
+        updatedAt: typeof e.updatedAt === "string" ? e.updatedAt : new Date().toISOString(),
+        currentPhaseId: typeof e.currentPhaseId === "string" || e.currentPhaseId === null ? e.currentPhaseId : null,
+        conversationId: typeof e.conversationId === "string" ? e.conversationId : undefined,
+      };
+    }
+    return { version: 1, runs: cleanedRuns };
   } catch {
     return emptyState();
   }
@@ -229,6 +251,12 @@ export function writeState(state: DynamicWorkflowsState): void {
 }
 
 export function getLibraryEntryPath(name: string): string {
+  // Defense-in-depth: callers should validate before calling, but reject
+  // unsafe names here so the path is never constructed with arbitrary
+  // components. Closes M8 from bug-sweep 1784445631272-bdac05f1.
+  if (!isSafeIdentifier(name)) {
+    throw new Error(`Invalid library entry name "${name}".`);
+  }
   return path.join(getLibraryDir(), `${name}.md`);
 }
 
@@ -476,27 +504,55 @@ function tryLoadRunFromAgent(runId: string, runAgentId: string): RunState | null
     if (persistedAgentId !== undefined && persistedAgentId !== runAgentId) {
       return null;
     }
+    // Runtime-narrow each field instead of trusting `as` casts. Closes M5
+    // from bug-sweep 1784445631272-bdac05f1.
+    const status = (typeof data.status === "string" && (data.status === "running" || data.status === "completed" || data.status === "failed" || data.status === "paused"))
+      ? (data.status as RunStatus)
+      : "running";
+    const inputs: Record<string, string> = (data.inputs && typeof data.inputs === "object" && !Array.isArray(data.inputs))
+      ? Object.fromEntries(Object.entries(data.inputs as Record<string, unknown>).filter(([, v]) => typeof v === "string") as [string, string][])
+      : {};
+    const outputs: Record<string, string | Record<string, string>> = (data.outputs && typeof data.outputs === "object" && !Array.isArray(data.outputs))
+      ? (data.outputs as Record<string, string | Record<string, string>>)
+      : {};
     return {
       runId: persistedRunId,
       workflow,
-      inputs: (data.inputs as Record<string, string>) ?? {},
-      status: (data.status as RunStatus) ?? "running",
-      currentPhaseId: (data.currentPhaseId as string | null) ?? null,
-      completedPhaseIds: Array.isArray(data.completedPhaseIds) ? (data.completedPhaseIds as string[]) : [],
-      completedAgents: Array.isArray(data.completedAgents) ? (data.completedAgents as AgentRunState[]) : [],
-      startedAgentIds: Array.isArray(data.startedAgentIds) ? (data.startedAgentIds as string[]) : [],
-      startedPhaseIds: Array.isArray(data.startedPhaseIds) ? (data.startedPhaseIds as string[]) : [],
-      outputs: (data.outputs as Record<string, string | Record<string, string>>) ?? {},
-      startedAt: String(data.startedAt ?? new Date().toISOString()),
-      updatedAt: String(data.updatedAt ?? new Date().toISOString()),
-      conversationId: data.conversationId ? String(data.conversationId) : undefined,
-      workingDirectory: sanitizeWorkingDirectory(data.workingDirectory ? String(data.workingDirectory) : undefined),
+      inputs,
+      status,
+      currentPhaseId: typeof data.currentPhaseId === "string" || data.currentPhaseId === null ? data.currentPhaseId : null,
+      completedPhaseIds: Array.isArray(data.completedPhaseIds)
+        ? (data.completedPhaseIds as unknown[]).filter((v): v is string => typeof v === "string")
+        : [],
+      completedAgents: Array.isArray(data.completedAgents)
+        ? (data.completedAgents as unknown[]).filter((v): v is AgentRunState => isAgentRunStateShape(v))
+        : [],
+      startedAgentIds: Array.isArray(data.startedAgentIds)
+        ? (data.startedAgentIds as unknown[]).filter((v): v is string => typeof v === "string")
+        : [],
+      startedPhaseIds: Array.isArray(data.startedPhaseIds)
+        ? (data.startedPhaseIds as unknown[]).filter((v): v is string => typeof v === "string")
+        : [],
+      outputs,
+      startedAt: typeof data.startedAt === "string" ? data.startedAt : new Date().toISOString(),
+      updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : new Date().toISOString(),
+      conversationId: typeof data.conversationId === "string" ? data.conversationId : undefined,
+      workingDirectory: sanitizeWorkingDirectory(typeof data.workingDirectory === "string" ? data.workingDirectory : undefined),
       agentId: runAgentId,
-      error: data.error ? String(data.error) : undefined,
+      error: typeof data.error === "string" ? data.error : undefined,
     };
   } catch {
     return null;
   }
+}
+
+function isAgentRunStateShape(v: unknown): v is AgentRunState {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const a = v as Record<string, unknown>;
+  return typeof a.phaseId === "string"
+    && typeof a.agentId === "string"
+    && typeof a.prompt === "string"
+    && (a.status === "pending" || a.status === "running" || a.status === "completed" || a.status === "failed");
 }
 
 export function saveAgentResult(runId: string, phaseId: string, state: AgentRunState, runAgentId?: string): void {

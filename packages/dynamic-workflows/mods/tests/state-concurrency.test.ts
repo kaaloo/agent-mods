@@ -11,6 +11,9 @@ import {
   getRunDir,
   getRunPath,
   sanitizeWorkingDirectory,
+  getLibraryEntryPath,
+  getLettaHome,
+  readState,
 } from "../lib/state.ts";
 import {
   recordAgentComplete,
@@ -413,5 +416,53 @@ describe("C1 mutex re-entry safety", () => {
 
     const final = loadRun(run.runId);
     expect(final?.status).toBe("completed");
+  });
+});
+
+describe("defensive state.ts guards (M4, M5, M7, M8)", () => {
+  test("getLibraryEntryPath rejects unsafe names", () => {
+    expect(() => getLibraryEntryPath("../etc/passwd")).toThrow(/Invalid library entry name/);
+    expect(() => getLibraryEntryPath("name/with/slash")).toThrow(/Invalid library entry name/);
+  });
+
+  test("getLettaHome resolves to an absolute path", () => {
+    expect(path.isAbsolute(getLettaHome())).toBe(true);
+  });
+
+  test("readState drops malformed per-key entries instead of crashing", async () => {
+    const run = await createRun(sampleWorkflow);
+    // Tamper with the registry: inject a non-object entry.
+    const { writeFileSync, readFileSync } = await import("node:fs");
+    const registryPath = path.join(tempDir, "agents", run.agentId!, "memory", "flows", "registry.md");
+    const original = readFileSync(registryPath, "utf8");
+    const tampered = original + `\n  bogus: "not-an-object"\n  also-bogus: 42\n`;
+    writeFileSync(registryPath, tampered, "utf8");
+
+    const state = readState();
+    // The original run should still be present; bogus entries are dropped.
+    expect(state.runs[run.runId]).toBeTruthy();
+    expect(state.runs["bogus"]).toBeUndefined();
+    expect(state.runs["also-bogus"]).toBeUndefined();
+  });
+
+  test("loadRun drops malformed completedAgents entries", async () => {
+    const run = await createRun(sampleWorkflow);
+    // Tamper with the run.md to inject a malformed completedAgents entry.
+    const { writeFileSync, readFileSync } = await import("node:fs");
+    const runPath = getRunPath(run.runId, run.agentId);
+    const original = readFileSync(runPath, "utf8");
+    // Inject an entry that is missing the required `status` literal.
+    const tampered = original.replace(
+      /^completedAgents: \[\]/m,
+      "completedAgents:\n  - phaseId: scan\n    agentId: bogus\n    prompt: p\n    status: completed\n  - phaseId: scan\n    agentId: not-a-state\n    prompt: p\n"
+    );
+    writeFileSync(runPath, tampered, "utf8");
+
+    const reloaded = loadRun(run.runId);
+    expect(reloaded).not.toBeNull();
+    // The malformed entry has `status: not-a-state` (string but not in the
+    // literal set), so isAgentRunStateShape rejects it.
+    expect(reloaded?.completedAgents).toHaveLength(1);
+    expect(reloaded?.completedAgents[0]?.agentId).toBe("bogus");
   });
 });

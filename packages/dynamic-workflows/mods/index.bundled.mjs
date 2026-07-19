@@ -7365,7 +7365,10 @@ function withRunMutexFor(runId, fn) {
 }
 var MOD_ID = "flows";
 function getLettaHome() {
-  return process.env.LETTA_HOME ?? path2.join(homedir(), ".letta");
+  const fallback = path2.join(homedir(), ".letta");
+  const raw = process.env.LETTA_HOME ?? fallback;
+  const resolved = path2.resolve(raw);
+  return resolved;
 }
 var runtimeAgentId;
 function setRuntimeAgentId(id) {
@@ -7470,10 +7473,24 @@ function readState() {
     const { data } = parseMarkdownFrontmatter(text);
     if (!data || typeof data !== "object" || Array.isArray(data))
       return emptyState();
-    return {
-      version: 1,
-      runs: typeof data.runs === "object" && data.runs !== null && !Array.isArray(data.runs) ? data.runs : {}
-    };
+    const rawRuns = data.runs;
+    if (typeof rawRuns !== "object" || rawRuns === null || Array.isArray(rawRuns)) {
+      return emptyState();
+    }
+    const cleanedRuns = {};
+    for (const [runId, entry] of Object.entries(rawRuns)) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry))
+        continue;
+      const e = entry;
+      cleanedRuns[runId] = {
+        status: typeof e.status === "string" ? e.status : "running",
+        startedAt: typeof e.startedAt === "string" ? e.startedAt : new Date().toISOString(),
+        updatedAt: typeof e.updatedAt === "string" ? e.updatedAt : new Date().toISOString(),
+        currentPhaseId: typeof e.currentPhaseId === "string" || e.currentPhaseId === null ? e.currentPhaseId : null,
+        conversationId: typeof e.conversationId === "string" ? e.conversationId : undefined
+      };
+    }
+    return { version: 1, runs: cleanedRuns };
   } catch {
     return emptyState();
   }
@@ -7484,6 +7501,9 @@ function writeState(state) {
   writeTextFileAtomically(p, serializeMarkdownFrontmatter({ version: 1, runs: state.runs }));
 }
 function getLibraryEntryPath(name) {
+  if (!isSafeIdentifier(name)) {
+    throw new Error(`Invalid library entry name "${name}".`);
+  }
   return path2.join(getLibraryDir(), `${name}.md`);
 }
 function saveLibraryEntry(entry) {
@@ -7704,27 +7724,36 @@ function tryLoadRunFromAgent(runId, runAgentId) {
     if (persistedAgentId !== undefined && persistedAgentId !== runAgentId) {
       return null;
     }
+    const status = typeof data.status === "string" && (data.status === "running" || data.status === "completed" || data.status === "failed" || data.status === "paused") ? data.status : "running";
+    const inputs = data.inputs && typeof data.inputs === "object" && !Array.isArray(data.inputs) ? Object.fromEntries(Object.entries(data.inputs).filter(([, v]) => typeof v === "string")) : {};
+    const outputs = data.outputs && typeof data.outputs === "object" && !Array.isArray(data.outputs) ? data.outputs : {};
     return {
       runId: persistedRunId,
       workflow,
-      inputs: data.inputs ?? {},
-      status: data.status ?? "running",
-      currentPhaseId: data.currentPhaseId ?? null,
-      completedPhaseIds: Array.isArray(data.completedPhaseIds) ? data.completedPhaseIds : [],
-      completedAgents: Array.isArray(data.completedAgents) ? data.completedAgents : [],
-      startedAgentIds: Array.isArray(data.startedAgentIds) ? data.startedAgentIds : [],
-      startedPhaseIds: Array.isArray(data.startedPhaseIds) ? data.startedPhaseIds : [],
-      outputs: data.outputs ?? {},
-      startedAt: String(data.startedAt ?? new Date().toISOString()),
-      updatedAt: String(data.updatedAt ?? new Date().toISOString()),
-      conversationId: data.conversationId ? String(data.conversationId) : undefined,
-      workingDirectory: sanitizeWorkingDirectory(data.workingDirectory ? String(data.workingDirectory) : undefined),
+      inputs,
+      status,
+      currentPhaseId: typeof data.currentPhaseId === "string" || data.currentPhaseId === null ? data.currentPhaseId : null,
+      completedPhaseIds: Array.isArray(data.completedPhaseIds) ? data.completedPhaseIds.filter((v) => typeof v === "string") : [],
+      completedAgents: Array.isArray(data.completedAgents) ? data.completedAgents.filter((v) => isAgentRunStateShape(v)) : [],
+      startedAgentIds: Array.isArray(data.startedAgentIds) ? data.startedAgentIds.filter((v) => typeof v === "string") : [],
+      startedPhaseIds: Array.isArray(data.startedPhaseIds) ? data.startedPhaseIds.filter((v) => typeof v === "string") : [],
+      outputs,
+      startedAt: typeof data.startedAt === "string" ? data.startedAt : new Date().toISOString(),
+      updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : new Date().toISOString(),
+      conversationId: typeof data.conversationId === "string" ? data.conversationId : undefined,
+      workingDirectory: sanitizeWorkingDirectory(typeof data.workingDirectory === "string" ? data.workingDirectory : undefined),
       agentId: runAgentId,
-      error: data.error ? String(data.error) : undefined
+      error: typeof data.error === "string" ? data.error : undefined
     };
   } catch {
     return null;
   }
+}
+function isAgentRunStateShape(v) {
+  if (!v || typeof v !== "object" || Array.isArray(v))
+    return false;
+  const a = v;
+  return typeof a.phaseId === "string" && typeof a.agentId === "string" && typeof a.prompt === "string" && (a.status === "pending" || a.status === "running" || a.status === "completed" || a.status === "failed");
 }
 function saveAgentResult(runId, phaseId, state, runAgentId) {
   const filePath = getRunAgentPath(runId, phaseId, state.agentId, runAgentId);
