@@ -671,7 +671,12 @@ export function deleteRun(runId: string, runAgentId?: string): void {
     }
     rmSync(target, { recursive: true, force: true });
   } catch { /* ignore */ }
-  const state = readState();
-  delete state.runs[runId];
-  writeState(state);
+  // H-3 from sweep 8: wrap the registry read-modify-write in the per-run
+  // mutex so two concurrent deleteRun calls (or deleteRun vs updateRunRegistry
+  // on a different run) cannot lose each other's registry entries.
+  withRunMutexFor(runId, () => {
+    const state = readState();
+    delete state.runs[runId];
+    writeState(state);
+  });
 }

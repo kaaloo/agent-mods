@@ -224,10 +224,13 @@ export function recordBarrierCompleteLocked(runId: string, phaseId: string, outp
   if ((run.status as RunState["status"]) === "completed") {
     const complete = completeRunLocked(run, output);
     if (complete.error) {
-      run.status = "failed";
+      // H-5 from sweep 8: completeRunLocked already persisted successfully
+      // with status="completed" before saveRunResult threw. Don't re-persist
+      // — that would silently overwrite the durable "completed" state with
+      // "failed". Surface the error via the run's `error` field and let the
+      // orchestrator decide what to do (typically retry or report).
       run.error = complete.error;
       persistRun(touchRun(run));
-      updateRunRegistry(run);
       return null;
     }
     return run;

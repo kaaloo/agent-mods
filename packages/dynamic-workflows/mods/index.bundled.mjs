@@ -7976,10 +7976,8 @@ function recordBarrierCompleteLocked(runId, phaseId, output) {
   if (run.status === "completed") {
     const complete = completeRunLocked(run, output);
     if (complete.error) {
-      run.status = "failed";
       run.error = complete.error;
       persistRun(touchRun(run));
-      updateRunRegistry(run);
       return null;
     }
     return run;

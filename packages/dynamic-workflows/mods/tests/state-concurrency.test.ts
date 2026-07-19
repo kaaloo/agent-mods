@@ -683,4 +683,37 @@ describe("sweep-7 fixes: H1, M2, F3, L-C", () => {
     fs.rmSync(real, { recursive: true, force: true });
     fs.rmSync(linkBase, { recursive: true, force: true });
   });
+
+  test("H-3: deleteRun registry mutation is source-guarded", () => {
+    // Source-level check that deleteRun's registry update is wrapped in
+    // withRunMutexFor so concurrent deleteRun calls cannot lose entries.
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const src = fs.readFileSync(path.resolve(__dirname, "../lib/state.ts"), "utf8");
+    const idx = src.indexOf("export function deleteRun");
+    expect(idx).toBeGreaterThan(0);
+    // Read the entire deleteRun function body.
+    const after = src.slice(idx);
+    const endIdx = after.indexOf("\nexport ");
+    const tail = endIdx > 0 ? after.slice(0, endIdx) : after;
+    expect(tail).toMatch(/withRunMutexFor\(runId,[\s\S]{0,200}readState/);
+  });
+
+  test("H-5: completeRunLocked error path does not re-persist status as 'failed'", () => {
+    // Source-level check: when completeRunLocked returns an error, the
+    // caller (recordBarrierCompleteLocked) must not re-persist run.status
+    // = "failed" — that would overwrite the durable "completed" state.
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const src = fs.readFileSync(path.resolve(__dirname, "../lib/runner-inline.ts"), "utf8");
+    const idx = src.indexOf("function recordBarrierCompleteLocked");
+    expect(idx).toBeGreaterThan(0);
+    const after = src.slice(idx);
+    const endIdx = after.indexOf("\nfunction ");
+    const block = endIdx > 0 ? after.slice(0, endIdx) : after;
+    expect(block).toMatch(/complete\.error/);
+    // The fix removed the "run.status = \"failed\"" assignment in this block;
+    // it must not have crept back in.
+    expect(block).not.toMatch(/run\.status\s*=\s*"failed"/);
+  });
 });
