@@ -675,7 +675,7 @@ describe("sweep-7 fixes: H1, M2, F3, L-C", () => {
 
     process.env.LETTA_HOME = linkBase;
     const { deleteRun } = await import("../lib/state.ts");
-    expect(() => deleteRun(runId, agentId)).not.toThrow();
+    await expect(deleteRun(runId, agentId)).resolves.not.toThrow();
     // The sentinel must still exist — deleteRun refused.
     expect(fs.existsSync(sentinel)).toBe(true);
 
@@ -690,13 +690,13 @@ describe("sweep-7 fixes: H1, M2, F3, L-C", () => {
     const fs = require("node:fs");
     const path = require("node:path");
     const src = fs.readFileSync(path.resolve(__dirname, "../lib/state.ts"), "utf8");
-    const idx = src.indexOf("export function deleteRun");
+    const idx = src.indexOf("export async function deleteRun");
     expect(idx).toBeGreaterThan(0);
     // Read the entire deleteRun function body.
     const after = src.slice(idx);
     const endIdx = after.indexOf("\nexport ");
     const tail = endIdx > 0 ? after.slice(0, endIdx) : after;
-    expect(tail).toMatch(/withRunMutexFor\(runId,[\s\S]{0,200}readState/);
+    expect(tail).toMatch(/await\s+withRunMutexFor\(runId,[\s\S]{0,200}readState/);
   });
 
   test("H-5: completeRunLocked error path does not re-persist status as 'failed'", () => {

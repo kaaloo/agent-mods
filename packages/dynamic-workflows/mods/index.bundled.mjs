@@ -8256,7 +8256,7 @@ function activate(letta) {
       });
     } catch {}
   }
-  if (letta.capabilities?.tools) {
+  if (letta.capabilities?.tools && letta.tools) {
     disposers.push(letta.tools.register({
       name: "flow_author",
       description: "Generate a workflow prompt for the model to author a JSON workflow definition for a given task.",
@@ -8429,7 +8429,7 @@ function activate(letta) {
       }
     }));
   }
-  if (letta.capabilities?.commands) {
+  if (letta.capabilities?.commands && letta.commands) {
     disposers.push(letta.commands.register({
       id: "flow",
       description: "Dynamic Workflows: /flow [panel|new|save|list|run|delete|help] — manage multi-agent workflows.",

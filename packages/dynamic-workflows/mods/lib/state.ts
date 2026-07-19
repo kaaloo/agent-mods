@@ -638,7 +638,7 @@ export function updateRunRegistry(run: RunState): void {
   writeState(state);
 }
 
-export function deleteRun(runId: string, runAgentId?: string): void {
+export async function deleteRun(runId: string, runAgentId?: string): Promise<void> {
   const target = getRunDir(runId, runAgentId);
   try {
     // Refuse to recursively delete if any part of the target path is a
@@ -673,8 +673,10 @@ export function deleteRun(runId: string, runAgentId?: string): void {
   } catch { /* ignore */ }
   // H-3 from sweep 8: wrap the registry read-modify-write in the per-run
   // mutex so two concurrent deleteRun calls (or deleteRun vs updateRunRegistry
-  // on a different run) cannot lose each other's registry entries.
-  withRunMutexFor(runId, () => {
+  // on a different run) cannot lose each other's registry entries. Sweep-9
+  // fix: must await so the registry update is durable before the caller
+  // moves on.
+  await withRunMutexFor(runId, () => {
     const state = readState();
     delete state.runs[runId];
     writeState(state);

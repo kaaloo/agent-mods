@@ -38,13 +38,13 @@ Author a workflow:
 Save it:
 
 ```text
-/flow-save bug-sweep
+/flow-save code-audit
 ```
 
 Run it:
 
 ```text
-/flow-run bug-sweep
+/flow-run code-audit
 ```
 
 List workflows:

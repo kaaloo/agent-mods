@@ -1,7 +1,7 @@
 ---
-name: example-bug-sweep
+name: code-audit
 version: "1"
-description: Example workflow that scans a codebase for common bug categories and synthesizes findings.
+description: Scans a codebase for common bug categories (concurrency, null dereferences, injection vectors) and synthesizes findings into a prioritized report.
 phases:
   - id: scan
     type: fan-out
@@ -23,4 +23,5 @@ budgets:
   max_duration_ms: 600000
 ---
 
-This example workflow demonstrates the fan-out/barrier pattern. The first phase dispatches three parallel specialist scans. Once all three complete, the barrier phase synthesizes their findings into a single prioritized report.
+This workflow demonstrates the fan-out/barrier pattern. The first phase dispatches three parallel specialist scans. Once all three complete, the barrier phase synthesizes their findings into a single prioritized report.
+
