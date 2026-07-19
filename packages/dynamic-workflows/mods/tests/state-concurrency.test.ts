@@ -511,6 +511,37 @@ describe("H2 budget atomicity", () => {
   });
 });
 
+describe("M1 cross-run registry mutex", () => {
+  // Regression for KNOWN-ISSUES entry #3: updateRunRegistry read-modify-write
+  // is no longer unprotected across runs. Concurrent createRun calls must all
+  // appear in the registry rather than the last write overwriting the rest.
+  test("concurrent createRun calls preserve all registry entries", async () => {
+    const runs = await Promise.all([
+      createRun(sampleWorkflow),
+      createRun(sampleWorkflow),
+      createRun(sampleWorkflow),
+      createRun(sampleWorkflow),
+    ]);
+    const state = readState();
+    for (const run of runs) {
+      expect(state.runs[run.runId]).toBeTruthy();
+      expect(state.runs[run.runId]?.status).toBe("running");
+    }
+  });
+
+  test("deleteRun removes only its own registry entry", async () => {
+    const runA = await createRun(sampleWorkflow);
+    const runB = await createRun(sampleWorkflow);
+
+    const { deleteRun } = await import("../lib/state.ts");
+    await deleteRun(runA.runId, runA.agentId);
+
+    const state = readState();
+    expect(state.runs[runA.runId]).toBeUndefined();
+    expect(state.runs[runB.runId]).toBeTruthy();
+  });
+});
+
 describe("M1 atomic-write fallback", () => {
   // Regression for sweep 5 M1: temp-name collisions and silent non-atomic
   // fallback in writeTextFileAtomically. The new implementation uses

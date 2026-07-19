@@ -4,6 +4,7 @@ import {
   isFanOutPhase,
   isBarrierPhase,
   nextPhase,
+  isPhaseComplete,
   WORKFLOW_VERSION,
   type WorkflowDefinition,
   type Phase,
@@ -88,6 +89,30 @@ describe("validateWorkflow", () => {
     const { errors } = validateWorkflow(bad);
     expect(errors.some((e) => e.path.includes("max_tokens"))).toBe(true);
   });
+
+  test("rejects barrier depending on a later phase", () => {
+    const bad = {
+      ...validWorkflow,
+      phases: [
+        validWorkflow.phases[1], // synthesize first
+        validWorkflow.phases[0], // scan second
+      ],
+    };
+    const { errors } = validateWorkflow(bad);
+    expect(errors.some((e) => e.message.includes("later or current phase"))).toBe(true);
+  });
+
+  test("rejects barrier depending on itself", () => {
+    const bad = {
+      ...validWorkflow,
+      phases: [
+        validWorkflow.phases[0],
+        { ...validWorkflow.phases[1], depends_on: ["synthesize"] },
+      ],
+    };
+    const { errors } = validateWorkflow(bad);
+    expect(errors.some((e) => e.message.includes("later or current phase"))).toBe(true);
+  });
 });
 
 describe("phase helpers", () => {
@@ -104,5 +129,45 @@ describe("phase helpers", () => {
   test("nextPhase returns undefined when all phases complete", () => {
     const next = nextPhase(validWorkflow, new Set(["scan", "synthesize"]));
     expect(next).toBeUndefined();
+  });
+
+  test("isPhaseComplete requires barrier dependencies to be completed", () => {
+    const barrierOnBarrier = {
+      name: "b-on-b",
+      version: WORKFLOW_VERSION,
+      description: "Barrier on barrier.",
+      phases: [
+        {
+          id: "scan",
+          type: "fan-out" as const,
+          agents: [{ id: "a", prompt: "p" }],
+        },
+        {
+          id: "mid",
+          type: "barrier" as const,
+          depends_on: ["scan"],
+          prompt: "merge",
+        },
+        {
+          id: "final",
+          type: "barrier" as const,
+          depends_on: ["mid"],
+          prompt: "final",
+        },
+      ],
+    } satisfies WorkflowDefinition;
+    const final = barrierOnBarrier.phases[2];
+    const completedAgents = new Set(["a"]);
+    // Without completedPhaseIds the final barrier is not complete even though
+    // its fan-out dependency is satisfied.
+    expect(isPhaseComplete(barrierOnBarrier, final.id, completedAgents)).toBe(false);
+    expect(isPhaseComplete(barrierOnBarrier, final.id, completedAgents, new Set(["scan"]))).toBe(false);
+    expect(isPhaseComplete(barrierOnBarrier, final.id, completedAgents, new Set(["scan", "mid"]))).toBe(true);
+  });
+
+  test("isPhaseComplete for fan-out requires all agents", () => {
+    const fanOut = validWorkflow.phases[0] as Phase;
+    expect(isPhaseComplete(validWorkflow, fanOut.id, new Set(["race"]))).toBe(false);
+    expect(isPhaseComplete(validWorkflow, fanOut.id, new Set(["race", "null"]))).toBe(true);
   });
 });

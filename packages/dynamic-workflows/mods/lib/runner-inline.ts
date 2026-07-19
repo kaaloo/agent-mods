@@ -195,7 +195,7 @@ export function recordAgentCompleteLocked(runId: string, phaseId: string, agentI
   run.outputs[`${phaseId}.${agentId}`] = finalOutput;
 
   const completedAgentIds = new Set(run.completedAgents.map((a) => a.agentId));
-  if (isPhaseComplete(run.workflow, phaseId, completedAgentIds)) {
+  if (isPhaseComplete(run.workflow, phaseId, completedAgentIds, new Set(run.completedPhaseIds))) {
     advancePhase(run);
   }
 
@@ -275,7 +275,7 @@ function dispatchFanOutLocked(run: RunState, phase: FanOutPhase): InlineStep | n
     // phase.id. Skip the advance and re-step. Closes H-B from sweep 6.
     if (refreshed
         && refreshed.currentPhaseId === phase.id
-        && isPhaseComplete(refreshed.workflow, phase.id, new Set(refreshed.completedAgents.map((a) => a.agentId)))) {
+        && isPhaseComplete(refreshed.workflow, phase.id, new Set(refreshed.completedAgents.map((a) => a.agentId)), new Set(refreshed.completedPhaseIds))) {
       advancePhase(refreshed);
       persistRun(touchRun(refreshed));
       updateRunRegistry(refreshed);

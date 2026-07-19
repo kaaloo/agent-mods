@@ -7011,7 +7011,7 @@ function validateWorkflow(value) {
   if (!Array.isArray(obj.phases) || obj.phases.length === 0) {
     errors.push({ path: "phases", message: "Workflow must have at least one phase." });
   } else {
-    const phaseIds = new Set;
+    const phaseIds = new Map;
     for (let i = 0;i < obj.phases.length; i++) {
       const phase = obj.phases[i];
       if (!phase || typeof phase !== "object" || Array.isArray(phase)) {
@@ -7027,7 +7027,7 @@ function validateWorkflow(value) {
       } else if (phaseIds.has(id)) {
         errors.push({ path: `phases[${i}].id`, message: `Duplicate phase id "${id}".` });
       } else {
-        phaseIds.add(id);
+        phaseIds.set(id, i);
       }
       const type = typeof p.type === "string" ? p.type : "";
       if (type === "fan-out") {
@@ -7085,8 +7085,14 @@ function validateWorkflow(value) {
         const p = phase;
         if (p.type === "barrier" && Array.isArray(p.depends_on)) {
           for (const dep of p.depends_on) {
-            if (typeof dep === "string" && dep.trim() && !phaseIds.has(dep.trim())) {
-              errors.push({ path: `phases[${i}].depends_on`, message: `Unknown phase id "${dep.trim()}".` });
+            if (typeof dep !== "string" || !dep.trim())
+              continue;
+            const depId = dep.trim();
+            const depIndex = phaseIds.get(depId);
+            if (depIndex === undefined) {
+              errors.push({ path: `phases[${i}].depends_on`, message: `Unknown phase id "${depId}".` });
+            } else if (depIndex >= i) {
+              errors.push({ path: `phases[${i}].depends_on`, message: `Barrier phase depends on a later or current phase "${depId}".` });
             }
           }
         }
@@ -7137,7 +7143,7 @@ function getPhaseMaxConcurrent(phase, workflowBudgets) {
 function phaseById(workflow, phaseId) {
   return workflow.phases.find((p) => p.id === phaseId);
 }
-function isPhaseComplete(workflow, phaseId, completedAgents) {
+function isPhaseComplete(workflow, phaseId, completedAgents, completedPhaseIds) {
   const phase = phaseById(workflow, phaseId);
   if (!phase)
     return false;
@@ -7152,7 +7158,7 @@ function isPhaseComplete(workflow, phaseId, completedAgents) {
       if (isFanOutPhase(depPhase)) {
         return depPhase.agents.every((a) => completedAgents.has(a.id));
       }
-      return true;
+      return completedPhaseIds?.has(depId) ?? false;
     });
   }
   return false;
@@ -7354,6 +7360,23 @@ import { existsSync, mkdirSync, readFileSync, renameSync, readdirSync, writeFile
 import { homedir } from "node:os";
 import path2 from "node:path";
 var runMutexes = new Map;
+var registryQueue = [];
+var registryLocked = false;
+function runRegistryQueue() {
+  if (registryLocked)
+    return;
+  registryLocked = true;
+  while (registryQueue.length > 0) {
+    const next = registryQueue.shift();
+    if (next)
+      next();
+  }
+  registryLocked = false;
+}
+function scheduleRegistryUpdate(fn) {
+  registryQueue.push(fn);
+  runRegistryQueue();
+}
 function withRunMutexFor(runId, fn) {
   if (!isSafeRunId(runId)) {
     return Promise.reject(new Error(`Refusing to take per-run mutex for unsafe runId: ${runId}`));
@@ -7807,15 +7830,17 @@ function saveRunResult(runId, result, runAgentId) {
   writeTextFileAtomically(getRunResultPath(runId, runAgentId), result);
 }
 function updateRunRegistry(run) {
-  const state = readState();
-  state.runs[run.runId] = {
-    status: run.status,
-    startedAt: run.startedAt,
-    updatedAt: run.updatedAt,
-    currentPhaseId: run.currentPhaseId,
-    conversationId: run.conversationId
-  };
-  writeState(state);
+  scheduleRegistryUpdate(() => {
+    const state = readState();
+    state.runs[run.runId] = {
+      status: run.status,
+      startedAt: run.startedAt,
+      updatedAt: run.updatedAt,
+      currentPhaseId: run.currentPhaseId,
+      conversationId: run.conversationId
+    };
+    writeState(state);
+  });
 }
 
 // mods/lib/panel.ts
@@ -7951,7 +7976,7 @@ function recordAgentCompleteLocked(runId, phaseId, agentId, output) {
   run.completedAgents.push(state);
   run.outputs[`${phaseId}.${agentId}`] = finalOutput;
   const completedAgentIds = new Set(run.completedAgents.map((a) => a.agentId));
-  if (isPhaseComplete(run.workflow, phaseId, completedAgentIds)) {
+  if (isPhaseComplete(run.workflow, phaseId, completedAgentIds, new Set(run.completedPhaseIds))) {
     advancePhase(run);
   }
   persistRun(touchRun(run));
@@ -8005,7 +8030,7 @@ function dispatchFanOutLocked(run, phase) {
       }
     }
     const refreshed = loadRun(run.runId);
-    if (refreshed && refreshed.currentPhaseId === phase.id && isPhaseComplete(refreshed.workflow, phase.id, new Set(refreshed.completedAgents.map((a) => a.agentId)))) {
+    if (refreshed && refreshed.currentPhaseId === phase.id && isPhaseComplete(refreshed.workflow, phase.id, new Set(refreshed.completedAgents.map((a) => a.agentId)), new Set(refreshed.completedPhaseIds))) {
       advancePhase(refreshed);
       persistRun(touchRun(refreshed));
       updateRunRegistry(refreshed);
@@ -8563,7 +8588,7 @@ ${buildFlowHelp()}` };
         return;
       if (event.toolName !== "Agent" || event.status !== "success")
         return;
-      const marker = parseFlowAgentMarker(event.args?.prompt);
+      const marker = parseFlowAgentMarker(getAgentPrompt(event));
       if (!marker)
         return;
       const meta = await getRunMeta(marker.runId);
@@ -8673,6 +8698,13 @@ ${buildFlowHelp()}` };
       } catch {}
     }
   };
+}
+function getAgentPrompt(event) {
+  const args = event.args ?? event.arguments;
+  if (args && typeof args === "object") {
+    return typeof args.prompt === "string" ? args.prompt : undefined;
+  }
+  return;
 }
 function normalizeCommandArgs(value) {
   if (value === undefined || value === null)

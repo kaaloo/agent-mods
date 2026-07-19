@@ -17,6 +17,29 @@ import type { WorkflowDefinition } from "./schema.ts";
 // grow; revisit if it becomes a concern.
 const runMutexes = new Map<string, Promise<unknown>>();
 
+// Cross-run registry mutex. All registry reads/writes (updateRunRegistry and
+// deleteRun's registry removal) run through this queue so concurrent runs
+// cannot read-modify-write over each other and lose entries. The operations
+// are synchronous, so a simple in-process queue is sufficient. Closes M1/H1
+// from the bug-sweep reports (KNOWN-ISSUES entry #3).
+const registryQueue: Array<() => void> = [];
+let registryLocked = false;
+
+function runRegistryQueue(): void {
+  if (registryLocked) return;
+  registryLocked = true;
+  while (registryQueue.length > 0) {
+    const next = registryQueue.shift();
+    if (next) next();
+  }
+  registryLocked = false;
+}
+
+function scheduleRegistryUpdate(fn: () => void): void {
+  registryQueue.push(fn);
+  runRegistryQueue();
+}
+
 export function withRunMutexFor<T>(runId: string, fn: () => Promise<T> | T): Promise<T> {
   if (!isSafeRunId(runId)) {
     // Defensive: reject unknown / unsafe runIds so a typo can't route work to
@@ -627,15 +650,17 @@ export function saveRunResult(runId: string, result: string, runAgentId?: string
 }
 
 export function updateRunRegistry(run: RunState): void {
-  const state = readState();
-  state.runs[run.runId] = {
-    status: run.status,
-    startedAt: run.startedAt,
-    updatedAt: run.updatedAt,
-    currentPhaseId: run.currentPhaseId,
-    conversationId: run.conversationId,
-  };
-  writeState(state);
+  scheduleRegistryUpdate(() => {
+    const state = readState();
+    state.runs[run.runId] = {
+      status: run.status,
+      startedAt: run.startedAt,
+      updatedAt: run.updatedAt,
+      currentPhaseId: run.currentPhaseId,
+      conversationId: run.conversationId,
+    };
+    writeState(state);
+  });
 }
 
 export async function deleteRun(runId: string, runAgentId?: string): Promise<void> {
@@ -676,8 +701,10 @@ export async function deleteRun(runId: string, runAgentId?: string): Promise<voi
       rmSync(target, { recursive: true, force: true });
     } catch { /* ignore */ }
     // H-3 from sweep 8: registry update under the per-run mutex.
-    const state = readState();
-    delete state.runs[runId];
-    writeState(state);
+    scheduleRegistryUpdate(() => {
+      const state = readState();
+      delete state.runs[runId];
+      writeState(state);
+    });
   });
 }

@@ -72,7 +72,7 @@ export function validateWorkflow(value: unknown): { workflow?: WorkflowDefinitio
   if (!Array.isArray(obj.phases) || obj.phases.length === 0) {
     errors.push({ path: "phases", message: "Workflow must have at least one phase." });
   } else {
-    const phaseIds = new Set<string>();
+    const phaseIds = new Map<string, number>();
     for (let i = 0; i < obj.phases.length; i++) {
       const phase = obj.phases[i];
       if (!phase || typeof phase !== "object" || Array.isArray(phase)) {
@@ -88,7 +88,7 @@ export function validateWorkflow(value: unknown): { workflow?: WorkflowDefinitio
       } else if (phaseIds.has(id)) {
         errors.push({ path: `phases[${i}].id`, message: `Duplicate phase id "${id}".` });
       } else {
-        phaseIds.add(id);
+        phaseIds.set(id, i);
       }
 
       const type = typeof p.type === "string" ? p.type : "";
@@ -140,7 +140,10 @@ export function validateWorkflow(value: unknown): { workflow?: WorkflowDefinitio
       }
     }
 
-    // Resolve depends_on after all ids are collected.
+    // Resolve depends_on after all ids are collected. Reject unknown ids
+    // and reject barrier dependencies that point to a later or current phase
+    // (which would create a cycle or hang the workflow). Closes the cycle
+    // detection gap from the implementation plan validation rules.
     if (phaseIds.size > 0) {
       for (let i = 0; i < obj.phases.length; i++) {
         const phase = obj.phases[i];
@@ -148,8 +151,13 @@ export function validateWorkflow(value: unknown): { workflow?: WorkflowDefinitio
         const p = phase as Record<string, unknown>;
         if (p.type === "barrier" && Array.isArray(p.depends_on)) {
           for (const dep of p.depends_on) {
-            if (typeof dep === "string" && dep.trim() && !phaseIds.has(dep.trim())) {
-              errors.push({ path: `phases[${i}].depends_on`, message: `Unknown phase id "${dep.trim()}".` });
+            if (typeof dep !== "string" || !dep.trim()) continue;
+            const depId = dep.trim();
+            const depIndex = phaseIds.get(depId);
+            if (depIndex === undefined) {
+              errors.push({ path: `phases[${i}].depends_on`, message: `Unknown phase id "${depId}".` });
+            } else if (depIndex >= i) {
+              errors.push({ path: `phases[${i}].depends_on`, message: `Barrier phase depends on a later or current phase "${depId}".` });
             }
           }
         }
@@ -207,7 +215,7 @@ export function phaseById(workflow: WorkflowDefinition, phaseId: string): Phase 
   return workflow.phases.find((p) => p.id === phaseId);
 }
 
-export function isPhaseComplete(workflow: WorkflowDefinition, phaseId: string, completedAgents: Set<string>): boolean {
+export function isPhaseComplete(workflow: WorkflowDefinition, phaseId: string, completedAgents: Set<string>, completedPhaseIds?: Set<string>): boolean {
   const phase = phaseById(workflow, phaseId);
   if (!phase) return false;
   if (isFanOutPhase(phase)) {
@@ -220,7 +228,8 @@ export function isPhaseComplete(workflow: WorkflowDefinition, phaseId: string, c
       if (isFanOutPhase(depPhase)) {
         return depPhase.agents.every((a) => completedAgents.has(a.id));
       }
-      return true;
+      // Barrier dependency: the phase itself must be recorded as completed.
+      return completedPhaseIds?.has(depId) ?? false;
     });
   }
   return false;

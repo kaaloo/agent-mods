@@ -432,7 +432,7 @@ export default function activate(letta: LettaModContext): (() => void) {
       if (!event || typeof event !== "object") return;
       if (event.toolName !== "Agent" || event.status !== "success") return;
 
-      const marker = parseFlowAgentMarker(event.args?.prompt);
+      const marker = parseFlowAgentMarker(getAgentPrompt(event));
       if (!marker) return;
       // Look up the run in the per-run meta map under the mutex. This
       // closes H-A from sweep 6: the previous getRunMeta was sync and read
@@ -563,6 +563,14 @@ export default function activate(letta: LettaModContext): (() => void) {
       try { dispose(); } catch { /* ignore */ }
     }
   };
+}
+
+function getAgentPrompt(event: LettaEvent): string | undefined {
+  const args = event.args ?? event.arguments;
+  if (args && typeof args === "object") {
+    return typeof args.prompt === "string" ? args.prompt : undefined;
+  }
+  return undefined;
 }
 
 function normalizeCommandArgs(value: string | Record<string, unknown> | undefined): string | null {

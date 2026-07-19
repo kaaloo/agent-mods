@@ -54,7 +54,7 @@ any future change that causes re-entry will time out in CI. Maintainers
 should not introduce sync acquisition in `withRunMutexFor` without
 removing the re-entrant call sites first.
 
-## 3. Registry writes are not coordinated across runs
+## 3. Registry writes are not coordinated across runs (closed)
 
 **Symptom:** Two concurrent `createRun` calls can race on
 `registry.md`. One overwrites the other's entry because `updateRunRegistry`
@@ -64,16 +64,12 @@ acquire different mutexes, so cross-run registry updates collide.
 **Trigger:** High concurrency on a fresh conversation or after a session
 restart when multiple workflows start in quick succession.
 
-**Workaround today:** Rare in practice because runs typically start
-sequentially from a single user. If you observe lost entries in
-`registry.md`, restart the affected run; the run state on disk is
-authoritative and `loadRun` does not depend on the registry.
+**Fix:** All registry read-modify-write operations now run through a
+single cross-run registry mutex (`scheduleRegistryUpdate` in `state.ts`).
+`updateRunRegistry` and the registry removal in `deleteRun` are serialized,
+so concurrent writes cannot lose entries.
 
-**Status:** Flagged as M1 in the second bug-sweep report, re-confirmed
-as H1 / M1 in the fourth and fifth sweeps. Will be fixed as part of
-`task_7` (transactional persistRun + cross-run registry mutex design
-pass). The current acceptable-risk rating holds: in practice, runs
-start sequentially from a single user, so the race window is small.
+**Status:** Closed in sweep-12.
 
 ## 4. Sweep 5 closure-map fix (closed)
 
