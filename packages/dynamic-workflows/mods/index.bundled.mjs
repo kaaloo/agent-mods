@@ -8205,13 +8205,28 @@ function activate(letta) {
   const runMeta = new Map;
   const MAX_WORKFLOW_CONTINUATIONS = 20;
   const TEMPLATE_DIR = path4.resolve(import.meta.dirname, "../assets/templates");
+  const metaMutexChain = { promise: Promise.resolve() };
+  function withMetaMutex(fn) {
+    const previous = metaMutexChain.promise;
+    const next = previous.then(() => fn(), () => fn());
+    metaMutexChain.promise = next.then(() => {}, () => {});
+    return next;
+  }
+  let latestMetaView = [];
+  function refreshMetaView() {
+    latestMetaView = Array.from(runMeta.entries()).map(([runId, meta]) => ({ runId, meta }));
+  }
   async function withRunMetaFor(runId, fn) {
     return withRunMutexFor(runId, async () => {
       const existing = runMeta.get(runId);
       if (!existing) {
         runMeta.set(runId, { conversationId: undefined, count: 0 });
       }
-      return fn();
+      try {
+        return await fn();
+      } finally {
+        refreshMetaView();
+      }
     });
   }
   async function getRunMeta(runId) {
@@ -8219,6 +8234,7 @@ function activate(letta) {
   }
   function clearRunMeta(runId) {
     runMeta.delete(runId);
+    refreshMetaView();
   }
   function refreshPanel() {
     if (panel) {
@@ -8240,7 +8256,7 @@ function activate(letta) {
         render: () => {
           let best = null;
           let bestCount = -1;
-          for (const [runId, meta] of runMeta.entries()) {
+          for (const { runId, meta } of latestMetaView) {
             if (meta.count > bestCount) {
               best = runId;
               bestCount = meta.count;
@@ -8446,7 +8462,7 @@ function activate(letta) {
             refreshPanel();
             let best = null;
             let bestCount = -1;
-            for (const [runId, meta] of runMeta.entries()) {
+            for (const { runId, meta } of latestMetaView) {
               if (meta.count > bestCount) {
                 best = runId;
                 bestCount = meta.count;
@@ -8560,7 +8576,14 @@ ${buildFlowHelp()}` };
   }
   if (letta.capabilities?.events?.turns) {
     safeOn("turn_end", async (_event, ctx) => {
-      const currentRunId = [...runMeta.entries()].find(([, meta]) => meta.conversationId === ctx.conversation?.id)?.[0];
+      const currentConversationId = ctx.conversation?.id;
+      const currentRunId = await withMetaMutex(() => {
+        for (const [runId, meta] of runMeta.entries()) {
+          if (meta.conversationId === currentConversationId)
+            return runId;
+        }
+        return null;
+      });
       if (!currentRunId)
         return;
       const run = loadRun(currentRunId);

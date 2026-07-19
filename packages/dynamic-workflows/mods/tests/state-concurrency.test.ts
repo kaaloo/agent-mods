@@ -696,7 +696,23 @@ describe("sweep-7 fixes: H1, M2, F3, L-C", () => {
     const after = src.slice(idx);
     const endIdx = after.indexOf("\nexport ");
     const tail = endIdx > 0 ? after.slice(0, endIdx) : after;
-    expect(tail).toMatch(/await\s+withRunMutexFor\(runId,[\s\S]{0,200}readState/);
+    // Sweep-10 M-4 fix: the entire symlink walk + rmSync + registry update
+    // must be inside a single withRunMutexFor block. Assert both the
+    // rmSync and the readState are present within the block.
+    expect(tail).toMatch(/await\s+withRunMutexFor\(runId,[\s\S]{0,2000}rmSync\([\s\S]{0,2000}readState/);
+  });
+
+  test("M-4: deleteRun rmSync + registry update are in one mutex block", () => {
+    // Same body as the H-3 test above, kept separate for clarity.
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const src = fs.readFileSync(path.resolve(__dirname, "../lib/state.ts"), "utf8");
+    const idx = src.indexOf("export async function deleteRun");
+    expect(idx).toBeGreaterThan(0);
+    const after = src.slice(idx);
+    const endIdx = after.indexOf("\nexport ");
+    const tail = endIdx > 0 ? after.slice(0, endIdx) : after;
+    expect(tail).toMatch(/await\s+withRunMutexFor\(runId,[\s\S]{0,2000}rmSync\([\s\S]{0,2000}readState/);
   });
 
   test("H-5: completeRunLocked error path does not re-persist status as 'failed'", () => {
@@ -715,5 +731,38 @@ describe("sweep-7 fixes: H1, M2, F3, L-C", () => {
     // The fix removed the "run.status = \"failed\"" assignment in this block;
     // it must not have crept back in.
     expect(block).not.toMatch(/run\.status\s*=\s*"failed"/);
+  });
+
+  test("H-2: turn_end scans runMeta under a mutex", () => {
+    // Source-level check that turn_end's runMeta scan is wrapped in a
+    // mutex. The new withMetaMutex helper holds a coarse lock during
+    // runMeta.entries() iteration; without it, a concurrent flow_run
+    // could change the conversation→run mapping mid-scan.
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const src = fs.readFileSync(path.resolve(__dirname, "../index.ts"), "utf8");
+    // withMetaMutex helper exists.
+    expect(src).toMatch(/function withMetaMutex/);
+    // turn_end's runMeta iteration must be inside withMetaMutex.
+    const turnEndIdx = src.indexOf('safeOn("turn_end"');
+    expect(turnEndIdx).toBeGreaterThan(0);
+    const block = src.slice(turnEndIdx, turnEndIdx + 1500);
+    expect(block).toMatch(/withMetaMutex\(\(\) => \{[\s\S]{0,300}runMeta\.entries/);
+  });
+
+  test("M-4: deleteRun rmSync + registry update are in one mutex block", () => {
+    // Source-level check that the file deletion and registry update share
+    // a single withRunMutexFor block.
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const src = fs.readFileSync(path.resolve(__dirname, "../lib/state.ts"), "utf8");
+    const idx = src.indexOf("export async function deleteRun");
+    expect(idx).toBeGreaterThan(0);
+    const after = src.slice(idx);
+    const endIdx = after.indexOf("\nexport ");
+    const tail = endIdx > 0 ? after.slice(0, endIdx) : after;
+    // The single withRunMutexFor block must contain both rmSync and the
+    // registry readState call.
+    expect(tail).toMatch(/await\s+withRunMutexFor\(runId,[\s\S]{0,2000}rmSync\([\s\S]{0,2000}readState/);
   });
 });

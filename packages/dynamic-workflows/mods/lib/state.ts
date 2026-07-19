@@ -639,44 +639,43 @@ export function updateRunRegistry(run: RunState): void {
 }
 
 export async function deleteRun(runId: string, runAgentId?: string): Promise<void> {
-  const target = getRunDir(runId, runAgentId);
-  try {
-    // Refuse to recursively delete if any part of the target path is a
-    // symlink, even if the resolved path still appears to be under the runs
-    // root. rmSync with force+recursive follows symlinks, so a planted link
-    // could destroy arbitrary directories the process can reach.
-    const runsRoot = path.resolve(runAgentId
-      ? path.join(getLettaHome(), "agents", runAgentId, "memory", MOD_ID, "runs")
-      : getRunsDir());
-    // F3 from sweep 7: check runsRoot itself for symlink status. If the
-    // attacker has planted a symlink at the agent/memory/flows root, the
-    // lexical containment check above is satisfied but rmSync would still
-    // follow the link.
-    if (existsSync(runsRoot)) {
-      const rs = lstatSync(runsRoot);
-      if (rs.isSymbolicLink()) return;
-    }
-    if (existsSync(target)) {
-      const stat = lstatSync(target);
-      if (stat.isSymbolicLink() || stat.isDirectory() === false) return;
-      // Walk the immediate parent to catch symlinked ancestors.
-      let cursor = target;
-      while (cursor !== runsRoot && cursor !== path.dirname(cursor)) {
-        cursor = path.dirname(cursor);
-        if (existsSync(cursor)) {
-          const ls = lstatSync(cursor);
-          if (ls.isSymbolicLink()) return;
+  // M-4 from sweep 10: move the symlink checks + rmSync + registry update
+  // into a single withRunMutexFor block so the file deletion is serialized
+  // with the registry update and with concurrent updateRunRegistry calls.
+  await withRunMutexFor(runId, () => {
+    const target = getRunDir(runId, runAgentId);
+    try {
+      // Refuse to recursively delete if any part of the target path is a
+      // symlink, even if the resolved path still appears to be under the runs
+      // root. rmSync with force+recursive follows symlinks, so a planted link
+      // could destroy arbitrary directories the process can reach.
+      const runsRoot = path.resolve(runAgentId
+        ? path.join(getLettaHome(), "agents", runAgentId, "memory", MOD_ID, "runs")
+        : getRunsDir());
+      // F3 from sweep 7: check runsRoot itself for symlink status. If the
+      // attacker has planted a symlink at the agent/memory/flows root, the
+      // lexical containment check above is satisfied but rmSync would still
+      // follow the link.
+      if (existsSync(runsRoot)) {
+        const rs = lstatSync(runsRoot);
+        if (rs.isSymbolicLink()) return;
+      }
+      if (existsSync(target)) {
+        const stat = lstatSync(target);
+        if (stat.isSymbolicLink() || stat.isDirectory() === false) return;
+        // Walk the immediate parent to catch symlinked ancestors.
+        let cursor = target;
+        while (cursor !== runsRoot && cursor !== path.dirname(cursor)) {
+          cursor = path.dirname(cursor);
+          if (existsSync(cursor)) {
+            const ls = lstatSync(cursor);
+            if (ls.isSymbolicLink()) return;
+          }
         }
       }
-    }
-    rmSync(target, { recursive: true, force: true });
-  } catch { /* ignore */ }
-  // H-3 from sweep 8: wrap the registry read-modify-write in the per-run
-  // mutex so two concurrent deleteRun calls (or deleteRun vs updateRunRegistry
-  // on a different run) cannot lose each other's registry entries. Sweep-9
-  // fix: must await so the registry update is durable before the caller
-  // moves on.
-  await withRunMutexFor(runId, () => {
+      rmSync(target, { recursive: true, force: true });
+    } catch { /* ignore */ }
+    // H-3 from sweep 8: registry update under the per-run mutex.
     const state = readState();
     delete state.runs[runId];
     writeState(state);

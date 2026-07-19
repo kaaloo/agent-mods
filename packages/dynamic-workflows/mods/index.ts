@@ -34,6 +34,27 @@ export default function activate(letta: LettaModContext): (() => void) {
 
   const TEMPLATE_DIR = path.resolve(import.meta.dirname, "../assets/templates");
 
+  // Coarse mutex for runMeta access. Serializes meta map scans (used by
+  // the panel renderer, the /flow status command, and turn_end) so a
+  // concurrent flow_run cannot insert/remove entries mid-scan. The per-run
+  // mutex held by every mutation site is also keyed off this same chain.
+  const metaMutexChain: { promise: Promise<void> } = { promise: Promise.resolve() };
+  function withMetaMutex<T>(fn: () => T): Promise<T> {
+    const previous = metaMutexChain.promise;
+    const next = previous.then(() => fn(), () => fn());
+    metaMutexChain.promise = next.then(() => {}, () => {});
+    return next;
+  }
+
+  // Cached view of runMeta used by sync consumers (panel renderer, /flow
+  // status). Updated under the meta mutex whenever entries are added,
+  // removed, or have their count changed. Sync readers see a snapshot that
+  // is at most one meta mutation stale; this is acceptable for display.
+  let latestMetaView: Array<{ runId: string; meta: { conversationId: string | undefined; count: number } }> = [];
+  function refreshMetaView(): void {
+    latestMetaView = Array.from(runMeta.entries()).map(([runId, meta]) => ({ runId, meta }));
+  }
+
   // Internal helper: run `fn` while holding both the per-run mutex and the
   // meta entry for `runId`. The meta is created with a default count of 0
   // if missing. Closes H1 (closure-mutable race) by ensuring all reads and
@@ -44,7 +65,11 @@ export default function activate(letta: LettaModContext): (() => void) {
       if (!existing) {
         runMeta.set(runId, { conversationId: undefined, count: 0 });
       }
-      return fn();
+      try {
+        return await fn();
+      } finally {
+        refreshMetaView();
+      }
     });
   }
 
@@ -62,6 +87,7 @@ export default function activate(letta: LettaModContext): (() => void) {
   // reaches a terminal state to prevent the map from growing forever.
   function clearRunMeta(runId: string): void {
     runMeta.delete(runId);
+    refreshMetaView();
   }
 
   function refreshPanel(): void {
@@ -83,9 +109,14 @@ export default function activate(letta: LettaModContext): (() => void) {
         id: PANEL_ID,
         order: 100,
         render: () => {
+          // Read the cached meta view rather than iterating runMeta
+          // directly. The view is refreshed under the meta mutex on every
+          // mutation; sync panel reads see a snapshot at most one mutation
+          // stale. Closes race sweep 10 H-4 (lock-free runMeta reads in
+          // panel).
           let best: string | null = null;
           let bestCount = -1;
-          for (const [runId, meta] of runMeta.entries()) {
+          for (const { runId, meta } of latestMetaView) {
             if (meta.count > bestCount) {
               best = runId;
               bestCount = meta.count;
@@ -306,10 +337,12 @@ export default function activate(letta: LettaModContext): (() => void) {
           case "panel":
           case "status": {
             refreshPanel();
-            // Report the most-active run in the meta map.
+            // Read the cached meta view rather than iterating runMeta
+            // directly. The view is refreshed under the meta mutex on every
+            // mutation.
             let best: string | null = null;
             let bestCount = -1;
-            for (const [runId, meta] of runMeta.entries()) {
+            for (const { runId, meta } of latestMetaView) {
               if (meta.count > bestCount) {
                 best = runId;
                 bestCount = meta.count;
@@ -419,11 +452,18 @@ export default function activate(letta: LettaModContext): (() => void) {
   if (letta.capabilities?.events?.turns) {
     safeOn("turn_end", async (_event: LettaEvent, ctx: LettaEventHandlerContext) => {
       // Find the run owned by this conversation, atomically. We iterate
-      // runMeta without locking; the per-run mutex held by every subsequent
-      // operation ensures consistency even if a concurrent flow_run is
-      // adding an entry. The typical case has 1 entry per conversation so
-      // the scan is cheap.
-      const currentRunId = [...runMeta.entries()].find(([, meta]) => meta.conversationId === ctx.conversation?.id)?.[0];
+      // H-2 from sweep 10: snapshot currentRunId under the meta mutex so
+      // a concurrent flow_run cannot change the conversation→run mapping
+      // between the scan and the loadRun. The per-run mutex can't be used
+      // here because we don't know which runId belongs to this conversation
+      // yet — instead we use the coarse meta mutex.
+      const currentConversationId = ctx.conversation?.id;
+      const currentRunId: string | null = await withMetaMutex(() => {
+        for (const [runId, meta] of runMeta.entries()) {
+          if (meta.conversationId === currentConversationId) return runId;
+        }
+        return null;
+      });
       if (!currentRunId) return;
       const run = loadRun(currentRunId);
       if (!run || run.status !== "running") return;
