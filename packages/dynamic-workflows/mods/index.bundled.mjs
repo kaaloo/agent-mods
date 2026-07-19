@@ -8588,7 +8588,7 @@ ${buildFlowHelp()}` };
     safeOn("tool_end", async (event, ctx) => {
       if (!event || typeof event !== "object")
         return;
-      if (event.toolName !== "Agent" || event.status !== "success")
+      if (typeof event.toolName !== "string" || event.toolName.toLowerCase() !== "agent" || event.status !== "success")
         return;
       const marker = parseFlowAgentMarker(getAgentPrompt(event));
       if (!marker)
@@ -8598,7 +8598,7 @@ ${buildFlowHelp()}` };
         return;
       if (ctx.conversation?.id !== meta.conversationId)
         return;
-      const output = typeof event.output === "string" ? event.output : "";
+      const output = getAgentOutput(event);
       if (!output.trim())
         return;
       if (marker.agentId === "synthesize") {
@@ -8707,6 +8707,10 @@ function getAgentPrompt(event) {
     return typeof args.prompt === "string" ? args.prompt : undefined;
   }
   return;
+}
+function getAgentOutput(event) {
+  const raw = event.output ?? event.result ?? event.resultText;
+  return typeof raw === "string" ? raw : "";
 }
 function normalizeCommandArgs(value) {
   if (value === undefined || value === null)

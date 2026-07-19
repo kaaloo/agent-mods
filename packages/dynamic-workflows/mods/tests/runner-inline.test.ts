@@ -56,11 +56,15 @@ describe("sanitizePromptField", () => {
 // `event.status === "error"` check was a false-negative for missing status.
 describe("tool_end status predicate (H3 regression)", () => {
   function shouldRecord(event: { toolName?: string; status?: unknown }): boolean {
-    return event.toolName === "Agent" && event.status === "success";
+    return typeof event.toolName === "string" && event.toolName.toLowerCase() === "agent" && event.status === "success";
   }
 
   test("accepts a successful Agent tool_end", () => {
     expect(shouldRecord({ toolName: "Agent", status: "success" })).toBe(true);
+  });
+
+  test("accepts lowercase agent tool name", () => {
+    expect(shouldRecord({ toolName: "agent", status: "success" })).toBe(true);
   });
 
   test("rejects an explicit error", () => {

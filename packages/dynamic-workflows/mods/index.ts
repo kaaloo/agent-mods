@@ -430,7 +430,7 @@ export default function activate(letta: LettaModContext): (() => void) {
   if (letta.capabilities?.events?.tools) {
     safeOn("tool_end", async (event: LettaEvent, ctx: LettaEventHandlerContext) => {
       if (!event || typeof event !== "object") return;
-      if (event.toolName !== "Agent" || event.status !== "success") return;
+      if (typeof event.toolName !== "string" || event.toolName.toLowerCase() !== "agent" || event.status !== "success") return;
 
       const marker = parseFlowAgentMarker(getAgentPrompt(event));
       if (!marker) return;
@@ -441,7 +441,7 @@ export default function activate(letta: LettaModContext): (() => void) {
       const meta = await getRunMeta(marker.runId);
       if (!meta) return;
       if (ctx.conversation?.id !== meta.conversationId) return;
-      const output = typeof event.output === "string" ? event.output : "";
+      const output = getAgentOutput(event);
       if (!output.trim()) return;
 
       if (marker.agentId === "synthesize") {
@@ -571,6 +571,11 @@ function getAgentPrompt(event: LettaEvent): string | undefined {
     return typeof args.prompt === "string" ? args.prompt : undefined;
   }
   return undefined;
+}
+
+function getAgentOutput(event: LettaEvent): string {
+  const raw = event.output ?? event.result ?? event.resultText;
+  return typeof raw === "string" ? raw : "";
 }
 
 function normalizeCommandArgs(value: string | Record<string, unknown> | undefined): string | null {
