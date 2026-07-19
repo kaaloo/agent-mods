@@ -283,12 +283,19 @@ export function readState(): DynamicWorkflowsState {
     // Shape-validate each per-key entry. Drop any entry that is not a
     // non-null, non-array object — corrupted entries should not crash
     // downstream callers. Closes M4 from bug-sweep 1784445631272-bdac05f1.
+    // M4 fix: also validate the status against the known union values so a
+    // corrupted registry cannot smuggle an arbitrary string into the RunStatus
+    // type and silently skip downstream checks.
+    const validStatuses: Array<DynamicWorkflowsState["runs"][string]["status"]> = ["running", "completed", "failed", "paused"];
     const cleanedRuns: DynamicWorkflowsState["runs"] = {};
     for (const [runId, entry] of Object.entries(rawRuns)) {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
       const e = entry as Record<string, unknown>;
+      const status = typeof e.status === "string" && (validStatuses as ReadonlyArray<string>).includes(e.status)
+        ? (e.status as DynamicWorkflowsState["runs"][string]["status"])
+        : "running";
       cleanedRuns[runId] = {
-        status: (typeof e.status === "string" ? e.status : "running") as DynamicWorkflowsState["runs"][string]["status"],
+        status,
         startedAt: typeof e.startedAt === "string" ? e.startedAt : new Date().toISOString(),
         updatedAt: typeof e.updatedAt === "string" ? e.updatedAt : new Date().toISOString(),
         currentPhaseId: typeof e.currentPhaseId === "string" || e.currentPhaseId === null ? e.currentPhaseId : null,
@@ -569,15 +576,22 @@ function tryLoadRunFromAgent(runId: string, runAgentId: string): RunState | null
     const inputs: Record<string, string> = (data.inputs && typeof data.inputs === "object" && !Array.isArray(data.inputs))
       ? Object.fromEntries(Object.entries(data.inputs as Record<string, unknown>).filter(([, v]) => typeof v === "string") as [string, string][])
       : {};
-    const outputs: Record<string, string | Record<string, string>> = (data.outputs && typeof data.outputs === "object" && !Array.isArray(data.outputs))
-      ? (data.outputs as Record<string, string | Record<string, string>>)
-      : {};
+    // M5 fix: a missing currentPhaseId (undefined) must not be conflated with
+    // an intentionally null currentPhaseId (run completed). A corrupted file with
+    // a missing field should be rejected, not treated as completed.
+    if (data.currentPhaseId === undefined) return null;
+    if (typeof data.currentPhaseId !== "string" && data.currentPhaseId !== null) return null;
+    const currentPhaseId: string | null = data.currentPhaseId;
+    // M6 fix: deeply validate outputs so corrupted files cannot inject numbers,
+    // nulls, or other unexpected types into the string/record contract. Drop
+    // invalid values instead of relying on downstream String() coercion.
+    const outputs = validateOutputs(data.outputs);
     return {
       runId: persistedRunId,
       workflow,
       inputs,
       status,
-      currentPhaseId: typeof data.currentPhaseId === "string" || data.currentPhaseId === null ? data.currentPhaseId : null,
+      currentPhaseId,
       completedPhaseIds: Array.isArray(data.completedPhaseIds)
         ? (data.completedPhaseIds as unknown[]).filter((v): v is string => typeof v === "string")
         : [],
@@ -610,6 +624,28 @@ function isAgentRunStateShape(v: unknown): v is AgentRunState {
     && typeof a.agentId === "string"
     && typeof a.prompt === "string"
     && (a.status === "pending" || a.status === "running" || a.status === "completed" || a.status === "failed");
+}
+
+function isRecordOfStrings(value: unknown): value is Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  for (const v of Object.values(value as Record<string, unknown>)) {
+    if (typeof v !== "string") return false;
+  }
+  return true;
+}
+
+function validateOutputs(value: unknown): Record<string, string | Record<string, string>> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, string | Record<string, string>> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof v === "string") {
+      out[k] = v;
+    } else if (isRecordOfStrings(v)) {
+      out[k] = v;
+    }
+    // Non-conforming values are dropped.
+  }
+  return out;
 }
 
 export function saveAgentResult(runId: string, phaseId: string, state: AgentRunState, runAgentId?: string): void {

@@ -15,7 +15,7 @@ import {
   updateRunRegistry,
   withRunMutexFor,
 } from "./lib/state.ts";
-import { stepInlineRun, recordAgentComplete, recordBarrierComplete, parseFlowAgentMarker, type InlineStep } from "./lib/runner-inline.ts";
+import { stepInlineRun, recordAgentCompleteLocked, recordBarrierCompleteLocked, parseFlowAgentMarker, type InlineStep } from "./lib/runner-inline.ts";
 import { listTemplates, loadTemplate } from "./lib/templates.ts";
 import { isNonEmptyString } from "./lib/utils.ts";
 
@@ -79,16 +79,6 @@ export default function activate(letta: LettaModContext): (() => void) {
         refreshMetaView();
       }
     });
-  }
-
-  // Internal helper: read the meta entry for `runId`, returning undefined
-  // if absent. Reads the entry under the per-run mutex so a concurrent
-  // write cannot tear it. Note: withRunMutexFor is async, so this returns
-  // a Promise. Synchronous callers (e.g. the panel render) should use the
-  // un-mutexed runMeta directly with the understanding that the worst case
-  // is a stale read, not a torn read.
-  async function getRunMeta(runId: string): Promise<{ conversationId: string | undefined; count: number } | undefined> {
-    return withRunMutexFor(runId, async () => runMeta.get(runId));
   }
 
   // Internal helper: drop the meta entry for `runId`. Called when a run
@@ -438,29 +428,30 @@ export default function activate(letta: LettaModContext): (() => void) {
 
       const marker = parseFlowAgentMarker(getAgentPrompt(event));
       if (!marker) return;
-      // Look up the run in the per-run meta map under the mutex. This
-      // closes H-A from sweep 6: the previous getRunMeta was sync and read
-      // outside the mutex, allowing a concurrent clearRunMeta to drop the
-      // entry mid-completion.
-      const meta = await getRunMeta(marker.runId);
-      if (!meta) return;
-      if (ctx.conversation?.id !== meta.conversationId) return;
       const output = getAgentOutput(event);
       if (!output.trim()) return;
 
       if (marker.agentId === "synthesize") {
-        const result = await recordBarrierComplete(marker.runId, marker.phaseId, output);
-        // H1 fix: if the barrier finished the run, dispatch the completion
-        // step immediately rather than waiting for the next turn_end poll.
-        if (result && "type" in result && result.type === "complete") {
-          await sendPrompt(ctx, formatStep(result));
-        }
-        // Barrier complete; clear the meta entry to bound map growth.
+        // M1 fix: keep the meta check, the completion write, and the meta
+        // cleanup inside a single per-run mutex acquisition so a concurrent
+        // turn_end cannot clear the meta entry between the check and the write.
         await withRunMutexFor(marker.runId, async () => {
+          const meta = runMeta.get(marker.runId);
+          if (!meta) return;
+          if (ctx.conversation?.id !== meta.conversationId) return;
+          const result = recordBarrierCompleteLocked(marker.runId, marker.phaseId, output);
+          if (result && "type" in result && result.type === "complete") {
+            sendPrompt(ctx, formatStep(result));
+          }
           clearRunMeta(marker.runId);
         });
       } else {
-        await recordAgentComplete(marker.runId, marker.phaseId, marker.agentId, output);
+        await withRunMutexFor(marker.runId, async () => {
+          const meta = runMeta.get(marker.runId);
+          if (!meta) return;
+          if (ctx.conversation?.id !== meta.conversationId) return;
+          recordAgentCompleteLocked(marker.runId, marker.phaseId, marker.agentId, output);
+        });
       }
       refreshPanel();
     });

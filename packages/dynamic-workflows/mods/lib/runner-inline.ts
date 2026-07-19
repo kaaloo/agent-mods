@@ -283,6 +283,16 @@ function dispatchFanOutLocked(run: RunState, phase: FanOutPhase): InlineStep | n
       // we already hold.
       return stepInlineRunLocked(refreshed.runId);
     }
+    // M7 fix: if loadRun returned null after the late-pickup writes, the run
+    // file disappeared. Do not fall through to stale wait counts; fail the
+    // run so the workflow does not hang until the budget ceiling fires.
+    if (!refreshed) {
+      run.status = "failed";
+      run.error = `Run "${run.runId}" disappeared from disk during phase "${phase.id}" advancement.`;
+      persistRun(touchRun(run));
+      updateRunRegistry(run);
+      return null;
+    }
     const remaining = runningAgents.length;
     const done = phase.agents.length - remaining;
     return { type: "wait", runId: run.runId, phaseId: phase.id, pending: remaining, completed: done };

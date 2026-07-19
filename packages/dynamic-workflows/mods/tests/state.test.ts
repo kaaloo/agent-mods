@@ -77,6 +77,18 @@ describe("readState and writeState", () => {
     const reloaded = readState();
     expect(reloaded.runs["run-1"]).toBeTruthy();
   });
+
+  test("M4: drops corrupted status values and defaults to running", () => {
+    const state = readState();
+    state.runs = {
+      "run-clean": { status: "completed" as const, startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), currentPhaseId: null },
+      "run-bogus": { status: "bogus" as any, startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), currentPhaseId: null },
+    };
+    writeState(state);
+    const reloaded = readState();
+    expect(reloaded.runs["run-clean"]?.status).toBe("completed");
+    expect(reloaded.runs["run-bogus"]?.status).toBe("running");
+  });
 });
 
 describe("library", () => {
@@ -122,6 +134,36 @@ describe("runs", () => {
     const loaded = loadAgentResult(run.runId, "scan", "a1");
     expect(loaded?.output).toBe("found nothing");
     expect(readRunAgentOutput(run.runId, "scan", "a1")).toBe("found nothing");
+  });
+
+  test("M5: rejects a run.md with a missing currentPhaseId", async () => {
+    const run = await createRun(sampleWorkflow);
+    const runPath = path.join(getRunDir(run.runId), "run.md");
+    // Rewrite run.md without the currentPhaseId field to simulate corruption.
+    const fs = await import("node:fs");
+    const original = fs.readFileSync(runPath, "utf8");
+    const corrupted = original.replace(/currentPhaseId:.*\n/, "");
+    fs.writeFileSync(runPath, corrupted, "utf8");
+    expect(loadRun(run.runId)).toBeNull();
+  });
+
+  test("M6: drops invalid outputs values from a corrupted run.md", async () => {
+    const run = await createRun(sampleWorkflow);
+    const fs = await import("node:fs");
+    const runPath = path.join(getRunDir(run.runId), "run.md");
+    const original = fs.readFileSync(runPath, "utf8");
+    const corrupted = original.replace(
+      /outputs: {}\n/,
+      "outputs:\n  good: \"ok\"\n  bad_number: 123\n  bad_null: null\n  good_record:\n    a: \"x\"\n  bad_record:\n    a: 42\n"
+    );
+    fs.writeFileSync(runPath, corrupted, "utf8");
+    const reloaded = loadRun(run.runId);
+    expect(reloaded).not.toBeNull();
+    expect(reloaded?.outputs["good"]).toBe("ok");
+    expect(reloaded?.outputs["good_record"]).toEqual({ a: "x" });
+    expect(reloaded?.outputs["bad_number"]).toBeUndefined();
+    expect(reloaded?.outputs["bad_null"]).toBeUndefined();
+    expect(reloaded?.outputs["bad_record"]).toBeUndefined();
   });
 });
 

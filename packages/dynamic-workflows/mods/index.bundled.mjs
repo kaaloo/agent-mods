@@ -7438,13 +7438,15 @@ function readState() {
     if (typeof rawRuns !== "object" || rawRuns === null || Array.isArray(rawRuns)) {
       return emptyState();
     }
+    const validStatuses = ["running", "completed", "failed", "paused"];
     const cleanedRuns = {};
     for (const [runId, entry] of Object.entries(rawRuns)) {
       if (!entry || typeof entry !== "object" || Array.isArray(entry))
         continue;
       const e = entry;
+      const status = typeof e.status === "string" && validStatuses.includes(e.status) ? e.status : "running";
       cleanedRuns[runId] = {
-        status: typeof e.status === "string" ? e.status : "running",
+        status,
         startedAt: typeof e.startedAt === "string" ? e.startedAt : new Date().toISOString(),
         updatedAt: typeof e.updatedAt === "string" ? e.updatedAt : new Date().toISOString(),
         currentPhaseId: typeof e.currentPhaseId === "string" || e.currentPhaseId === null ? e.currentPhaseId : null,
@@ -7687,13 +7689,18 @@ function tryLoadRunFromAgent(runId, runAgentId) {
     }
     const status = typeof data.status === "string" && (data.status === "running" || data.status === "completed" || data.status === "failed" || data.status === "paused") ? data.status : "running";
     const inputs = data.inputs && typeof data.inputs === "object" && !Array.isArray(data.inputs) ? Object.fromEntries(Object.entries(data.inputs).filter(([, v]) => typeof v === "string")) : {};
-    const outputs = data.outputs && typeof data.outputs === "object" && !Array.isArray(data.outputs) ? data.outputs : {};
+    if (data.currentPhaseId === undefined)
+      return null;
+    if (typeof data.currentPhaseId !== "string" && data.currentPhaseId !== null)
+      return null;
+    const currentPhaseId = data.currentPhaseId;
+    const outputs = validateOutputs(data.outputs);
     return {
       runId: persistedRunId,
       workflow,
       inputs,
       status,
-      currentPhaseId: typeof data.currentPhaseId === "string" || data.currentPhaseId === null ? data.currentPhaseId : null,
+      currentPhaseId,
       completedPhaseIds: Array.isArray(data.completedPhaseIds) ? data.completedPhaseIds.filter((v) => typeof v === "string") : [],
       completedAgents: Array.isArray(data.completedAgents) ? data.completedAgents.filter((v) => isAgentRunStateShape(v)) : [],
       startedAgentIds: Array.isArray(data.startedAgentIds) ? data.startedAgentIds.filter((v) => typeof v === "string") : [],
@@ -7715,6 +7722,28 @@ function isAgentRunStateShape(v) {
     return false;
   const a = v;
   return typeof a.phaseId === "string" && typeof a.agentId === "string" && typeof a.prompt === "string" && (a.status === "pending" || a.status === "running" || a.status === "completed" || a.status === "failed");
+}
+function isRecordOfStrings(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return false;
+  for (const v of Object.values(value)) {
+    if (typeof v !== "string")
+      return false;
+  }
+  return true;
+}
+function validateOutputs(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return {};
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (typeof v === "string") {
+      out[k] = v;
+    } else if (isRecordOfStrings(v)) {
+      out[k] = v;
+    }
+  }
+  return out;
 }
 function saveAgentResult(runId, phaseId, state, runAgentId) {
   const filePath = getRunAgentPath(runId, phaseId, state.agentId, runAgentId);
@@ -7785,12 +7814,6 @@ function sanitizePromptField(value) {
 }
 function stepInlineRun(runId) {
   return withRunMutexFor(runId, () => stepInlineRunLocked(runId));
-}
-async function recordAgentComplete(runId, phaseId, agentId, output) {
-  return withRunMutexFor(runId, () => recordAgentCompleteLocked(runId, phaseId, agentId, output));
-}
-async function recordBarrierComplete(runId, phaseId, output) {
-  return withRunMutexFor(runId, () => recordBarrierCompleteLocked(runId, phaseId, output));
 }
 function stepInlineRunLocked(runId) {
   const run = loadRun(runId);
@@ -7915,6 +7938,13 @@ function dispatchFanOutLocked(run, phase) {
       persistRun(touchRun(refreshed));
       updateRunRegistry(refreshed);
       return stepInlineRunLocked(refreshed.runId);
+    }
+    if (!refreshed) {
+      run.status = "failed";
+      run.error = `Run "${run.runId}" disappeared from disk during phase "${phase.id}" advancement.`;
+      persistRun(touchRun(run));
+      updateRunRegistry(run);
+      return null;
     }
     const remaining2 = runningAgents.length;
     const done = phase.agents.length - remaining2;
@@ -8275,9 +8305,6 @@ function activate(letta) {
       }
     });
   }
-  async function getRunMeta(runId) {
-    return withRunMutexFor(runId, async () => runMeta.get(runId));
-  }
   function clearRunMeta(runId) {
     runMeta.delete(runId);
     refreshMetaView();
@@ -8605,24 +8632,31 @@ ${buildFlowHelp()}` };
       const marker = parseFlowAgentMarker(getAgentPrompt(event));
       if (!marker)
         return;
-      const meta = await getRunMeta(marker.runId);
-      if (!meta)
-        return;
-      if (ctx.conversation?.id !== meta.conversationId)
-        return;
       const output = getAgentOutput(event);
       if (!output.trim())
         return;
       if (marker.agentId === "synthesize") {
-        const result = await recordBarrierComplete(marker.runId, marker.phaseId, output);
-        if (result && "type" in result && result.type === "complete") {
-          await sendPrompt(ctx, formatStep(result));
-        }
         await withRunMutexFor(marker.runId, async () => {
+          const meta = runMeta.get(marker.runId);
+          if (!meta)
+            return;
+          if (ctx.conversation?.id !== meta.conversationId)
+            return;
+          const result = recordBarrierCompleteLocked(marker.runId, marker.phaseId, output);
+          if (result && "type" in result && result.type === "complete") {
+            sendPrompt(ctx, formatStep(result));
+          }
           clearRunMeta(marker.runId);
         });
       } else {
-        await recordAgentComplete(marker.runId, marker.phaseId, marker.agentId, output);
+        await withRunMutexFor(marker.runId, async () => {
+          const meta = runMeta.get(marker.runId);
+          if (!meta)
+            return;
+          if (ctx.conversation?.id !== meta.conversationId)
+            return;
+          recordAgentCompleteLocked(marker.runId, marker.phaseId, marker.agentId, output);
+        });
       }
       refreshPanel();
     });
