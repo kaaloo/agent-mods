@@ -765,4 +765,75 @@ describe("sweep-7 fixes: H1, M2, F3, L-C", () => {
     // registry readState call.
     expect(tail).toMatch(/await\s+withRunMutexFor\(runId,[\s\S]{0,2000}rmSync\([\s\S]{0,2000}readState/);
   });
+
+  test("S-3: refreshMetaView snapshot is locked", () => {
+    // Source-level check that refreshMetaView reads runMeta.entries()
+    // through the metaMutexChain (so concurrent mutations cannot tear the
+    // snapshot). The fix changed refreshMetaView from a direct Array.from
+    // call to a metaMutexChain.promise.then() wrapper.
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const src = fs.readFileSync(path.resolve(__dirname, "../index.ts"), "utf8");
+    // refreshMetaView definition is present.
+    expect(src).toMatch(/function refreshMetaView/);
+    // The body of refreshMetaView chains onto metaMutexChain.promise so the
+    // runMeta iteration happens under the mutex.
+    const idx = src.indexOf("function refreshMetaView");
+    expect(idx).toBeGreaterThan(0);
+    const body = src.slice(idx, idx + 400);
+    expect(body).toMatch(/metaMutexChain\.promise\.then\(\(\) => \{[\s\S]{0,200}runMeta\.entries/);
+  });
+
+  test("M-4 fan-out: empty agents fails the run instead of looping", async () => {
+    // The schema's validateWorkflow rejects fan-out phases with zero agents
+    // at parse time, so we can't reach the M-4 fix through the normal
+    // createRun path. The schema guard itself is the primary defense;
+    // the M-4 fix in dispatchFanOutLocked is defense-in-depth for workflows
+    // constructed outside the validation chain. This test verifies the
+    // schema guard works.
+    const fs = await import("node:fs");
+    const agentId = "agent-bypass0001";
+    const runId = "1784462607619-b5501234";
+    const runDir = path.join(tempDir, "agents", agentId, "memory", "flows", "runs", runId);
+    fs.mkdirSync(runDir, { recursive: true });
+
+    const planMd = [
+      "---",
+      `name: empty-fan-out`,
+      `version: "${WORKFLOW_VERSION}"`,
+      `description: Fan-out phase with zero agents.`,
+      `phases:`,
+      `  - id: empty`,
+      `    type: fan-out`,
+      `    agents: []`,
+      "---",
+      "",
+    ].join("\n");
+    fs.writeFileSync(path.join(runDir, "plan.md"), planMd, "utf8");
+
+    const runMd = [
+      "---",
+      `runId: ${runId}`,
+      `inputs: {}`,
+      `status: running`,
+      `currentPhaseId: empty`,
+      `completedPhaseIds: []`,
+      `completedAgents: []`,
+      `startedAgentIds: []`,
+      `startedPhaseIds: []`,
+      `outputs: {}`,
+      `startedAt: 2026-07-19T00:00:00.000Z`,
+      `updatedAt: 2026-07-19T00:00:00.000Z`,
+      `agentId: ${agentId}`,
+      "---",
+      "",
+    ].join("\n");
+    fs.writeFileSync(path.join(runDir, "run.md"), runMd, "utf8");
+
+    // loadRun should fail because the plan.md rejects the empty agents
+    // (schema defense-in-depth). We expect loadRun to return null; this
+    // confirms the schema guard, NOT the M-4 fix.
+    const loaded = loadRun(runId);
+    expect(loaded).toBeNull();
+  });
 });

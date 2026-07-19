@@ -51,8 +51,16 @@ export default function activate(letta: LettaModContext): (() => void) {
   // removed, or have their count changed. Sync readers see a snapshot that
   // is at most one meta mutation stale; this is acceptable for display.
   let latestMetaView: Array<{ runId: string; meta: { conversationId: string | undefined; count: number } }> = [];
+  // Sweep-11 S-3 fix: the snapshot itself reads runMeta.entries(); must
+  // hold the meta mutex so a concurrent mutation cannot tear the view.
+  // Since withMetaMutex is async and refreshMetaView is sync, we use
+  // metaMutexChain.promise.then() to chain the snapshot read.
   function refreshMetaView(): void {
-    latestMetaView = Array.from(runMeta.entries()).map(([runId, meta]) => ({ runId, meta }));
+    metaMutexChain.promise = metaMutexChain.promise.then(() => {
+      latestMetaView = Array.from(runMeta.entries()).map(([runId, meta]) => ({ runId, meta }));
+    }, () => {
+      latestMetaView = Array.from(runMeta.entries()).map(([runId, meta]) => ({ runId, meta }));
+    });
   }
 
   // Internal helper: run `fn` while holding both the per-run mutex and the

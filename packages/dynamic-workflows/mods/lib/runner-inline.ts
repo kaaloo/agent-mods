@@ -244,6 +244,21 @@ function dispatchFanOutLocked(run: RunState, phase: FanOutPhase): InlineStep | n
   const completedIds = new Set(run.completedAgents.map((a) => a.agentId));
   const pendingAgents = phase.agents.filter((a) => !completedIds.has(a.id) && !run.startedAgentIds.includes(a.id));
 
+  // Sweep-11 M-4 fix: a fan-out phase with zero agents would otherwise
+  // silently loop in the late-pickup branch below, returning {pending: 0,
+  // completed: 0} forever until the budget ceiling fires. Surface the
+  // malformed workflow as a terminal failure instead. The schema's
+  // `validateWorkflow` already rejects `agents: []` at parse time, so this
+  // is a defense-in-depth guard for workflows constructed directly
+  // bypassing the schema (e.g. from tests or programmatic creation).
+  if (phase.agents.length === 0) {
+    run.status = "failed";
+    run.error = `Fan-out phase "${phase.id}" has no agents defined.`;
+    persistRun(touchRun(run));
+    updateRunRegistry(run);
+    return null;
+  }
+
   if (pendingAgents.length === 0) {
     const runningAgents = phase.agents.filter((a) => run.startedAgentIds.includes(a.id) && !completedIds.has(a.id));
     for (const a of runningAgents) {
