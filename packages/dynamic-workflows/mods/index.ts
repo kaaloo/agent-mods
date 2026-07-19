@@ -459,9 +459,11 @@ export default function activate(letta: LettaModContext): (() => void) {
           refreshed.error = `Exceeded maximum workflow continuations (${MAX_WORKFLOW_CONTINUATIONS}).`;
           persistRun(touchRun(refreshed));
           updateRunRegistry(refreshed);
+          // Drop the meta entry on terminal failure. Must run under the
+          // mutex so a concurrent tool_end handler can't observe the meta
+          // entry after the run has been marked failed.
+          clearRunMeta(currentRunId);
         });
-        // Drop the meta entry on terminal failure.
-        clearRunMeta(currentRunId);
         await sendPrompt(`Workflow "${run.workflow.name}" stopped: exceeded maximum continuations.`);
         return;
       }

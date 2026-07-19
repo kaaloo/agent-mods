@@ -625,3 +625,62 @@ describe("H-B late-pickup double-advance guard", () => {
     expect(completedCount).toBe(1);
   });
 });
+
+describe("sweep-7 fixes: H1, M2, F3, L-C", () => {
+  test("H1: recordBarrierCompleteLocked has the phaseId guard", () => {
+    // Direct source-level check: the function should check
+    // currentPhaseId === phaseId before mutating. We verify by reading
+    // the source string rather than reimplementing the runtime check.
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const src = fs.readFileSync(path.resolve(__dirname, "../lib/runner-inline.ts"), "utf8");
+    expect(src).toMatch(/run\.currentPhaseId\s*!==\s*phaseId/);
+    expect(src).toMatch(/run\.completedPhaseIds\.includes\(phaseId\)/);
+  });
+
+  test("L-C: loadAgentResult narrows invalid status to 'completed'", async () => {
+    const run = await createRun(sampleWorkflow);
+    const { writeFileSync, mkdirSync } = await import("node:fs");
+    const { loadAgentResult } = await import("../lib/state.ts");
+    const agentPath = path.join(tempDir, "agents", run.agentId!, "memory", "flows", "runs", run.runId, "phases", "scan", "a1.md");
+    mkdirSync(path.dirname(agentPath), { recursive: true });
+    writeFileSync(agentPath, "---\nphaseId: scan\nagentId: a1\nprompt: p\nstatus: bogus-state\n---\noutput", "utf8");
+
+    const loaded = loadAgentResult(run.runId, "scan", "a1", run.agentId);
+    expect(loaded?.status).toBe("completed"); // narrowed fallback
+  });
+
+  test("F3: deleteRun refuses when runsRoot is a symlink", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    // Build a layout where the runs root is itself a symlink to a different
+    // (innocuous) directory. deleteRun must refuse rather than follow.
+    const real = fs.mkdtempSync(path.join(tmpdir(), "dw-real-"));
+    const linkBase = fs.mkdtempSync(path.join(tmpdir(), "dw-link-"));
+    const agentId = "agent-evil0001";
+    const realRunsRoot = path.join(real, "agents", agentId, "memory", "flows", "runs");
+    fs.mkdirSync(realRunsRoot, { recursive: true });
+    const linkRunsRoot = path.join(linkBase, "agents", agentId, "memory", "flows", "runs");
+    fs.mkdirSync(path.dirname(linkRunsRoot), { recursive: true });
+    fs.symlinkSync(realRunsRoot, linkRunsRoot);
+
+    // Pretend a runId exists under the symlinked path.
+    const runId = "1784385035947-deadbeef";
+    const target = path.join(linkRunsRoot, runId);
+    fs.mkdirSync(target, { recursive: true });
+    // Place a sentinel file under the REAL root so we can detect
+    // whether deleteRun followed the symlink.
+    const sentinel = path.join(realRunsRoot, runId, "do-not-delete.md");
+    fs.writeFileSync(sentinel, "sentinel", "utf8");
+
+    process.env.LETTA_HOME = linkBase;
+    const { deleteRun } = await import("../lib/state.ts");
+    expect(() => deleteRun(runId, agentId)).not.toThrow();
+    // The sentinel must still exist — deleteRun refused.
+    expect(fs.existsSync(sentinel)).toBe(true);
+
+    // Cleanup
+    fs.rmSync(real, { recursive: true, force: true });
+    fs.rmSync(linkBase, { recursive: true, force: true });
+  });
+});

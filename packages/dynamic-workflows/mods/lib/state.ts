@@ -604,7 +604,12 @@ export function loadAgentResult(runId: string, phaseId: string, agentId: string,
       phaseId: String(data.phaseId ?? phaseId),
       agentId: String(data.agentId ?? agentId),
       prompt: String(data.prompt ?? ""),
-      status: (data.status as AgentRunState["status"]) ?? "completed",
+      // Runtime-narrow the status field against the four-value whitelist
+      // (L-C from sweep 7). A tampered agent file with an out-of-union
+      // status string would otherwise surface as a valid AgentRunState.
+      status: (data.status === "pending" || data.status === "running" || data.status === "completed" || data.status === "failed")
+        ? data.status
+        : "completed",
       output: body || undefined,
       tokens: typeof data.tokens === "number" ? data.tokens : undefined,
       durationMs: typeof data.durationMs === "number" ? data.durationMs : undefined,
@@ -640,17 +645,22 @@ export function deleteRun(runId: string, runAgentId?: string): void {
     // symlink, even if the resolved path still appears to be under the runs
     // root. rmSync with force+recursive follows symlinks, so a planted link
     // could destroy arbitrary directories the process can reach.
+    const runsRoot = path.resolve(runAgentId
+      ? path.join(getLettaHome(), "agents", runAgentId, "memory", MOD_ID, "runs")
+      : getRunsDir());
+    // F3 from sweep 7: check runsRoot itself for symlink status. If the
+    // attacker has planted a symlink at the agent/memory/flows root, the
+    // lexical containment check above is satisfied but rmSync would still
+    // follow the link.
+    if (existsSync(runsRoot)) {
+      const rs = lstatSync(runsRoot);
+      if (rs.isSymbolicLink()) return;
+    }
     if (existsSync(target)) {
       const stat = lstatSync(target);
       if (stat.isSymbolicLink() || stat.isDirectory() === false) return;
-      // Also walk the immediate parent to catch symlinked ancestors. We only
-      // need to check the directory entries above the target, which are
-      // controlled by the agent/memory paths. If any of those are symlinks,
-      // refuse to proceed.
+      // Walk the immediate parent to catch symlinked ancestors.
       let cursor = target;
-      const runsRoot = path.resolve(runAgentId
-        ? path.join(getLettaHome(), "agents", runAgentId, "memory", MOD_ID, "runs")
-        : getRunsDir());
       while (cursor !== runsRoot && cursor !== path.dirname(cursor)) {
         cursor = path.dirname(cursor);
         if (existsSync(cursor)) {

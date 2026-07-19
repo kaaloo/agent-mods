@@ -7791,7 +7791,7 @@ function loadAgentResult(runId, phaseId, agentId, runAgentId) {
       phaseId: String(data.phaseId ?? phaseId),
       agentId: String(data.agentId ?? agentId),
       prompt: String(data.prompt ?? ""),
-      status: data.status ?? "completed",
+      status: data.status === "pending" || data.status === "running" || data.status === "completed" || data.status === "failed" ? data.status : "completed",
       output: body || undefined,
       tokens: typeof data.tokens === "number" ? data.tokens : undefined,
       durationMs: typeof data.durationMs === "number" ? data.durationMs : undefined,
@@ -7966,6 +7966,10 @@ function recordBarrierCompleteLocked(runId, phaseId, output) {
     return run;
   const phase = phaseById(run.workflow, phaseId);
   if (!phase || !isBarrierPhase(phase))
+    return run;
+  if (run.currentPhaseId !== phaseId)
+    return run;
+  if (run.completedPhaseIds.includes(phaseId))
     return run;
   run.outputs[phaseId] = output;
   advancePhase(run);
@@ -8597,8 +8601,8 @@ ${buildFlowHelp()}` };
           refreshed.error = `Exceeded maximum workflow continuations (${MAX_WORKFLOW_CONTINUATIONS}).`;
           persistRun(touchRun(refreshed));
           updateRunRegistry(refreshed);
+          clearRunMeta(currentRunId);
         });
-        clearRunMeta(currentRunId);
         await sendPrompt(`Workflow "${run.workflow.name}" stopped: exceeded maximum continuations.`);
         return;
       }

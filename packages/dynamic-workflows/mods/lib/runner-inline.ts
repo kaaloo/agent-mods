@@ -212,6 +212,12 @@ export function recordBarrierCompleteLocked(runId: string, phaseId: string, outp
   if (run.status !== "running") return run;
   const phase = phaseById(run.workflow, phaseId);
   if (!phase || !isBarrierPhase(phase)) return run;
+  // H1 from sweep 7: idempotency guard. A delayed/duplicate tool_end for an
+  // earlier barrier can land after the run has advanced to a later phase;
+  // without this guard we'd advance the wrong phase and mark the run as
+  // completing the stale barrier instead of the current one.
+  if (run.currentPhaseId !== phaseId) return run;
+  if (run.completedPhaseIds.includes(phaseId)) return run;
 
   run.outputs[phaseId] = output;
   advancePhase(run);
