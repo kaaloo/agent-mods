@@ -14,6 +14,8 @@ import {
   getLettaHome,
   readState,
   persistRun,
+  getRegistryPath,
+  updateRunRegistry,
 } from "../lib/state.ts";
 import {
   recordAgentComplete,
@@ -583,6 +585,34 @@ describe("M1 cross-run registry mutex", () => {
     const state = readState();
     expect(state.runs[runA.runId]).toBeUndefined();
     expect(state.runs[runB.runId]).toBeTruthy();
+  });
+
+  test("registry queue recovers from a synchronous write failure", async () => {
+    // Regression for M2: a disk error inside the registry queue must not
+    // permanently set registryLocked = true. We simulate a write failure by
+    // making the registry path a directory, then verify a subsequent write
+    // succeeds after the path is repaired.
+    const fs = await import("node:fs");
+    const run = await createRun(sampleWorkflow);
+
+    const registryPath = getRegistryPath();
+    // The registry exists as a file; remove it and create a directory in its
+    // place so writeState fails.
+    fs.rmSync(registryPath, { force: true });
+    fs.mkdirSync(registryPath, { recursive: true });
+
+    // This update should fail internally, but the queue must unlock.
+    run.status = "completed";
+    updateRunRegistry(run);
+
+    // Repair the registry path.
+    fs.rmdirSync(registryPath);
+
+    // A subsequent update should succeed, proving the queue recovered.
+    const run2 = await createRun(sampleWorkflow);
+    const state = readState();
+    expect(state.runs[run2.runId]).toBeTruthy();
+    expect(state.runs[run2.runId]?.status).toBe("running");
   });
 });
 

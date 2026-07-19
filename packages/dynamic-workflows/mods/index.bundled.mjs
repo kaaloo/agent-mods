@@ -7273,88 +7273,6 @@ function loadWorkflowFromMarkdown(text) {
   return { workflow, errors: errors2 };
 }
 
-// mods/lib/author.ts
-function buildAuthorPrompt(input) {
-  const patternDescription = describePattern(input.pattern ?? "custom");
-  const example = serializeWorkflowMarkdown({
-    name: "kebab-case-workflow-name",
-    version: "1",
-    description: "One-line description.",
-    phases: [
-      {
-        id: "scan",
-        type: "fan-out",
-        concurrency: 4,
-        agents: [{ id: "agent-1", prompt: "Detailed prompt for this subagent." }]
-      },
-      {
-        id: "synthesize",
-        type: "barrier",
-        depends_on: ["scan"],
-        prompt: "Prompt that references prior phase outputs."
-      }
-    ],
-    budgets: {
-      max_tokens: 500000,
-      max_concurrent: 4,
-      max_duration_ms: 3600000
-    }
-  }, "Optional longer descriptive content in Markdown.");
-  return `You are a workflow architect. Design a Markdown file with YAML frontmatter for the following task.
-
-Task: ${input.task}
-${input.hints ? `Additional hints: ${input.hints}
-` : ""}Pattern guidance: ${patternDescription}
-
-The workflow must use this format:
-
-${example}
-
-Rules:
-- The file must start with YAML frontmatter between triple dashes (---).
-- The frontmatter must include: name, version, description, phases, and optionally budgets.
-- Use only "fan-out" and "barrier" phase types.
-- Every fan-out phase must have at least one agent.
-- Every barrier phase must have a non-empty "depends_on" array referencing earlier phase ids.
-- Agent prompts should be self-contained and concrete.
-- Model handles are optional; omit to use the default model.
-- Keep the workflow small and debuggable for a first run.
-- Use the Markdown body below the frontmatter for descriptive content about the workflow.
-
-After you generate the workflow, call flow_save with the Markdown content as the "workflow" argument.`;
-}
-function authorWorkflow(input) {
-  const prompt = buildAuthorPrompt(input);
-  return { prompt };
-}
-function parseWorkflowMarkdownText(text) {
-  const { workflow, errors: errors2 } = parseWorkflowMarkdown(text);
-  if (errors2.length > 0) {
-    return { error: formatValidationErrors(errors2.map((e) => ({ path: e, message: e }))) };
-  }
-  return { workflow };
-}
-function describePattern(pattern) {
-  switch (pattern) {
-    case "fan-out-barrier":
-      return "Use a fan-out phase to run parallel subagents, then a barrier phase to synthesize their outputs into a single result.";
-    case "research-verify":
-      return "Use a fan-out phase to gather evidence from multiple angles, then a barrier phase to verify and cross-check.";
-    case "audit":
-      return "Use a fan-out phase to inspect different parts of the system, then a barrier phase to aggregate findings.";
-    case "custom":
-    default:
-      return "Choose the simplest phase structure that fits the task. Prefer fan-out + barrier unless there is a clear reason for something else.";
-  }
-}
-function stripMarkdownFences(text) {
-  let trimmed = text.trim();
-  if (trimmed.startsWith("```")) {
-    trimmed = trimmed.replace(/```(?:markdown|md)?\n?/g, "").replace(/\n?```$/, "").trim();
-  }
-  return trimmed;
-}
-
 // mods/lib/state.ts
 import { existsSync, mkdirSync, readFileSync, renameSync, readdirSync, writeFileSync, unlinkSync, rmSync, lstatSync, openSync, closeSync, constants } from "node:fs";
 import { homedir } from "node:os";
@@ -7366,12 +7284,18 @@ function runRegistryQueue() {
   if (registryLocked)
     return;
   registryLocked = true;
-  while (registryQueue.length > 0) {
-    const next = registryQueue.shift();
-    if (next)
-      next();
+  try {
+    while (registryQueue.length > 0) {
+      const next = registryQueue.shift();
+      if (next) {
+        try {
+          next();
+        } catch {}
+      }
+    }
+  } finally {
+    registryLocked = false;
   }
-  registryLocked = false;
 }
 function scheduleRegistryUpdate(fn) {
   registryQueue.push(fn);
@@ -7843,50 +7767,6 @@ function updateRunRegistry(run) {
   });
 }
 
-// mods/lib/panel.ts
-function renderProgressPanel(runId, width = 100) {
-  if (!runId)
-    return "";
-  const run = loadRun(runId);
-  if (!run)
-    return "";
-  const lines = [];
-  const title = `workflows  [${run.workflow.name}]`;
-  const elapsed = Date.now() - Date.parse(run.startedAt);
-  const header = `${title}  ${run.status}  ${formatDuration(elapsed)}`;
-  lines.push(header);
-  for (const phase of run.workflow.phases) {
-    const isCurrent = run.currentPhaseId === phase.id;
-    const isCompleted = run.completedPhaseIds.includes(phase.id);
-    const progress = renderPhaseProgress(phase, run, width - 4);
-    const marker = isCompleted ? "✓" : isCurrent ? "▶" : " ";
-    lines.push(`  ${marker} ${phase.id} (${phase.type}) ${progress}`);
-  }
-  return lines;
-}
-function renderPhaseProgress(phase, run, width) {
-  if (!phase)
-    return "";
-  if (isFanOutPhase(phase)) {
-    const completed2 = run.completedAgents.filter((a) => a.phaseId === phase.id).length;
-    const total = phase.agents.length;
-    return progressBar(completed2, total, width);
-  }
-  const completed = run.completedPhaseIds.includes(phase.id);
-  return completed ? "done" : "pending";
-}
-function progressBar(completed, total, width) {
-  if (total === 0)
-    return "—";
-  const ratio = completed / total;
-  const filled = Math.max(0, Math.min(width, Math.round(ratio * width)));
-  const empty = Math.max(0, width - filled);
-  return `[${"█".repeat(filled)}${"░".repeat(empty)}] ${completed}/${total}`;
-}
-
-// mods/index.ts
-import { setTimeout as sleep } from "node:timers/promises";
-
 // mods/lib/runner-inline.ts
 function parseFlowAgentMarker(prompt) {
   if (typeof prompt !== "string")
@@ -8005,7 +7885,7 @@ function recordBarrierCompleteLocked(runId, phaseId, output) {
       persistRun(touchRun(run));
       return null;
     }
-    return run;
+    return complete;
   }
   persistRun(touchRun(run));
   updateRunRegistry(run);
@@ -8108,12 +7988,14 @@ ${fileOutput}` : String(run.outputs[`${depId}.${agent.id}`] ?? "");
   if (run.startedPhaseIds.includes(phase.id)) {
     const fileResult = readRunResult(run.runId, run.agentId);
     if (fileResult && fileResult.length > 0) {
-      recordBarrierCompleteLocked(run.runId, phase.id, fileResult);
-      const refreshed = loadRun(run.runId);
-      if (refreshed?.status === "completed") {
-        return { type: "complete", runId: run.runId, result: fileResult, resultPath: getRunResultDisplayPath(run.runId, run.agentId) };
+      const completion = recordBarrierCompleteLocked(run.runId, phase.id, fileResult);
+      if (completion && "type" in completion && completion.type === "complete") {
+        return completion;
       }
-      return stepInlineRunLocked(refreshed?.runId ?? run.runId);
+      if (completion) {
+        return stepInlineRunLocked(completion.runId);
+      }
+      return null;
     }
     return { type: "wait", runId: run.runId, phaseId: phase.id, pending: 1, completed: 0 };
   }
@@ -8178,6 +8060,132 @@ function completeRunLocked(run, result) {
     resultPath: getRunResultDisplayPath(run.runId, run.agentId)
   };
 }
+
+// mods/lib/author.ts
+function buildAuthorPrompt(input) {
+  const patternDescription = describePattern(input.pattern ?? "custom");
+  const example = serializeWorkflowMarkdown({
+    name: "kebab-case-workflow-name",
+    version: "1",
+    description: "One-line description.",
+    phases: [
+      {
+        id: "scan",
+        type: "fan-out",
+        concurrency: 4,
+        agents: [{ id: "agent-1", prompt: "Detailed prompt for this subagent." }]
+      },
+      {
+        id: "synthesize",
+        type: "barrier",
+        depends_on: ["scan"],
+        prompt: "Prompt that references prior phase outputs."
+      }
+    ],
+    budgets: {
+      max_tokens: 500000,
+      max_concurrent: 4,
+      max_duration_ms: 3600000
+    }
+  }, "Optional longer descriptive content in Markdown.");
+  return `You are a workflow architect. Design a Markdown file with YAML frontmatter for the following task.
+
+Task: ${sanitizePromptField(input.task) ?? ""}
+${input.hints ? `Additional hints: ${sanitizePromptField(input.hints) ?? ""}
+` : ""}Pattern guidance: ${patternDescription}
+
+The workflow must use this format:
+
+${example}
+
+Rules:
+- The file must start with YAML frontmatter between triple dashes (---).
+- The frontmatter must include: name, version, description, phases, and optionally budgets.
+- Use only "fan-out" and "barrier" phase types.
+- Every fan-out phase must have at least one agent.
+- Every barrier phase must have a non-empty "depends_on" array referencing earlier phase ids.
+- Agent prompts should be self-contained and concrete.
+- Model handles are optional; omit to use the default model.
+- Keep the workflow small and debuggable for a first run.
+- Use the Markdown body below the frontmatter for descriptive content about the workflow.
+
+After you generate the workflow, call flow_save with the Markdown content as the "workflow" argument.`;
+}
+function authorWorkflow(input) {
+  const prompt = buildAuthorPrompt(input);
+  return { prompt };
+}
+function parseWorkflowMarkdownText(text) {
+  const { workflow, errors: errors2 } = parseWorkflowMarkdown(text);
+  if (errors2.length > 0) {
+    return { error: formatValidationErrors(errors2.map((e) => ({ path: e, message: e }))) };
+  }
+  return { workflow };
+}
+function describePattern(pattern) {
+  switch (pattern) {
+    case "fan-out-barrier":
+      return "Use a fan-out phase to run parallel subagents, then a barrier phase to synthesize their outputs into a single result.";
+    case "research-verify":
+      return "Use a fan-out phase to gather evidence from multiple angles, then a barrier phase to verify and cross-check.";
+    case "audit":
+      return "Use a fan-out phase to inspect different parts of the system, then a barrier phase to aggregate findings.";
+    case "custom":
+    default:
+      return "Choose the simplest phase structure that fits the task. Prefer fan-out + barrier unless there is a clear reason for something else.";
+  }
+}
+function stripMarkdownFences(text) {
+  let trimmed = text.trim();
+  if (trimmed.startsWith("```")) {
+    trimmed = trimmed.replace(/```(?:markdown|md)?\n?/g, "").replace(/\n?```$/, "").trim();
+  }
+  return trimmed;
+}
+
+// mods/lib/panel.ts
+function renderProgressPanel(runId, width = 100) {
+  if (!runId)
+    return "";
+  const run = loadRun(runId);
+  if (!run)
+    return "";
+  const lines = [];
+  const title = `workflows  [${run.workflow.name}]`;
+  const elapsed = Date.now() - Date.parse(run.startedAt);
+  const header = `${title}  ${run.status}  ${formatDuration(elapsed)}`;
+  lines.push(header);
+  for (const phase of run.workflow.phases) {
+    const isCurrent = run.currentPhaseId === phase.id;
+    const isCompleted = run.completedPhaseIds.includes(phase.id);
+    const progress = renderPhaseProgress(phase, run, width - 4);
+    const marker = isCompleted ? "✓" : isCurrent ? "▶" : " ";
+    lines.push(`  ${marker} ${phase.id} (${phase.type}) ${progress}`);
+  }
+  return lines;
+}
+function renderPhaseProgress(phase, run, width) {
+  if (!phase)
+    return "";
+  if (isFanOutPhase(phase)) {
+    const completed2 = run.completedAgents.filter((a) => a.phaseId === phase.id).length;
+    const total = phase.agents.length;
+    return progressBar(completed2, total, width);
+  }
+  const completed = run.completedPhaseIds.includes(phase.id);
+  return completed ? "done" : "pending";
+}
+function progressBar(completed, total, width) {
+  if (total === 0)
+    return "—";
+  const ratio = completed / total;
+  const filled = Math.max(0, Math.min(width, Math.round(ratio * width)));
+  const empty = Math.max(0, width - filled);
+  return `[${"█".repeat(filled)}${"░".repeat(empty)}] ${completed}/${total}`;
+}
+
+// mods/index.ts
+import { setTimeout as sleep } from "node:timers/promises";
 
 // mods/lib/templates.ts
 import path3 from "node:path";
@@ -8565,7 +8573,11 @@ Run a saved workflow or bundled template.` };
             });
             refreshPanel();
             const step = await stepInlineRun(run.runId);
-            return { type: "prompt", content: buildExecutorPrompt(run.runId, workflow.name, step), systemReminder: true };
+            const prompt = buildExecutorPrompt(run.runId, workflow.name, step);
+            if (!prompt) {
+              return { type: "output", output: `Workflow "${rest}" could not be started: run state is no longer available.` };
+            }
+            return { type: "prompt", content: prompt, systemReminder: true };
           }
           case "delete":
           case "rm": {
@@ -8602,7 +8614,10 @@ ${buildFlowHelp()}` };
       if (!output.trim())
         return;
       if (marker.agentId === "synthesize") {
-        await recordBarrierComplete(marker.runId, marker.phaseId, output);
+        const result = await recordBarrierComplete(marker.runId, marker.phaseId, output);
+        if (result && "type" in result && result.type === "complete") {
+          await sendPrompt(ctx, formatStep(result));
+        }
         await withRunMutexFor(marker.runId, async () => {
           clearRunMeta(marker.runId);
         });
@@ -8627,20 +8642,7 @@ ${buildFlowHelp()}` };
       const run = loadRun(currentRunId);
       if (!run || run.status !== "running")
         return;
-      const sendPrompt = async (content) => {
-        const conversation = ctx.conversation;
-        const send = conversation?.sendMessageStream;
-        if (typeof send !== "function")
-          return;
-        try {
-          const stream = await send([{ role: "user", content }]);
-          (async () => {
-            try {
-              for await (const _ of stream) {}
-            } catch {}
-          })();
-        } catch {}
-      };
+      const sendPromptLocal = (content) => sendPrompt(ctx, content);
       const budgetDecision = await withRunMetaFor(currentRunId, () => {
         const meta = runMeta.get(currentRunId);
         const count = meta?.count ?? 0;
@@ -8662,7 +8664,7 @@ ${buildFlowHelp()}` };
           updateRunRegistry(refreshed);
           clearRunMeta(currentRunId);
         });
-        await sendPrompt(`Workflow "${run.workflow.name}" stopped: exceeded maximum continuations.`);
+        await sendPromptLocal(`Workflow "${run.workflow.name}" stopped: exceeded maximum continuations.`);
         return;
       }
       const waitMs = 4000;
@@ -8676,11 +8678,14 @@ ${buildFlowHelp()}` };
         if (!step)
           return;
         if (step.type === "complete" || step.type === "dispatch") {
-          await sendPrompt(buildExecutorPrompt(currentRunId, refreshed.workflow.name, step));
+          const prompt = buildExecutorPrompt(currentRunId, refreshed.workflow.name, step);
+          if (!prompt)
+            return;
+          await sendPromptLocal(prompt);
           return;
         }
         if (waited >= maxWaitMs) {
-          await sendPrompt(`Workflow "${refreshed.workflow.name}" is waiting for phase "${step.phaseId}" (${step.completed}/${step.completed + step.pending} complete). The orchestrator will check again shortly.`);
+          await sendPromptLocal(`Workflow "${refreshed.workflow.name}" is waiting for phase "${step.phaseId}" (${step.completed}/${step.completed + step.pending} complete). The orchestrator will check again shortly.`);
           return;
         }
         await sleep(waitMs);
@@ -8712,13 +8717,26 @@ function getAgentOutput(event) {
   const raw = event.output ?? event.result ?? event.resultText;
   return typeof raw === "string" ? raw : "";
 }
+function sendPrompt(ctx, content) {
+  const send = ctx.conversation?.sendMessageStream;
+  if (typeof send !== "function")
+    return;
+  (async () => {
+    try {
+      const stream = await send([{ role: "user", content }]);
+      try {
+        for await (const _ of stream) {}
+      } catch {}
+    } catch {}
+  })();
+}
 function normalizeCommandArgs(value) {
   if (value === undefined || value === null)
     return null;
   if (typeof value === "string")
     return value.trim();
   if (typeof value === "object") {
-    const text = value.text ?? value.query ?? value.name ?? value.args;
+    const text = value.text || value.query || value.name || value.args;
     if (typeof text === "string")
       return text.trim();
   }
@@ -8796,12 +8814,14 @@ Phase types: fan-out (parallel agents) and barrier (single agent after dependenc
 }
 function buildExecutorPrompt(runId, workflowName, step) {
   const run = loadRun(runId);
+  if (!run)
+    return null;
   const base = `Workflow "${workflowName}" started. Run ID: ${runId}.
 
 Your job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the Agent tool.
 
 Execution context:
-- Working directory: ${run?.workingDirectory ?? "the current project directory"}
+- Working directory: ${run.workingDirectory ?? "the current project directory"}
 - Preserve the requested model and working-directory instructions included in each Agent prompt.
 
 Rules:

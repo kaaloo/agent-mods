@@ -101,7 +101,7 @@ export async function recordAgentComplete(runId: string, phaseId: string, agentI
   return withRunMutexFor(runId, () => recordAgentCompleteLocked(runId, phaseId, agentId, output));
 }
 
-export async function recordBarrierComplete(runId: string, phaseId: string, output: string): Promise<RunState | null> {
+export async function recordBarrierComplete(runId: string, phaseId: string, output: string): Promise<InlineComplete | RunState | null> {
   return withRunMutexFor(runId, () => recordBarrierCompleteLocked(runId, phaseId, output));
 }
 
@@ -206,7 +206,7 @@ export function recordAgentCompleteLocked(runId: string, phaseId: string, agentI
 
 // Internal: assumes caller holds the per-run mutex. Exported for tests; the
 // public API is recordBarrierComplete.
-export function recordBarrierCompleteLocked(runId: string, phaseId: string, output: string): RunState | null {
+export function recordBarrierCompleteLocked(runId: string, phaseId: string, output: string): InlineComplete | RunState | null {
   const run = loadRun(runId);
   if (!run) return null;
   if (run.status !== "running") return run;
@@ -233,7 +233,7 @@ export function recordBarrierCompleteLocked(runId: string, phaseId: string, outp
       persistRun(touchRun(run));
       return null;
     }
-    return run;
+    return complete;
   }
   persistRun(touchRun(run));
   updateRunRegistry(run);
@@ -356,14 +356,18 @@ function dispatchBarrierLocked(run: RunState, phase: BarrierPhase): InlineStep |
   if (run.startedPhaseIds.includes(phase.id)) {
     const fileResult = readRunResult(run.runId, run.agentId);
     if (fileResult && fileResult.length > 0) {
-      // Use the locked variants — caller already holds the per-run mutex
-      // via stepInlineRunLocked.
-      recordBarrierCompleteLocked(run.runId, phase.id, fileResult);
-      const refreshed = loadRun(run.runId);
-      if (refreshed?.status === "completed") {
-        return { type: "complete", runId: run.runId, result: fileResult, resultPath: getRunResultDisplayPath(run.runId, run.agentId) };
+      // H1/H2 fix: use the result returned by recordBarrierCompleteLocked
+      // directly instead of re-loading the run from disk. This eliminates the
+      // stale-runId / null-refreshed hazard and makes the InlineComplete
+      // result available to callers.
+      const completion = recordBarrierCompleteLocked(run.runId, phase.id, fileResult);
+      if (completion && "type" in completion && completion.type === "complete") {
+        return completion;
       }
-      return stepInlineRunLocked(refreshed?.runId ?? run.runId);
+      if (completion) {
+        return stepInlineRunLocked(completion.runId);
+      }
+      return null;
     }
     return { type: "wait", runId: run.runId, phaseId: phase.id, pending: 1, completed: 0 };
   }

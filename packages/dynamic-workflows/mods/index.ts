@@ -408,7 +408,11 @@ export default function activate(letta: LettaModContext): (() => void) {
             });
             refreshPanel();
             const step = await stepInlineRun(run.runId);
-            return { type: "prompt", content: buildExecutorPrompt(run.runId, workflow.name, step), systemReminder: true };
+            const prompt = buildExecutorPrompt(run.runId, workflow.name, step);
+            if (!prompt) {
+              return { type: "output", output: `Workflow "${rest}" could not be started: run state is no longer available.` };
+            }
+            return { type: "prompt", content: prompt, systemReminder: true };
           }
           case "delete":
           case "rm": {
@@ -445,7 +449,12 @@ export default function activate(letta: LettaModContext): (() => void) {
       if (!output.trim()) return;
 
       if (marker.agentId === "synthesize") {
-        await recordBarrierComplete(marker.runId, marker.phaseId, output);
+        const result = await recordBarrierComplete(marker.runId, marker.phaseId, output);
+        // H1 fix: if the barrier finished the run, dispatch the completion
+        // step immediately rather than waiting for the next turn_end poll.
+        if (result && "type" in result && result.type === "complete") {
+          await sendPrompt(ctx, formatStep(result));
+        }
         // Barrier complete; clear the meta entry to bound map growth.
         await withRunMutexFor(marker.runId, async () => {
           clearRunMeta(marker.runId);
@@ -476,15 +485,7 @@ export default function activate(letta: LettaModContext): (() => void) {
       const run = loadRun(currentRunId);
       if (!run || run.status !== "running") return;
 
-      const sendPrompt = async (content: string) => {
-        const conversation = ctx.conversation;
-        const send = conversation?.sendMessageStream;
-        if (typeof send !== "function") return;
-        try {
-          const stream = await send([{ role: "user", content }]);
-          void (async () => { try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ } })();
-        } catch { /* ignore */ }
-      };
+      const sendPromptLocal = (content: string) => sendPrompt(ctx, content);
 
       // The budget check + run-state update happen inside withRunMetaFor so
       // the count read, the limit check, the increment, and any persistence
@@ -512,7 +513,7 @@ export default function activate(letta: LettaModContext): (() => void) {
           // entry after the run has been marked failed.
           clearRunMeta(currentRunId);
         });
-        await sendPrompt(`Workflow "${run.workflow.name}" stopped: exceeded maximum continuations.`);
+        await sendPromptLocal(`Workflow "${run.workflow.name}" stopped: exceeded maximum continuations.`);
         return;
       }
 
@@ -531,13 +532,15 @@ export default function activate(letta: LettaModContext): (() => void) {
         if (!step) return;
 
         if (step.type === "complete" || step.type === "dispatch") {
-          await sendPrompt(buildExecutorPrompt(currentRunId, refreshed.workflow.name, step));
+          const prompt = buildExecutorPrompt(currentRunId, refreshed.workflow.name, step);
+          if (!prompt) return;
+          await sendPromptLocal(prompt);
           return;
         }
 
         // step.type === "wait"
         if (waited >= maxWaitMs) {
-          await sendPrompt(
+          await sendPromptLocal(
             `Workflow "${refreshed.workflow.name}" is waiting for phase "${step.phaseId}" (${step.completed}/${step.completed + step.pending} complete). The orchestrator will check again shortly.`
           );
           return;
@@ -578,11 +581,22 @@ function getAgentOutput(event: LettaEvent): string {
   return typeof raw === "string" ? raw : "";
 }
 
+function sendPrompt(ctx: LettaEventHandlerContext, content: string): void {
+  const send = ctx.conversation?.sendMessageStream;
+  if (typeof send !== "function") return;
+  void (async () => {
+    try {
+      const stream = await send([{ role: "user", content }]);
+      try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ }
+    } catch { /* ignore */ }
+  })();
+}
+
 function normalizeCommandArgs(value: string | Record<string, unknown> | undefined): string | null {
   if (value === undefined || value === null) return null;
   if (typeof value === "string") return value.trim();
   if (typeof value === "object") {
-    const text = value.text ?? value.query ?? value.name ?? value.args;
+    const text = value.text || value.query || value.name || value.args;
     if (typeof text === "string") return text.trim();
   }
   return null;
@@ -651,9 +665,10 @@ budgets:
 Phase types: fan-out (parallel agents) and barrier (single agent after dependencies).`;
 }
 
-function buildExecutorPrompt(runId: string, workflowName: string, step: InlineStep | null): string {
+function buildExecutorPrompt(runId: string, workflowName: string, step: InlineStep | null): string | null {
   const run = loadRun(runId);
-  const base = `Workflow "${workflowName}" started. Run ID: ${runId}.\n\nYour job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the Agent tool.\n\nExecution context:\n- Working directory: ${run?.workingDirectory ?? "the current project directory"}\n- Preserve the requested model and working-directory instructions included in each Agent prompt.\n\nRules:\n1. If step.type is "complete", stop and return a concise summary of the result shown below.\n2. If step.type is "dispatch", issue the described parallel Agent tool calls with the exact prompts provided.\n3. If step.type is "wait", wait for the next prompt from the orchestrator. Do not call any tools.\n4. Use the general-purpose subagent type for all Agent calls.\n\nCurrent step:`;
+  if (!run) return null;
+  const base = `Workflow "${workflowName}" started. Run ID: ${runId}.\n\nYour job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the Agent tool.\n\nExecution context:\n- Working directory: ${run.workingDirectory ?? "the current project directory"}\n- Preserve the requested model and working-directory instructions included in each Agent prompt.\n\nRules:\n1. If step.type is "complete", stop and return a concise summary of the result shown below.\n2. If step.type is "dispatch", issue the described parallel Agent tool calls with the exact prompts provided.\n3. If step.type is "wait", wait for the next prompt from the orchestrator. Do not call any tools.\n4. Use the general-purpose subagent type for all Agent calls.\n\nCurrent step:`;
   return `${base}\n\n${formatStep(step)}`;
 }
 

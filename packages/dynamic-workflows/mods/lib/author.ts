@@ -1,6 +1,7 @@
 import { formatValidationErrors } from "./schema.ts";
 import type { WorkflowDefinition } from "./schema.ts";
 import { parseWorkflowMarkdown, serializeWorkflowMarkdown } from "./markdown.ts";
+import { sanitizePromptField } from "./runner-inline.ts";
 
 export interface AuthorInput {
   task: string;
@@ -37,8 +38,8 @@ export function buildAuthorPrompt(input: AuthorInput): string {
 
   return `You are a workflow architect. Design a Markdown file with YAML frontmatter for the following task.
 
-Task: ${input.task}
-${input.hints ? `Additional hints: ${input.hints}\n` : ""}Pattern guidance: ${patternDescription}
+Task: ${sanitizePromptField(input.task) ?? ""}
+${input.hints ? `Additional hints: ${sanitizePromptField(input.hints) ?? ""}\n` : ""}Pattern guidance: ${patternDescription}
 
 The workflow must use this format:
 

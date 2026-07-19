@@ -28,11 +28,16 @@ let registryLocked = false;
 function runRegistryQueue(): void {
   if (registryLocked) return;
   registryLocked = true;
-  while (registryQueue.length > 0) {
-    const next = registryQueue.shift();
-    if (next) next();
+  try {
+    while (registryQueue.length > 0) {
+      const next = registryQueue.shift();
+      if (next) {
+        try { next(); } catch { /* swallow individual failures so one disk error does not permanently lock the queue */ }
+      }
+    }
+  } finally {
+    registryLocked = false;
   }
-  registryLocked = false;
 }
 
 function scheduleRegistryUpdate(fn: () => void): void {
