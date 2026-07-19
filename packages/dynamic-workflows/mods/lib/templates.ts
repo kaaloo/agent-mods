@@ -6,7 +6,7 @@ import { isSafeIdentifier, isContainedPath } from "./utils.ts";
 export interface TemplateEntry {
   name: string;
   description: string;
-  source: "template";
+  source: "built-in";
 }
 
 export function listTemplates(templateDir: string): TemplateEntry[] {
@@ -27,7 +27,7 @@ export function listTemplates(templateDir: string): TemplateEntry[] {
           templates.push({
             name,
             description: workflow.description,
-            source: "template",
+            source: "built-in",
           });
         }
       } catch {

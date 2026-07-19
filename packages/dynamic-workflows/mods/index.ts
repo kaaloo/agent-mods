@@ -32,7 +32,7 @@ export default function activate(letta: LettaModContext): (() => void) {
   const runMeta = new Map<string, { conversationId: string | undefined; count: number }>();
   const MAX_WORKFLOW_CONTINUATIONS = 20;
 
-  const TEMPLATE_DIR = path.resolve(import.meta.dirname, "../assets/templates");
+  const TEMPLATE_DIR = path.resolve(import.meta.dirname, "../assets/built-in");
 
   // Coarse mutex for runMeta access. Serializes meta map scans (used by
   // the panel renderer, the /flow status command, and turn_end) so a
@@ -218,7 +218,7 @@ export default function activate(letta: LettaModContext): (() => void) {
         }
         const template = loadTemplate(TEMPLATE_DIR, name);
         if (template) {
-          return { status: "success", workflow: template, source: "template" };
+          return { status: "success", workflow: template, source: "built-in" };
         }
         return { status: "error", content: `Workflow "${name}" not found.` };
       },

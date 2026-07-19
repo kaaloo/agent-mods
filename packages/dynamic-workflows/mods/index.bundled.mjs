@@ -8241,7 +8241,7 @@ function listTemplates(templateDir) {
           templates.push({
             name,
             description: workflow.description,
-            source: "template"
+            source: "built-in"
           });
         }
       } catch {}
@@ -8276,7 +8276,7 @@ function activate(letta) {
   let panel = null;
   const runMeta = new Map;
   const MAX_WORKFLOW_CONTINUATIONS = 20;
-  const TEMPLATE_DIR = path4.resolve(import.meta.dirname, "../assets/templates");
+  const TEMPLATE_DIR = path4.resolve(import.meta.dirname, "../assets/built-in");
   const metaMutexChain = { promise: Promise.resolve() };
   function withMetaMutex(fn) {
     const previous = metaMutexChain.promise;
@@ -8433,7 +8433,7 @@ function activate(letta) {
         }
         const template = loadTemplate(TEMPLATE_DIR, name);
         if (template) {
-          return { status: "success", workflow: template, source: "template" };
+          return { status: "success", workflow: template, source: "built-in" };
         }
         return { status: "error", content: `Workflow "${name}" not found.` };
       }
