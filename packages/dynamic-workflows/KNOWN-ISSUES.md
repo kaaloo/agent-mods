@@ -30,27 +30,29 @@ Agent tool." Adding a default `description` to the prompt template (e.g.,
 **First observed:** 2026-07-18, during the example-bug-sweep run at
 `flows/runs/1784385035947-fc110eb9`.
 
-## 2. Per-run mutex re-entry works by accident, not by design
+## 2. Per-run mutex re-entry works by design now (closed)
 
-**Symptom:** A `stepInlineRun` call may invoke `recordAgentComplete` or
-`recordBarrierComplete` re-entrantly. The current implementation handles this
-because `withRunMutexFor` schedules the wrapped function via `.then`, which
-yields to the event loop before the inner mutex tries to acquire.
+The third bug-sweep flagged the nested acquisition of the per-run mutex
+in `dispatchFanOut` / `dispatchBarrier` as Critical (deterministic
+self-deadlock under any refactor that breaks the `.then`-scheduling
+assumption). The fix splits each public runner API into a thin mutex
+wrapper plus an internal `*Locked` helper that assumes the caller
+already holds the mutex. `dispatchFanOut` and `dispatchBarrier` now
+call the locked variants directly, eliminating the re-acquire.
 
-**Trigger:** Any future refactor that calls `withRunMutexFor` synchronously
-inside its wrapped function (e.g., switching to a `Promise.resolve().then`
-chain with eager evaluation) will self-deadlock.
+**Status:** Closed in commit `39ecb0d` ("split public runner APIs from
+internal Locked helpers"). Regression tests in
+`mods/tests/state-concurrency.test.ts > C1 mutex re-entry safety`
+exercise the locked variants inside a single mutex slot with a 5s
+deadlock timeout.
 
-**Workaround:** If you change the mutex implementation, audit every
-re-entrant call site (`dispatchFanOut`, `dispatchBarrier`,
-`stepInlineRun`'s late-pickup branch) and either pass the in-memory `run`
-to a non-locking helper, or split the inner work into a separate
-non-mutexed helper that the outer caller invokes after `withRunMutexFor`
-releases.
-
-**Status:** Flagged as M3 in the second bug-sweep report
-(`flows/runs/1784388655580-35e3c61d/result.md`). Acceptable risk today;
-tracked for the transactional-persistRun design pass (`task_7`).
+The fifth bug-sweep re-flagged this as latent M2 ("deadlock-by-design
+under refactor"). The active deadlock is closed; the latent concern is
+that a future refactor that switches `withRunMutexFor` to synchronous
+acquisition would re-introduce it. The regression tests catch this:
+any future change that causes re-entry will time out in CI. Maintainers
+should not introduce sync acquisition in `withRunMutexFor` without
+removing the re-entrant call sites first.
 
 ## 3. Registry writes are not coordinated across runs
 
@@ -67,5 +69,21 @@ sequentially from a single user. If you observe lost entries in
 `registry.md`, restart the affected run; the run state on disk is
 authoritative and `loadRun` does not depend on the registry.
 
-**Status:** Flagged as M1 in the second bug-sweep report. Will be fixed
-as part of `task_7` (transactional persistRun design pass).
+**Status:** Flagged as M1 in the second bug-sweep report, re-confirmed
+as H1 / M1 in the fourth and fifth sweeps. Will be fixed as part of
+`task_7` (transactional persistRun + cross-run registry mutex design
+pass). The current acceptable-risk rating holds: in practice, runs
+start sequentially from a single user, so the race window is small.
+
+## 4. Sweep 5 closure-map fix (closed)
+
+The fifth bug-sweep flagged `activeRunId`, `activeRunConversationId`,
+and `workflowContinuationCount` as closure-local mutable state (H1) and
+the `MAX_WORKFLOW_CONTINUATIONS` check as a TOCTOU race (H2). Both
+closed by replacing the closure variables with a per-run
+`runMeta: Map<runId, { conversationId, count }>` accessed under
+`withRunMutexFor`. The budget check + increment are one atomic block;
+the meta entry is cleared when a run reaches terminal state to bound
+map growth.
+
+**Status:** Closed in commit `c56f367`.
