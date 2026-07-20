@@ -41,9 +41,6 @@ export async function postPullRequestReview({
 }) {
   const url = `${API}/repos/${owner}/${repo}/pulls/${pullNumber}/reviews`;
   const payload = {
-    owner,
-    repo,
-    pull_number: pullNumber,
     commit_id: commitId,
     body,
     event,
