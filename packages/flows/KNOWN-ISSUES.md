@@ -27,7 +27,7 @@ for each one, even if the prompt template only asks the model to "use the
 Agent tool." Adding a default `description` to the prompt template (e.g.,
 "Dispatch a worker to <task>") is enough to satisfy the harness.
 
-**First observed:** 2026-07-18, during the example-bug-sweep run at
+**First observed:** 2026-07-18, during the code-audit (formerly example-bug-sweep) run at
 `flows/runs/1784385035947-fc110eb9`.
 
 ## 2. Per-run mutex re-entry works by design now (closed)

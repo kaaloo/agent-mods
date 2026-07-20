@@ -29,31 +29,27 @@ Reload mods in Letta Code:
 
 ## Usage
 
-Author a workflow:
+Generate an authoring prompt:
 
 ```text
-/flow-author "scan this codebase for bugs"
+/flow author "scan this codebase for bugs"
 ```
 
-Save it:
+Copy the model's workflow markdown output and save it (use the `flow_save` tool, naming the workflow e.g. `code-audit`).
+
+Run a saved or built-in workflow:
 
 ```text
-/flow-save code-audit
+/flow run code-audit
 ```
 
-Run it:
+List saved and built-in workflows:
 
 ```text
-/flow-run code-audit
+/flow list
 ```
 
-List workflows:
-
-```text
-/flow-list
-```
-
-Show the panel:
+Show the most recently active run:
 
 ```text
 /flow

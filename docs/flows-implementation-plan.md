@@ -30,7 +30,7 @@ packages/flows/
 │   ├── lib/
 │   │   ├── schema.ts         # Workflow DSL types and validation
 │   │   ├── state.ts          # library/run registry + checkpoint persistence
-│   │   ├── author.ts         # workflow_author prompt + validation
+│   │   ├── author.ts         # flow_author prompt + validation
 │   │   ├── runner-inline.ts  # inline execution mode
 │   │   ├── runner-bg.ts      # background execution mode (v0.2)
 │   │   ├── panel.ts          # progress panel rendering
@@ -56,7 +56,7 @@ packages/flows/
   "keywords": ["letta-package", "letta-mod"],
   "letta": {
     "manifestVersion": 1,
-    "mods": ["./mods/index.ts"],
+    "mods": ["./mods/index.bundled.mjs"],
     "capabilities": [
       "tools",
       "commands",
@@ -124,26 +124,25 @@ Example:
 
 ```markdown
 ---
-name: codebase-bug-sweep
+name: code-audit
 version: "1"
-description: Sweep src/ for race conditions, null derefs, and injection vectors.
+description: Sweep a codebase for concurrency bugs, null dereference risks, and injection vectors.
 phases:
   - id: scan
     type: fan-out
-    model: anthropic/claude-sonnet-4-6
+    concurrency: 3
     agents:
       - id: race
-        prompt: Scan src/ for race conditions.
+        prompt: Scan the codebase for concurrency bugs such as race conditions, deadlocks, and unsynchronized shared state.
       - id: "null"
-        prompt: Scan src/ for null dereference risks.
+        prompt: Scan the codebase for null or undefined dereference risks such as unchecked optional values.
       - id: inject
-        prompt: Scan src/ for injection vectors.
+        prompt: Scan the codebase for injection vectors such as SQL injection, command injection, and unsafe eval.
   - id: synthesize
     type: barrier
     depends_on:
       - scan
-    model: anthropic/claude-opus-4-8
-    prompt: Merge the scan findings into a single prioritized report.
+    prompt: Merge the findings from the race, null, and injection scans into a single prioritized report.
 ---
 
 Sweep src/ for race conditions, null derefs, and injection vectors,
@@ -158,22 +157,22 @@ then synthesize the results.
 
 | Tool | Purpose | Risk |
 |---|---|---|
-| `workflow_author(task, pattern?, hints?)` | Model emits a workflow DSL for the described task. | Read-only, `parallelSafe: true` |
-| `workflow_save(name, workflow, description?)` | Persist a workflow to the local library. | Mutating, `requiresApproval: true` |
-| `workflow_load(name)` | Load a saved workflow. | Read-only |
-| `workflow_list(filter?)` | List saved workflows and example templates. | Read-only |
-| `workflow_run(workflow, inputs?, options?)` | Start an inline run; returns run_id + first-phase dispatch. | Mutating, `requiresApproval: true` |
-| `workflow_status(run_id)` | Query run state. | Read-only |
+| `flow_author(task, pattern?, hints?)` | Model emits a workflow markdown file for the described task. | Read-only, `parallelSafe: true` |
+| `flow_save(name, workflow, description?)` | Persist a workflow to the local library. | Mutating, `approvalPolicy: "alwaysAsk"` |
+| `flow_load(name)` | Load a saved workflow. | Read-only |
+| `flow_list(filter?)` | List saved workflows and built-in examples. | Read-only |
+| `flow_run(name, inputs?)` | Start an inline run; returns run_id + first-phase dispatch. | Mutating, `approvalPolicy: "alwaysAsk"` |
+| `flow_status(run_id)` | Query run state. | Read-only |
 
 ### Commands (human-invoked)
 
 | Command | Type | Notes |
 |---|---|---|
-| `/workflow-author <task>` | prompt | Becomes the next agent turn asking it to call `workflow_author`. |
-| `/workflow-save <name>` | output | Saves the most recently authored workflow. |
-| `/workflow-list` | output | Lists library + templates. |
-| `/workflow-run <name> [inputs...]` | output | Starts an inline run. |
-| `/workflow` | panel command | Show/hide the progress panel. |
+| `/flow author <task>` | output | Prints the authoring prompt for the model. |
+| `/flow save <name>` | output | Reminds the user to call `flow_save` with the workflow markdown. |
+| `/flow list` | output | Lists library + built-in workflows. |
+| `/flow run <name> [inputs...]` | prompt | Starts an inline run and emits the dispatch instructions. |
+| `/flow` | output | Shows the most recently active run. |
 
 ### Events
 
@@ -188,7 +187,7 @@ then synthesize the results.
 A compact persistent panel at `order: 100`:
 
 ```text
-workflows  [codebase-bug-sweep]  scan ████████░░ 8/12  42k tokens
+workflows  [code-audit]  scan ████████░░ 8/12  42k tokens
             synthesize pending
 ```
 
@@ -201,15 +200,15 @@ Renders from the run registry updated by `tool_end` events.
 The model is the orchestrator. The mod is the state machine and dispatcher.
 
 ```text
-user:   /workflow-run codebase-bug-sweep
+user:   /flow run code-audit
 mod:    creates run_id, persists plan.md, returns first-phase instructions
 model:  Agent({subagent_type: "general-purpose", prompt: "Scan src/ for race conditions."})
         Agent({subagent_type: "general-purpose", prompt: "Scan src/ for null dereference risks."})
         Agent({subagent_type: "general-purpose", prompt: "Scan src/ for injection vectors."})
 mod:    tool_end fires for each; when all agents in phase complete, mark phase done
-model:  workflow_status(run_id) or workflow_run(run_id, next_phase)
-mod:    returns barrier phase instructions
-model:  Agent({subagent_type: "fork", prompt: "Merge findings..."})
+model:  flow_status(run_id) (orchestrator polls internally; model does not need to call it)
+mod:    turn_end polls the run inline until ready; returns barrier phase instructions
+model:  Agent({subagent_type: "general-purpose", prompt: "Merge findings..."})
 mod:    on completion, writes result.md and marks run complete
 ```
 
@@ -241,12 +240,12 @@ All writes are atomic: write to a temp file, then rename.
 - Inline execution mode.
 - Simple progress panel.
 - State persistence.
-- Example bug-sweep template.
+- Example code-audit built-in workflow.
 - Vitest tests for pure helpers (schema, state, author validation).
 
 ### v0.2 — Background mode
 
-- `runWhenBusy: true` `/workflow-run` command.
+- `runWhenBusy: true` `/flow run` command.
 - Forked-conversation orchestrator.
 - Cross-session resume via `conversation_open`.
 - `letta cron` integration for very long runs.
@@ -290,7 +289,7 @@ Guardrails for generated mods:
 ## 10. Testing strategy
 
 - **Unit tests** for `schema.ts`, `state.ts`, `author.ts` using Vitest.
-- **Smoke tests** that load the mod in a fresh conversation and verify `/workflow` appears in autocomplete.
+- **Smoke tests** that load the mod in a fresh conversation and verify `/flow` appears in autocomplete.
 - **Manual tests** for the inline execution flow against a small repo.
 - **No background-mode tests** in v0.1; that comes in v0.2.
 
@@ -322,9 +321,9 @@ npm run check
 A user can:
 
 1. Install the mod from the worktree.
-2. Run `/workflow-author "scan this codebase for bugs"` and get a valid YAML workflow.
-3. Run `/workflow-save bug-sweep` to persist it.
-4. Run `/workflow-run bug-sweep` and see the model dispatch parallel agents.
+2. Run `/flow author "scan this codebase for bugs"` and get a valid YAML workflow.
+3. Run `/flow-save <name>` with the workflow markdown to persist it.
+4. Run `/flow-run <name>` and see the model dispatch parallel agents.
 5. See the panel update as agents complete.
 6. Receive a final `result.md` with the synthesized report.
 
