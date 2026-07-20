@@ -42,21 +42,6 @@ export interface LettaCommandDefinition {
   run(ctx: LettaCommandContext): unknown;
 }
 
-export interface LettaPanelRenderContext {
-  width?: number;
-  cwd?: string;
-  workingDirectory?: string;
-  conversation?: ModConversationHandle;
-  agent?: { id?: string; name?: string | null };
-  [key: string]: unknown;
-}
-
-export interface LettaPanelDefinition {
-  id: string;
-  order?: number;
-  render(ctx: LettaPanelRenderContext): string | string[];
-}
-
 export interface LettaEvent {
   toolName?: string;
   tool_call_id?: string;
@@ -84,14 +69,10 @@ export interface LettaCapabilities {
   commands?: boolean;
   permissions?: boolean;
   events?: {
-    lifecycle?: boolean;
     turns?: boolean;
     tools?: boolean;
     llm?: boolean;
     compact?: boolean;
-  };
-  ui?: {
-    panels?: boolean;
   };
 }
 
@@ -108,9 +89,6 @@ export interface LettaModContext {
   };
   permissions?: {
     register: (permission: unknown) => (() => void);
-  };
-  ui?: {
-    openPanel: (panel: LettaPanelDefinition) => { update: () => void; close: () => void };
   };
   client?: unknown;
 }

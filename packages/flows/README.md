@@ -61,8 +61,7 @@ This is a prototype. v0.1 supports:
 
 - `fan-out` and `barrier` phase types
 - Inline execution mode (model dispatches parallel `Agent` calls)
-- Workflow authoring, saving, loading, and listing
-- A progress panel
+- Workflow authoring, saving, loading, listing, and status queries
 
 Background execution, advanced phase types, and Letta-native integrations (Control Room, Threadkeeper, muscle-memory) are planned for later versions.
 

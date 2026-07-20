@@ -45,9 +45,7 @@
       "tools",
       "commands",
       "events.tools",
-      "events.lifecycle",
-      "events.turns",
-      "ui.panels"
+      "events.turns"
     ],
     "engines": {
       "lettaCodeCli": ">=0.28.4"

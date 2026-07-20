@@ -64,7 +64,7 @@ All commands live under `/flow`:
 
 | Command | Description |
 |---------|-------------|
-| `/flow` | Show active workflow status / refresh panel. |
+| `/flow` | Show active flow status. |
 | `/flow help` | Show quick-start guide. |
 | `/flow new <task>` | Author a new workflow. |
 | `/flow save <name>` | Reminder to save the generated workflow via `flow_save`. |

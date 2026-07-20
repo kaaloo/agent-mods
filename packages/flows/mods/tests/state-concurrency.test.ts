@@ -871,24 +871,6 @@ describe("sweep-7 fixes: H1, M2, F3, L-C", () => {
     expect(tail).toMatch(/await\s+withRunMutexFor\(runId,[\s\S]{0,2000}rmSync\([\s\S]{0,2000}readState/);
   });
 
-  test("S-3: refreshMetaView snapshot is locked", () => {
-    // Source-level check that refreshMetaView reads runMeta.entries()
-    // through the metaMutexChain (so concurrent mutations cannot tear the
-    // snapshot). The fix changed refreshMetaView from a direct Array.from
-    // call to a metaMutexChain.promise.then() wrapper.
-    const fs = require("node:fs");
-    const path = require("node:path");
-    const src = fs.readFileSync(path.resolve(__dirname, "../index.ts"), "utf8");
-    // refreshMetaView definition is present.
-    expect(src).toMatch(/function refreshMetaView/);
-    // The body of refreshMetaView chains onto metaMutexChain.promise so the
-    // runMeta iteration happens under the mutex.
-    const idx = src.indexOf("function refreshMetaView");
-    expect(idx).toBeGreaterThan(0);
-    const body = src.slice(idx, idx + 400);
-    expect(body).toMatch(/metaMutexChain\.promise\.then\(\(\) => \{[\s\S]{0,200}runMeta\.entries/);
-  });
-
   test("M-4 fan-out: empty agents fails the run instead of looping", async () => {
     // The schema's validateWorkflow rejects fan-out phases with zero agents
     // at parse time, so we can't reach the M-4 fix through the normal

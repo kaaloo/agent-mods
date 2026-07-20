@@ -26,14 +26,13 @@ packages/flows/
 ├── MOD.md
 ├── tsconfig.json
 ├── mods/
-│   ├── index.ts              # entry point: tool/command/event/panel registration
+│   ├── index.ts              # entry point: tool/command/event registration
 │   ├── lib/
 │   │   ├── schema.ts         # Workflow DSL types and validation
 │   │   ├── state.ts          # library/run registry + checkpoint persistence
 │   │   ├── author.ts         # flow_author prompt + validation
 │   │   ├── runner-inline.ts  # inline execution mode
 │   │   ├── runner-bg.ts      # background execution mode (v0.2)
-│   │   ├── panel.ts          # progress panel rendering
 │   │   ├── utils.ts          # id generation, path helpers, safe YAML frontmatter writes
 │   └── tests/
 │       ├── schema.test.ts
@@ -61,9 +60,7 @@ packages/flows/
       "tools",
       "commands",
       "events.tools",
-      "events.lifecycle",
-      "events.turns",
-      "ui.panels"
+      "events.turns"
     ],
     "engines": {
       "lettaCodeCli": ">=0.28.4"
@@ -172,26 +169,14 @@ then synthesize the results.
 | `/flow save <name>` | output | Reminds the user to call `flow_save` with the workflow markdown. |
 | `/flow list` | output | Lists library + built-in workflows. |
 | `/flow run <name> [inputs...]` | prompt | Starts an inline run and emits the dispatch instructions. |
-| `/flow` | output | Shows the most recently active run. |
+| `/flow` | output | Shows the active flow status for the current conversation. |
 
 ### Events
 
 | Event | Use |
 |---|---|
-| `tool_end` | When the model dispatches parallel `Agent` calls as part of an inline run, record completion and advance the phase. |
-| `conversation_open` | Resume any incomplete runs from prior sessions (background mode in v0.2). |
-| `turn_start` | v0.2+ — propose a workflow when ultracode mode is on. |
-
-### Panel
-
-A compact persistent panel at `order: 100`:
-
-```text
-workflows  [code-audit]  scan ████████░░ 8/12  42k tokens
-            synthesize pending
-```
-
-Renders from the run registry updated by `tool_end` events.
+| `tool_end` | Route synchronous `Agent` tool outputs that include a flow marker. |
+| `turn_end` | Poll durable agent report files, advance ready phases, and continue the orchestrator. |
 
 ---
 
@@ -238,7 +223,7 @@ All writes are atomic: write to a temp file, then rename.
 - Fan-out and barrier phase types.
 - Author/save/load/list tools + commands.
 - Inline execution mode.
-- Simple progress panel.
+- On-demand flow status via `/flow` and `/flow status`.
 - State persistence.
 - Example code-audit built-in workflow.
 - Vitest tests for pure helpers (schema, state, author validation).
@@ -322,9 +307,9 @@ A user can:
 
 1. Install the mod from the worktree.
 2. Run `/flow author "scan this codebase for bugs"` and get a valid YAML workflow.
-3. Run `/flow-save <name>` with the workflow markdown to persist it.
-4. Run `/flow-run <name>` and see the model dispatch parallel agents.
-5. See the panel update as agents complete.
+3. Run `/flow save <name>` with the workflow markdown to persist it.
+4. Run `/flow run <name>` and see the model dispatch parallel agents.
+5. Query the active flow state with `/flow status`.
 6. Receive a final `result.md` with the synthesized report.
 
 If v0.1 hits these six criteria, we have a working prototype and can decide whether to escalate any of the open questions to the Letta team.

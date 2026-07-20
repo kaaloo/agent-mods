@@ -1,7 +1,6 @@
 import path from "node:path";
 import type { LettaModContext, LettaToolContext, LettaCommandContext, LettaEvent, LettaEventHandlerContext } from "./types.ts";
 import { authorWorkflow, parseWorkflowMarkdownText, stripMarkdownFences } from "./lib/author.ts";
-import { renderProgressPanel } from "./lib/panel.ts";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   createRun,
@@ -19,11 +18,8 @@ import { stepInlineRun, recordAgentCompleteLocked, recordBarrierCompleteLocked, 
 import { listTemplates, loadTemplate } from "./lib/templates.ts";
 import { isNonEmptyString } from "./lib/utils.ts";
 
-const PANEL_ID = "flows";
-
 export default function activate(letta: LettaModContext): (() => void) {
   const disposers: Array<() => void> = [];
-  let panel: { update: () => void; close: () => void } | null = null;
   // Per-run meta: which conversation owns the run, and how many executor
   // dispatch cycles have been issued. Replaces the previous closure-mutable
   // activeRunId / activeRunConversationId / workflowContinuationCount, which
@@ -34,10 +30,8 @@ export default function activate(letta: LettaModContext): (() => void) {
 
   const TEMPLATE_DIR = path.resolve(import.meta.dirname, "../assets/built-in");
 
-  // Coarse mutex for runMeta access. Serializes meta map scans (used by
-  // the panel renderer, the /flow status command, and turn_end) so a
-  // concurrent flow_run cannot insert/remove entries mid-scan. The per-run
-  // mutex held by every mutation site is also keyed off this same chain.
+  // Coarse mutex for runMeta scans used by /flow status and turn_end. Per-run
+  // mutations remain serialized through withRunMutexFor.
   const metaMutexChain: { promise: Promise<void> } = { promise: Promise.resolve() };
   function withMetaMutex<T>(fn: () => T): Promise<T> {
     const previous = metaMutexChain.promise;
@@ -46,85 +40,22 @@ export default function activate(letta: LettaModContext): (() => void) {
     return next;
   }
 
-  // Cached view of runMeta used by sync consumers (panel renderer, /flow
-  // status). Updated under the meta mutex whenever entries are added,
-  // removed, or have their count changed. Sync readers see a snapshot that
-  // is at most one meta mutation stale; this is acceptable for display.
-  let latestMetaView: Array<{ runId: string; meta: { conversationId: string | undefined; count: number } }> = [];
-  // Sweep-11 S-3 fix: the snapshot itself reads runMeta.entries(); must
-  // hold the meta mutex so a concurrent mutation cannot tear the view.
-  // Since withMetaMutex is async and refreshMetaView is sync, we use
-  // metaMutexChain.promise.then() to chain the snapshot read.
-  function refreshMetaView(): void {
-    metaMutexChain.promise = metaMutexChain.promise.then(() => {
-      latestMetaView = Array.from(runMeta.entries()).map(([runId, meta]) => ({ runId, meta }));
-    }, () => {
-      latestMetaView = Array.from(runMeta.entries()).map(([runId, meta]) => ({ runId, meta }));
-    });
-  }
-
-  // Internal helper: run `fn` while holding both the per-run mutex and the
-  // meta entry for `runId`. The meta is created with a default count of 0
-  // if missing. Closes H1 (closure-mutable race) by ensuring all reads and
-  // writes to runMeta happen serialized.
   async function withRunMetaFor<T>(runId: string, fn: () => Promise<T> | T): Promise<T> {
     return withRunMutexFor(runId, async () => {
-      const existing = runMeta.get(runId);
-      if (!existing) {
+      if (!runMeta.has(runId)) {
         runMeta.set(runId, { conversationId: undefined, count: 0 });
       }
-      try {
-        return await fn();
-      } finally {
-        refreshMetaView();
-      }
+      return fn();
     });
   }
 
-  // Internal helper: drop the meta entry for `runId`. Caller must hold the
-  // per-run mutex; the "Locked" suffix documents this contract.
+  // Caller must hold the per-run mutex.
   function clearRunMetaLocked(runId: string): void {
     runMeta.delete(runId);
-    refreshMetaView();
-  }
-
-  function refreshPanel(): void {
-    if (panel) {
-      try { panel.update(); } catch { /* ignore */ }
-    }
   }
 
   function safeOn(event: string, handler: (event: LettaEvent, ctx: LettaEventHandlerContext) => void): void {
     try { disposers.push(letta.events.on(event, handler)); } catch { /* ignore */ }
-  }
-
-  // ── Panel ──
-  // The panel renders the most recently-active run, defined as the entry
-  // in runMeta with the highest dispatch count.
-  if (letta.capabilities?.ui?.panels && letta.ui) {
-    try {
-      panel = letta.ui.openPanel({
-        id: PANEL_ID,
-        order: 100,
-        render: () => {
-          // Read the cached meta view rather than iterating runMeta
-          // directly. The view is refreshed under the meta mutex on every
-          // mutation; sync panel reads see a snapshot at most one mutation
-          // stale. Closes race sweep 10 H-4 (lock-free runMeta reads in
-          // panel).
-          let best: string | null = null;
-          let bestCount = -1;
-          for (const { runId, meta } of latestMetaView) {
-            if (meta.count > bestCount) {
-              best = runId;
-              bestCount = meta.count;
-            }
-          }
-          return renderProgressPanel(best) ?? "No active workflow.";
-        },
-      });
-      disposers.push(() => { try { panel?.close(); } catch {} });
-    } catch { /* ignore */ }
   }
 
   // ── Tools ──
@@ -290,7 +221,6 @@ export default function activate(letta: LettaModContext): (() => void) {
         await withRunMetaFor(run.runId, async () => {
           runMeta.set(run.runId, { conversationId: ctx.conversation?.id, count: 0 });
         });
-        refreshPanel();
         const step = await stepInlineRun(run.runId);
         return { status: "success", runId: run.runId, step };
       },
@@ -326,31 +256,41 @@ export default function activate(letta: LettaModContext): (() => void) {
   if (letta.capabilities?.commands && letta.commands) {
     disposers.push(letta.commands.register({
       id: "flow",
-      description: "Dynamic Workflows: /flow [panel|new|save|list|run|delete|help] — manage multi-agent workflows.",
+      description: "Flows: /flow [status|new|save|list|run|delete|help] — manage multi-agent flows.",
       args: "[subcommand] [args...]",
       runWhenBusy: true,
       run: async (ctx: LettaCommandContext) => {
         const raw = normalizeCommandArgs(ctx.args);
         const tokens = raw ? raw.trim().split(/\s+/) : [];
-        const subcommand = tokens[0] ?? "panel";
+        const subcommand = tokens[0] ?? "status";
         const rest = tokens.slice(1).join(" ");
 
         switch (subcommand.toLowerCase()) {
-          case "panel":
           case "status": {
-            refreshPanel();
-            // Read the cached meta view rather than iterating runMeta
-            // directly. The view is refreshed under the meta mutex on every
-            // mutation.
-            let best: string | null = null;
-            let bestCount = -1;
-            for (const { runId, meta } of latestMetaView) {
-              if (meta.count > bestCount) {
-                best = runId;
-                bestCount = meta.count;
+            const conversationId = ctx.conversation?.id;
+            const activeRunId = await withMetaMutex(() => {
+              let best: string | null = null;
+              let bestCount = -1;
+              for (const [runId, meta] of runMeta.entries()) {
+                if (meta.conversationId === conversationId && meta.count > bestCount) {
+                  best = runId;
+                  bestCount = meta.count;
+                }
               }
+              return best;
+            });
+            if (!activeRunId) {
+              return { type: "output", output: "No active flow in this conversation." };
             }
-            return { type: "output", output: best ? `Workflow panel active. Run ID: ${best}` : "No active workflow." };
+            const run = loadRun(activeRunId);
+            if (!run) {
+              return { type: "output", output: `Flow run "${activeRunId}" is no longer available.` };
+            }
+            const phase = run.currentPhaseId ? `phase "${run.currentPhaseId}"` : "no active phase";
+            return {
+              type: "output",
+              output: `Flow "${run.workflow.name}" is ${run.status}; ${phase}. Run ID: ${run.runId}`,
+            };
           }
           case "help":
           case "h": {
@@ -382,7 +322,7 @@ export default function activate(letta: LettaModContext): (() => void) {
             const lines = [
               "Saved workflows:",
               ...entries.map(format),
-              "Bundled templates:",
+              "Built-in flows:",
               ...templates.map(format),
             ];
             return { type: "output", output: lines.join("\n") };
@@ -400,7 +340,6 @@ export default function activate(letta: LettaModContext): (() => void) {
             await withRunMetaFor(run.runId, async () => {
               runMeta.set(run.runId, { conversationId: ctx.conversation?.id, count: 0 });
             });
-            refreshPanel();
             const step = await stepInlineRun(run.runId);
             const prompt = buildExecutorPrompt(run.runId, workflow.name, step);
             if (!prompt) {
@@ -457,7 +396,6 @@ export default function activate(letta: LettaModContext): (() => void) {
           recordAgentCompleteLocked(marker.runId, marker.phaseId, marker.agentId, output);
         });
       }
-      refreshPanel();
     });
   }
 
@@ -551,15 +489,6 @@ export default function activate(letta: LettaModContext): (() => void) {
     });
   }
 
-  if (letta.capabilities?.events?.lifecycle) {
-    safeOn("conversation_open", () => {
-      // Do not auto-resume runs from other conversations. Each run is owned by
-      // the conversation that started it; cross-conversation crosstalk is avoided
-      // by checking conversation IDs in tool_end and turn_end handlers.
-      refreshPanel();
-    });
-  }
-
   return () => {
     for (const dispose of disposers.reverse()) {
       try { dispose(); } catch { /* ignore */ }
@@ -626,15 +555,16 @@ function formatStep(step: InlineStep | null): string {
 }
 
 function buildFlowHelp(): string {
-  return `Dynamic Workflows — /flow subcommands
+  return `Flows — /flow subcommands
 
-  /flow                    — show active workflow status / panel
+  /flow                    — show active flow status
+  /flow status             — show active flow status
   /flow help               — show this help
-  /flow new <task>          — generate a new workflow for a task
-  /flow save <name>        — reminder to save the generated workflow via flow_save
-  /flow list               — list saved workflows and bundled templates
-  /flow run <name>         — run a workflow in the current conversation
-  /flow delete <name>      — delete a saved workflow
+  /flow new <task>          — generate a new flow for a task
+  /flow save <name>        — reminder to save the generated flow via flow_save
+  /flow list               — list saved and built-in flows
+  /flow run <name>         — run a flow in the current conversation
+  /flow delete <name>      — delete a saved flow
 
 Workflows are Markdown files with YAML frontmatter. Example:
 

@@ -6955,18 +6955,6 @@ function generateId() {
 function generateRunId() {
   return `${Date.now()}-${generateId()}`;
 }
-function formatDuration(ms) {
-  if (ms === undefined || Number.isNaN(ms))
-    return "—";
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60)
-    return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60)
-    return `${minutes}m ${seconds % 60}s`;
-  const hours = Math.floor(minutes / 60);
-  return `${hours}h ${minutes % 60}m`;
-}
 function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -8173,47 +8161,6 @@ function stripMarkdownFences(text) {
   return trimmed;
 }
 
-// mods/lib/panel.ts
-function renderProgressPanel(runId, width = 100) {
-  if (!runId)
-    return "";
-  const run = loadRun(runId);
-  if (!run)
-    return "";
-  const lines = [];
-  const title = `workflows  [${run.workflow.name}]`;
-  const elapsed = Date.now() - Date.parse(run.startedAt);
-  const header = `${title}  ${run.status}  ${formatDuration(elapsed)}`;
-  lines.push(header);
-  for (const phase of run.workflow.phases) {
-    const isCurrent = run.currentPhaseId === phase.id;
-    const isCompleted = run.completedPhaseIds.includes(phase.id);
-    const progress = renderPhaseProgress(phase, run, width - 4);
-    const marker = isCompleted ? "✓" : isCurrent ? "▶" : " ";
-    lines.push(`  ${marker} ${phase.id} (${phase.type}) ${progress}`);
-  }
-  return lines;
-}
-function renderPhaseProgress(phase, run, width) {
-  if (!phase)
-    return "";
-  if (isFanOutPhase(phase)) {
-    const completed2 = run.completedAgents.filter((a) => a.phaseId === phase.id).length;
-    const total = phase.agents.length;
-    return progressBar(completed2, total, width);
-  }
-  const completed = run.completedPhaseIds.includes(phase.id);
-  return completed ? "done" : "pending";
-}
-function progressBar(completed, total, width) {
-  if (total === 0)
-    return "—";
-  const ratio = completed / total;
-  const filled = Math.max(0, Math.min(width, Math.round(ratio * width)));
-  const empty = Math.max(0, width - filled);
-  return `[${"█".repeat(filled)}${"░".repeat(empty)}] ${completed}/${total}`;
-}
-
 // mods/index.ts
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -8270,10 +8217,8 @@ function loadTemplate(templateDir, name) {
 }
 
 // mods/index.ts
-var PANEL_ID = "flows";
 function activate(letta) {
   const disposers = [];
-  let panel = null;
   const runMeta = new Map;
   const MAX_WORKFLOW_CONTINUATIONS = 20;
   const TEMPLATE_DIR = path4.resolve(import.meta.dirname, "../assets/built-in");
@@ -8284,65 +8229,20 @@ function activate(letta) {
     metaMutexChain.promise = next.then(() => {}, () => {});
     return next;
   }
-  let latestMetaView = [];
-  function refreshMetaView() {
-    metaMutexChain.promise = metaMutexChain.promise.then(() => {
-      latestMetaView = Array.from(runMeta.entries()).map(([runId, meta]) => ({ runId, meta }));
-    }, () => {
-      latestMetaView = Array.from(runMeta.entries()).map(([runId, meta]) => ({ runId, meta }));
-    });
-  }
   async function withRunMetaFor(runId, fn) {
     return withRunMutexFor(runId, async () => {
-      const existing = runMeta.get(runId);
-      if (!existing) {
+      if (!runMeta.has(runId)) {
         runMeta.set(runId, { conversationId: undefined, count: 0 });
       }
-      try {
-        return await fn();
-      } finally {
-        refreshMetaView();
-      }
+      return fn();
     });
   }
   function clearRunMetaLocked(runId) {
     runMeta.delete(runId);
-    refreshMetaView();
-  }
-  function refreshPanel() {
-    if (panel) {
-      try {
-        panel.update();
-      } catch {}
-    }
   }
   function safeOn(event, handler) {
     try {
       disposers.push(letta.events.on(event, handler));
-    } catch {}
-  }
-  if (letta.capabilities?.ui?.panels && letta.ui) {
-    try {
-      panel = letta.ui.openPanel({
-        id: PANEL_ID,
-        order: 100,
-        render: () => {
-          let best = null;
-          let bestCount = -1;
-          for (const { runId, meta } of latestMetaView) {
-            if (meta.count > bestCount) {
-              best = runId;
-              bestCount = meta.count;
-            }
-          }
-          return renderProgressPanel(best) ?? "No active workflow.";
-        }
-      });
-      disposers.push(() => {
-        try {
-          panel?.close();
-        } catch {}
-      });
     } catch {}
   }
   if (letta.capabilities?.tools && letta.tools) {
@@ -8493,7 +8393,6 @@ function activate(letta) {
         await withRunMetaFor(run.runId, async () => {
           runMeta.set(run.runId, { conversationId: ctx.conversation?.id, count: 0 });
         });
-        refreshPanel();
         const step = await stepInlineRun(run.runId);
         return { status: "success", runId: run.runId, step };
       }
@@ -8525,27 +8424,40 @@ function activate(letta) {
   if (letta.capabilities?.commands && letta.commands) {
     disposers.push(letta.commands.register({
       id: "flow",
-      description: "Dynamic Workflows: /flow [panel|new|save|list|run|delete|help] — manage multi-agent workflows.",
+      description: "Flows: /flow [status|new|save|list|run|delete|help] — manage multi-agent flows.",
       args: "[subcommand] [args...]",
       runWhenBusy: true,
       run: async (ctx) => {
         const raw = normalizeCommandArgs(ctx.args);
         const tokens = raw ? raw.trim().split(/\s+/) : [];
-        const subcommand = tokens[0] ?? "panel";
+        const subcommand = tokens[0] ?? "status";
         const rest = tokens.slice(1).join(" ");
         switch (subcommand.toLowerCase()) {
-          case "panel":
           case "status": {
-            refreshPanel();
-            let best = null;
-            let bestCount = -1;
-            for (const { runId, meta } of latestMetaView) {
-              if (meta.count > bestCount) {
-                best = runId;
-                bestCount = meta.count;
+            const conversationId = ctx.conversation?.id;
+            const activeRunId = await withMetaMutex(() => {
+              let best = null;
+              let bestCount = -1;
+              for (const [runId, meta] of runMeta.entries()) {
+                if (meta.conversationId === conversationId && meta.count > bestCount) {
+                  best = runId;
+                  bestCount = meta.count;
+                }
               }
+              return best;
+            });
+            if (!activeRunId) {
+              return { type: "output", output: "No active flow in this conversation." };
             }
-            return { type: "output", output: best ? `Workflow panel active. Run ID: ${best}` : "No active workflow." };
+            const run = loadRun(activeRunId);
+            if (!run) {
+              return { type: "output", output: `Flow run "${activeRunId}" is no longer available.` };
+            }
+            const phase = run.currentPhaseId ? `phase "${run.currentPhaseId}"` : "no active phase";
+            return {
+              type: "output",
+              output: `Flow "${run.workflow.name}" is ${run.status}; ${phase}. Run ID: ${run.runId}`
+            };
           }
           case "help":
           case "h": {
@@ -8581,7 +8493,7 @@ After /flow new generates a workflow, call the flow_save tool with name="<name>"
             const lines = [
               "Saved workflows:",
               ...entries.map(format),
-              "Bundled templates:",
+              "Built-in flows:",
               ...templates.map(format)
             ];
             return { type: "output", output: lines.join(`
@@ -8602,7 +8514,6 @@ Run a saved workflow or bundled template.` };
             await withRunMetaFor(run.runId, async () => {
               runMeta.set(run.runId, { conversationId: ctx.conversation?.id, count: 0 });
             });
-            refreshPanel();
             const step = await stepInlineRun(run.runId);
             const prompt = buildExecutorPrompt(run.runId, workflow.name, step);
             if (!prompt) {
@@ -8662,7 +8573,6 @@ ${buildFlowHelp()}` };
           recordAgentCompleteLocked(marker.runId, marker.phaseId, marker.agentId, output);
         });
       }
-      refreshPanel();
     });
   }
   if (letta.capabilities?.events?.turns) {
@@ -8729,11 +8639,6 @@ ${buildFlowHelp()}` };
         await sleep(waitMs);
         waited += waitMs;
       }
-    });
-  }
-  if (letta.capabilities?.events?.lifecycle) {
-    safeOn("conversation_open", () => {
-      refreshPanel();
     });
   }
   return () => {
@@ -8813,15 +8718,16 @@ ${step.agents?.map((a) => `  - ${a.id}: ${a.prompt.slice(0, 120)}...`).join(`
   return "Unknown step.";
 }
 function buildFlowHelp() {
-  return `Dynamic Workflows — /flow subcommands
+  return `Flows — /flow subcommands
 
-  /flow                    — show active workflow status / panel
+  /flow                    — show active flow status
+  /flow status             — show active flow status
   /flow help               — show this help
-  /flow new <task>          — generate a new workflow for a task
-  /flow save <name>        — reminder to save the generated workflow via flow_save
-  /flow list               — list saved workflows and bundled templates
-  /flow run <name>         — run a workflow in the current conversation
-  /flow delete <name>      — delete a saved workflow
+  /flow new <task>          — generate a new flow for a task
+  /flow save <name>        — reminder to save the generated flow via flow_save
+  /flow list               — list saved and built-in flows
+  /flow run <name>         — run a flow in the current conversation
+  /flow delete <name>      — delete a saved flow
 
 Workflows are Markdown files with YAML frontmatter. Example:
 

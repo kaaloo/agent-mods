@@ -93,7 +93,7 @@ so they are not re-discovered and re-prioritized in every sweep.
 | L-INPUT | `flow_run` inputs not sanitized | Accepted | Inputs are stored in `run.inputs` but are not used in any path, command, or prompt interpolation. Sanitization will be added if a future feature consumes them. |
 | L-COERCE | `String()` coercion on YAML fields | Accepted | Remaining `String()` calls are in `loadAgentResult` and similar display fields where equality checks reject mismatches. The fields are not used for path construction or command execution. |
 | I-STREAM | Silent `sendMessageStream` failures | Accepted | The fire-and-forget `sendPrompt` pattern is intentional. If the stream fails, the prompt is simply not delivered and the orchestrator will continue on the next `turn_end` poll. |
-| I-META | `latestMetaView` stale reads | Accepted | Panel rendering is intentionally asynchronous and best-effort. The worst case is a stale display for one render cycle. |
+| I-META | `latestMetaView` stale reads | Closed | The live panel and its cached `latestMetaView` were removed from v0.1 because background task completion notifications are not exposed as mod `tool_end` events. `/flow status` now reads current run state on demand. |
 | I-LOAD | `loadRun` agent directory walk without mutex | Accepted | The directory walk is best-effort. Try/catch blocks prevent crashes, and a transient miss self-corrects on the next poll. |
 | I-ERROR | Error messages include user input | Accepted | Tool return values are not public-facing logs; the risk is limited to display issues in the same conversation. |
 
