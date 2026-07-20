@@ -8708,7 +8708,7 @@ ${buildFlowHelp()}` };
       const waitMs = 4000;
       const maxWaitMs = 30000;
       let waited = 0;
-      while (waited <= maxWaitMs) {
+      while (true) {
         const refreshed = loadRun(currentRunId);
         if (!refreshed || refreshed.status !== "running")
           return;

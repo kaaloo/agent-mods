@@ -1,24 +1,24 @@
-# @kaaloo/dynamic-workflows
+# @kaaloo/flows
 
 A Letta-native mod for authoring and running multi-agent dynamic workflows.
 
 ## What it does
 
-Dynamic Workflows lets you describe a task as a JSON workflow, then run it across multiple parallel subagents with a state machine that tracks progress, synchronizes barriers, and synthesizes results.
+Flows lets you describe a task as a JSON workflow, then run it across multiple parallel subagents with a state machine that tracks progress, synchronizes barriers, and synthesizes results.
 
 ## Install
 
 From the package directory:
 
 ```bash
-cd packages/dynamic-workflows
+cd packages/flows
 npm install
 ```
 
 Then install the mod into Letta Code:
 
 ```bash
-letta install ./packages/dynamic-workflows
+letta install ./packages/flows
 ```
 
 Reload mods in Letta Code:

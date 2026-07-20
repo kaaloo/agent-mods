@@ -1,5 +1,5 @@
 {
-  "name": "@kaaloo/dynamic-workflows",
+  "name": "@kaaloo/flows",
   "version": "0.1.0",
   "description": "A Letta-native mod for authoring and running multi-agent dynamic workflows.",
   "author": "Luis Arias",
@@ -9,14 +9,14 @@
     "letta-package",
     "letta-mod",
     "letta-code",
-    "dynamic-workflows",
+    "flows",
     "multi-agent",
     "orchestration"
   ],
   "repository": {
     "type": "git",
     "url": "https://github.com/kaaloo/agent-mods.git",
-    "directory": "packages/dynamic-workflows"
+    "directory": "packages/flows"
   },
   "files": [
     "README.md",
@@ -28,7 +28,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check": "npm run build && npm run typecheck && npm run test",
-    "verify:bundle": "bun build mods/index.ts --target node --outfile /tmp/dynamic-workflows-bundle-drift-check.mjs && cmp -s /tmp/dynamic-workflows-bundle-drift-check.mjs mods/index.bundled.mjs && echo 'bundle matches source' || (echo 'BUNDLE DRIFT: mods/index.bundled.mjs does not match source — run npm run build and commit the bundle' && exit 1)",
+    "verify:bundle": "bun build mods/index.ts --target node --outfile /tmp/flows-bundle-drift-check.mjs && cmp -s /tmp/flows-bundle-drift-check.mjs mods/index.bundled.mjs && echo 'bundle matches source' || (echo 'BUNDLE DRIFT: mods/index.bundled.mjs does not match source — run npm run build and commit the bundle' && exit 1)",
     "verify": "npm run verify:bundle && npm run typecheck && npm run test"
   },
   "devDependencies": {

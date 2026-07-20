@@ -1,6 +1,6 @@
-# Dynamic Workflows Mod — Implementation Plan
+# Flows Mod — Implementation Plan
 
-**Package:** `@kaaloo/dynamic-workflows`  
+**Package:** `@kaaloo/flows`  
 **Repo:** `kaaloo/agent-mods`  
 **Target engine:** Letta Code `>=0.28.4`  
 **Status:** Prototype plan, v0.1
@@ -19,7 +19,7 @@
 ## 2. Package layout
 
 ```text
-packages/dynamic-workflows/
+packages/flows/
 ├── package.json
 ├── package-lock.json
 ├── README.md
@@ -51,7 +51,7 @@ packages/dynamic-workflows/
 
 ```json
 {
-  "name": "@kaaloo/dynamic-workflows",
+  "name": "@kaaloo/flows",
   "version": "0.1.0",
   "keywords": ["letta-package", "letta-mod"],
   "letta": {
@@ -220,7 +220,7 @@ Why inline first? It is debuggable. The model's own tool-calling loop handles th
 
 Two files:
 
-- `~/.letta/mods/dynamic-workflows.state.json` — library index, ultracode toggle, run registry.
+- `~/.letta/mods/flows.state.json` — library index, ultracode toggle, run registry.
 - `~/.letta/workflows/runs/<run_id>/` — per-run state:
   - `plan.json` — frozen workflow definition
   - `phases/<phase_id>/<agent_id>.json` — agent prompt, output, status, tokens
@@ -273,7 +273,7 @@ Agent-generated mods are a documented Letta pattern (see [docs.letta.com/letta-a
 When the time comes, there are two designs to consider:
 
 1. **Mod builder (recommended for reusable logic).** A command or tool generates a separate mod file under `~/.letta/mods/generated/`, validates/type-checks it, writes it atomically, and asks the user for approval before they run `/reload`.
-2. **Conditional registration (recommended for runtime variation).** The single `dynamic-workflows` mod registers and configures capabilities dynamically without generating source code.
+2. **Conditional registration (recommended for runtime variation).** The single `flows` mod registers and configures capabilities dynamically without generating source code.
 
 Guardrails for generated mods:
 
@@ -296,7 +296,7 @@ Guardrails for generated mods:
 Run locally:
 
 ```bash
-cd packages/dynamic-workflows
+cd packages/flows
 npm install
 npm run typecheck
 npm test

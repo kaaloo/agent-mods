@@ -1,4 +1,4 @@
-# Known issues — dynamic-workflows mod
+# Known issues — flows mod
 
 Notes on harness-level quirks and mod-side workarounds. Each entry records
 the symptom, the trigger, and the workaround so future contributors don't
@@ -11,7 +11,7 @@ parallel `Agent` calls is auto-denied on the first call with:
 
 > Agent tool missing required parameter: description
 
-**Trigger:** When the dynamic-workflows orchestrator builds the dispatch
+**Trigger:** When the flows orchestrator builds the dispatch
 instructions for a fan-out phase, the model receives a list of Agent prompts
 to call. On Letta Code ≥ 0.27.x, the harness rejects any `Agent` tool
 invocation that omits the `description` parameter. Subsequent calls succeed

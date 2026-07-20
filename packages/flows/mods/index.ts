@@ -515,11 +515,15 @@ export default function activate(letta: LettaModContext): (() => void) {
       // Poll the run inline until it is ready to advance. The orchestrator
       // never asks the model to call flow_status during normal execution; the
       // mod drives the loop by reading the run state directly.
+      // Gemini review fix: the previous `while (waited <= maxWaitMs)` loop
+      // terminated before the timeout check inside the loop body could fire,
+      // so the "still waiting" message was unreachable. The loop now runs
+      // unconditionally and bails on the timeout check before sleeping.
       const waitMs = 4000;
       const maxWaitMs = 30000;
       let waited = 0;
 
-      while (waited <= maxWaitMs) {
+      while (true) {
         const refreshed = loadRun(currentRunId);
         if (!refreshed || refreshed.status !== "running") return;
 

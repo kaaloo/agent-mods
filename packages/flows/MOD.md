@@ -1,5 +1,5 @@
 ---
-name: "@kaaloo/dynamic-workflows"
+name: "@kaaloo/flows"
 description: "A Letta-native mod for authoring and running multi-agent flows."
 ---
 
