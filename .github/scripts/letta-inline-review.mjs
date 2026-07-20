@@ -13,8 +13,8 @@
 //
 // Required env:
 //   LETTA_API_KEY
-//   LETTA_AGENT_ID
-//   LETTA_MODEL                 ("auto" or a full Letta model handle)
+//   LETTA_REVIEW_AGENT
+//   LETTA_REVIEW_MODEL          ("auto" or a full Letta model handle)
 //   GITHUB_TOKEN
 //   GITHUB_REPOSITORY           ("owner/repo")
 //   PR_NUMBER
@@ -29,7 +29,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
-import { sendAgentMessage } from './lib/letta-client.mjs';
+import Letta from '@letta-ai/letta-client';
 import { parsePatchAnchors } from './lib/github-anchors.mjs';
 import { postPullRequestReview, postIssueComment, appendStepSummary } from './lib/review-posting.mjs';
 import { isSeverity, renderFindingBody, renderReviewSummary } from './lib/severity.mjs';
@@ -76,6 +76,16 @@ function buildUserMessage({ title, author, baseRef, headRef, diff, prUrl }) {
   ].join('\n');
 }
 
+function extractAssistantText(messages) {
+  const content = messages.at(-1)?.content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text)
+    .join('\n');
+}
+
 function extractJsonBlock(text) {
   if (!text) return null;
   // Find the LAST fenced ```json ... ``` block. If the model emitted
@@ -103,7 +113,7 @@ function parseFindings(jsonText) {
     return { findings: [], parseError: 'Top-level JSON value is not an array.' };
   }
   const findings = [];
-  for (const [i, item] of parsed.entries()) {
+  for (const item of parsed) {
     if (!item || typeof item !== 'object') continue;
     const path = typeof item.path === 'string' ? item.path : null;
     const line = parseLineNumber(item.line);
@@ -198,8 +208,8 @@ async function fetchPullRequestDiff({ token, owner, repo, pullNumber }) {
 async function main() {
   const token = required('GITHUB_TOKEN');
   const apiKey = required('LETTA_API_KEY');
-  const agentId = required('LETTA_AGENT_ID');
-  const model = required('LETTA_MODEL');
+  const agentId = required('LETTA_REVIEW_AGENT');
+  const model = required('LETTA_REVIEW_MODEL');
   const [owner, repo] = required('GITHUB_REPOSITORY').split('/');
   const pullNumber = asInt(process.env.PR_NUMBER, null);
   if (!pullNumber) throw new Error('PR_NUMBER must be an integer.');
@@ -235,14 +245,19 @@ async function main() {
 
   appendStepSummary(`Calling Letta agent \`${agentId}\` with model \`${model}\`...\n`);
 
-  const { text } = await sendAgentMessage({
-    agentId,
-    userMessage,
-    systemPrompt,
+  const client = new Letta({
     apiKey,
-    model,
-    baseUrl: process.env.LETTA_BASE_URL,
+    timeout: 120_000,
+    ...(process.env.LETTA_BASE_URL ? { baseURL: process.env.LETTA_BASE_URL } : {}),
   });
+  const response = await client.agents.messages.create(agentId, {
+    input: userMessage,
+    override_system: systemPrompt,
+    streaming: false,
+    include_return_message_types: ['assistant_message'],
+    ...(model !== 'auto' ? { override_model: model } : {}),
+  });
+  const text = extractAssistantText(response.messages);
 
   const jsonText = extractJsonBlock(text);
   const { findings: rawFindings, parseError } = parseFindings(jsonText);

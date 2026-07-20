@@ -6,7 +6,7 @@
 # editing the workflow YAML.
 #
 # Model: the inline workflow defaults to auto, which uses the agent's
-# configured model. LETTA_INLINE_MODEL may specify a full Letta model
+# configured model. LETTA_REVIEW_MODEL may specify a full Letta model
 # handle when a per-call override is required.
 ---
 

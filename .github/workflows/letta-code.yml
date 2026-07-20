@@ -13,12 +13,11 @@ name: Letta Code
 #      findings under a strict JSON schema, validates the anchors,
 #      and posts a single PR review with line-anchored comments.
 #
-# Both jobs share the same LETTA_AGENT_ID so the agent's long-term
-# memory and the repository's learned conventions stay consistent
-# across surfaces. Both jobs default to `auto`. The conversational
-# action resolves that alias itself; the inline review shim treats it
-# as agent-default selection and omits override_model. Set
-# LETTA_INLINE_MODEL to a full Letta model handle to override it.
+# Both jobs share LETTA_REVIEW_AGENT so the agent's long-term memory
+# and the repository's learned conventions stay consistent across
+# surfaces. The inline review defaults to `auto`, which uses the
+# agent's configured model. Set LETTA_REVIEW_MODEL to a full Letta
+# model handle to override it.
 #
 # See .github/prompts/letta-inline-review.system.md for the review
 # contract and .github/scripts/letta-inline-review.mjs for the
@@ -58,9 +57,9 @@ jobs:
         with:
           letta_api_key: ${{ secrets.LETTA_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          agent_id: ${{ vars.LETTA_AGENT_ID }}
+          agent_id: ${{ vars.LETTA_REVIEW_AGENT }}
           model: ${{ vars.LETTA_MODEL || 'auto' }}
-          letta_args: --agent ${{ vars.LETTA_AGENT_ID }}
+          letta_args: --agent ${{ vars.LETTA_REVIEW_AGENT }}
 
   letta-inline-review:
     if: |
@@ -74,11 +73,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install review dependencies
+        run: npm ci --prefix .github/scripts --ignore-scripts
+
       - name: Inline review
         env:
           LETTA_API_KEY: ${{ secrets.LETTA_API_KEY }}
-          LETTA_AGENT_ID: ${{ vars.LETTA_AGENT_ID }}
-          LETTA_MODEL: ${{ vars.LETTA_INLINE_MODEL || 'auto' }}
+          LETTA_REVIEW_AGENT: ${{ vars.LETTA_REVIEW_AGENT }}
+          LETTA_REVIEW_MODEL: ${{ vars.LETTA_REVIEW_MODEL || 'auto' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
