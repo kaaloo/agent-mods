@@ -25,24 +25,44 @@
 //   LETTA_BASE_URL              (override the Letta API base URL)
 //   MAX_FINDINGS                (default 20)
 
+import { execFileSync } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 import Letta from '@letta-ai/letta-client';
 import { parsePatchAnchors } from './lib/github-anchors.mjs';
-import { postPullRequestReview, postIssueComment, appendStepSummary } from './lib/review-posting.mjs';
 import { isSeverity, renderFindingBody, renderReviewSummary } from './lib/severity.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROMPT_PATH = resolve(__dirname, '..', 'prompts', 'letta-inline-review.system.md');
 
 const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+const MAX_GH_OUTPUT_BYTES = 20 * 1024 * 1024;
 
 function required(name) {
   const v = process.env[name];
   if (!v) throw new Error(`Missing required env var: ${name}`);
   return v;
+}
+
+function ghApi(endpoint, { method = 'GET', headers = [], body } = {}) {
+  const args = ['api', endpoint, '--method', method];
+  for (const header of headers) args.push('--header', header);
+  if (body !== undefined) args.push('--input', '-');
+
+  return execFileSync('gh', args, {
+    encoding: 'utf8',
+    input: body === undefined ? undefined : JSON.stringify(body),
+    maxBuffer: MAX_GH_OUTPUT_BYTES,
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+}
+
+function appendStepSummary(markdown) {
+  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+  if (summaryPath) appendFileSync(summaryPath, markdown + '\n', 'utf8');
 }
 
 function asBool(v, fallback = false) {
@@ -60,9 +80,9 @@ function diffForPrompt(patch, maxChars = 100_000) {
   return patch.slice(0, maxChars) + '\n... (diff truncated to fit prompt budget)';
 }
 
-function buildUserMessage({ title, author, baseRef, headRef, diff, prUrl }) {
+function buildUserMessage({ repository, pullNumber, title, author, baseRef, headRef, diff, prUrl }) {
   return [
-    `Review pull request #${required('PR_NUMBER')} on ${required('GITHUB_REPOSITORY')}.`,
+    `Review pull request #${pullNumber} on ${repository}.`,
     `Title: ${title}`,
     `Author: ${author}`,
     `Base: ${baseRef}  Head: ${headRef}`,
@@ -171,63 +191,37 @@ function capFindings(findings, max) {
     .slice(0, max);
 }
 
-async function fetchPullRequest({ token, owner, repo, pullNumber }) {
-  const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`;
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'letta-inline-review',
-    },
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`GitHub PR GET ${response.status} ${response.statusText}: ${text.slice(0, 500)}`);
-  }
-  return JSON.parse(text);
+function fetchPullRequest(repository, pullNumber) {
+  return JSON.parse(ghApi(`repos/${repository}/pulls/${pullNumber}`));
 }
 
-async function fetchPullRequestDiff({ token, owner, repo, pullNumber }) {
-  const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`;
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github.diff',
-      'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'letta-inline-review',
-    },
+function fetchPullRequestDiff(repository, pullNumber) {
+  return ghApi(`repos/${repository}/pulls/${pullNumber}`, {
+    headers: ['Accept: application/vnd.github.diff'],
   });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`GitHub PR diff GET ${response.status} ${response.statusText}: ${text.slice(0, 500)}`);
-  }
-  return text;
 }
 
 async function main() {
-  const token = required('GITHUB_TOKEN');
+  required('GITHUB_TOKEN');
   const apiKey = required('LETTA_API_KEY');
   const agentId = required('LETTA_REVIEW_AGENT');
   const model = required('LETTA_REVIEW_MODEL');
-  const [owner, repo] = required('GITHUB_REPOSITORY').split('/');
+  const repository = required('GITHUB_REPOSITORY');
   const pullNumber = asInt(process.env.PR_NUMBER, null);
   if (!pullNumber) throw new Error('PR_NUMBER must be an integer.');
   const headSha = required('PR_HEAD_SHA');
   const baseRef = process.env.PR_BASE_REF ?? 'main';
   const headRef = process.env.PR_HEAD_REF ?? 'HEAD';
-  const prUrl = process.env.PR_URL ?? `https://github.com/${owner}/repo/pull/${pullNumber}`;
+  const prUrl = process.env.PR_URL ?? `https://github.com/${repository}/pull/${pullNumber}`;
   const dryRun = asBool(process.env.DRY_RUN, false);
   const maxFindings = asInt(process.env.MAX_FINDINGS, 20);
 
   const systemPrompt = await readFile(PROMPT_PATH, 'utf8');
 
-  appendStepSummary(`### Letta Code inline review\n\nFetching PR #${pullNumber} from ${owner}/${repo} @ ${headSha.slice(0, 7)}...\n`);
+  appendStepSummary(`### Letta Code inline review\n\nFetching PR #${pullNumber} from ${repository} @ ${headSha.slice(0, 7)}...\n`);
 
-  const [pr, patch] = await Promise.all([
-    fetchPullRequest({ token, owner, repo, pullNumber }),
-    fetchPullRequestDiff({ token, owner, repo, pullNumber }),
-  ]);
+  const pr = fetchPullRequest(repository, pullNumber);
+  const patch = fetchPullRequestDiff(repository, pullNumber);
   if (!patch.trim()) {
     appendStepSummary('_No patch content in PR response. The PR may be too large to diff, or consist entirely of binary changes. Skipping inline review._\n');
     return;
@@ -235,6 +229,8 @@ async function main() {
 
   const anchors = parsePatchAnchors(patch);
   const userMessage = buildUserMessage({
+    repository,
+    pullNumber,
     title: pr.title ?? '',
     author: pr.user?.login ?? 'unknown',
     baseRef,
@@ -305,26 +301,22 @@ async function main() {
   if (comments.length === 0) {
     // No findings: post a single top-level comment so the author
     // sees that the review ran.
-    await postIssueComment({
-      token,
-      owner,
-      repo,
-      issueNumber: pullNumber,
-      body: `${reviewBody}\n\n<sub>Commit: \`${headSha.slice(0, 7)}\`</sub>`,
+    ghApi(`repos/${repository}/issues/${pullNumber}/comments`, {
+      method: 'POST',
+      body: { body: `${reviewBody}\n\n<sub>Commit: \`${headSha.slice(0, 7)}\`</sub>` },
     });
     appendStepSummary('Posted no-issues comment.\n');
     return;
   }
 
-  await postPullRequestReview({
-    token,
-    owner,
-    repo,
-    pullNumber,
-    body: reviewBody,
-    commitId: headSha,
-    comments,
-    event: 'COMMENT',
+  ghApi(`repos/${repository}/pulls/${pullNumber}/reviews`, {
+    method: 'POST',
+    body: {
+      commit_id: headSha,
+      body: reviewBody,
+      event: 'COMMENT',
+      comments,
+    },
   });
   appendStepSummary(`Posted PR review with ${comments.length} inline comment${comments.length === 1 ? '' : 's'}.\n`);
 }
