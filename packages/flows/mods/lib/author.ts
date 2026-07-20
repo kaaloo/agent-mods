@@ -52,7 +52,7 @@ Rules:
 - Every fan-out phase must have at least one agent.
 - Every barrier phase must have a non-empty "depends_on" array referencing earlier phase ids.
 - Agent prompts should be self-contained and concrete.
-- Model handles are optional; omit to use the default model.
+- Do not include a model field. Every subagent first tries the current conversation model, with Auto as the runtime fallback.
 - Keep the workflow small and debuggable for a first run.
 - Use the Markdown body below the frontmatter for descriptive content about the workflow.
 

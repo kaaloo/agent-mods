@@ -4,7 +4,13 @@
 export interface ModConversationHandle {
   id?: string;
   fork?: (options?: { hidden?: boolean }) => Promise<ModConversationHandle>;
-  sendMessageStream?: (messages: Array<{ role: string; content: string }>) => Promise<AsyncIterable<unknown>>;
+}
+
+export interface ModModelContext {
+  id: string;
+  displayName?: string;
+  provider?: string;
+  reasoningEffort?: string | null;
 }
 
 export interface LettaToolContext {
@@ -13,6 +19,7 @@ export interface LettaToolContext {
   workingDirectory?: string;
   conversation?: ModConversationHandle;
   agent?: { id?: string; name?: string | null };
+  model?: ModModelContext;
   [key: string]: unknown;
 }
 
@@ -31,6 +38,7 @@ export interface LettaCommandContext {
   workingDirectory?: string;
   conversation?: ModConversationHandle;
   agent?: { id?: string; name?: string | null };
+  model?: ModModelContext;
   [key: string]: unknown;
 }
 
@@ -61,6 +69,7 @@ export interface LettaEventHandlerContext {
   workingDirectory?: string;
   conversation?: ModConversationHandle;
   agent?: { id?: string; name?: string | null };
+  model?: ModModelContext;
   [key: string]: unknown;
 }
 
@@ -85,7 +94,7 @@ export interface LettaModContext {
     register: (command: LettaCommandDefinition) => (() => void);
   };
   events: {
-    on: (event: string, handler: (event: LettaEvent, ctx: LettaEventHandlerContext) => void) => (() => void);
+    on: (event: string, handler: (event: LettaEvent, ctx: LettaEventHandlerContext) => unknown) => (() => void);
   };
   permissions?: {
     register: (permission: unknown) => (() => void);

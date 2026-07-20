@@ -21,7 +21,6 @@ export type Phase = FanOutPhase | BarrierPhase;
 export interface FanOutPhase {
   id: string;
   type: "fan-out";
-  model?: string;
   concurrency?: number;
   agents: AgentTask[];
 }
@@ -30,7 +29,6 @@ export interface BarrierPhase {
   id: string;
   type: "barrier";
   depends_on: string[];
-  model?: string;
   prompt: string;
 }
 
@@ -89,6 +87,13 @@ export function validateWorkflow(value: unknown): { workflow?: WorkflowDefinitio
         errors.push({ path: `phases[${i}].id`, message: `Duplicate phase id "${id}".` });
       } else {
         phaseIds.set(id, i);
+      }
+
+      if (p.model !== undefined) {
+        errors.push({
+          path: `phases[${i}].model`,
+          message: "Per-phase model overrides are not supported; the flow runtime tries the current conversation model and falls back to Auto.",
+        });
       }
 
       const type = typeof p.type === "string" ? p.type : "";

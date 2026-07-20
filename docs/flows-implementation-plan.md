@@ -59,8 +59,7 @@ packages/flows/
     "capabilities": [
       "tools",
       "commands",
-      "events.tools",
-      "events.turns"
+      "events.tools"
     ],
     "engines": {
       "lettaCodeCli": ">=0.28.4"
@@ -93,7 +92,6 @@ type Phase = FanOutPhase | BarrierPhase;
 interface FanOutPhase {
   id: string;
   type: "fan-out";
-  model?: string;            // e.g. "anthropic/claude-sonnet-4-6"
   concurrency?: number;      // per-phase override
   agents: Array<{
     id: string;
@@ -106,7 +104,6 @@ interface BarrierPhase {
   id: string;
   type: "barrier";
   depends_on: string[];      // phase ids to wait for
-  model?: string;
   prompt: string;            // prompt with access to prior phase outputs
 }
 ```
@@ -115,6 +112,7 @@ Validation rules:
 - Phase IDs are unique.
 - `depends_on` resolves to existing phases.
 - No cycles (v0.1 only allows linear fan-out → barrier).
+- Per-phase `model` overrides are rejected. Every Agent call first tries the `ctx.model.id` captured from the conversation that starts the run, then retries once with Auto if that model cannot launch.
 - `max_concurrent` defaults to `4` and is capped by the global background task ceiling.
 
 Example:
@@ -175,25 +173,23 @@ then synthesize the results.
 
 | Event | Use |
 |---|---|
-| `tool_end` | Route synchronous `Agent` tool outputs that include a flow marker. |
-| `turn_end` | Poll durable agent report files, advance ready phases, and continue the orchestrator. |
+| `tool_end` | Persist foreground `Agent` outputs and append the next phase to the final tool result so the flow continues in the same CLI-owned turn. |
 
 ---
 
 ## 6. Inline execution mode (v0.1)
 
-The model is the orchestrator. The mod is the state machine and dispatcher.
+The model is the orchestrator. The mod is the state machine and dispatcher. Agent calls use `run_in_background: false`; fan-out calls are emitted together so they execute concurrently without `TaskOutput` polling.
 
 ```text
 user:   /flow run code-audit
 mod:    creates run_id, persists plan.md, returns first-phase instructions
-model:  Agent({subagent_type: "general-purpose", prompt: "Scan src/ for race conditions."})
-        Agent({subagent_type: "general-purpose", prompt: "Scan src/ for null dereference risks."})
-        Agent({subagent_type: "general-purpose", prompt: "Scan src/ for injection vectors."})
-mod:    tool_end fires for each; when all agents in phase complete, mark phase done
-model:  flow_status(run_id) (orchestrator polls internally; model does not need to call it)
-mod:    turn_end polls the run inline until ready; returns barrier phase instructions
-model:  Agent({subagent_type: "general-purpose", prompt: "Merge findings..."})
+model:  Agent({subagent_type: "general-purpose", prompt: "Scan src/ for race conditions.", run_in_background: false})
+        Agent({subagent_type: "general-purpose", prompt: "Scan src/ for null dereference risks.", run_in_background: false})
+        Agent({subagent_type: "general-purpose", prompt: "Scan src/ for injection vectors.", run_in_background: false})
+mod:    tool_end persists each result; the final result marks the phase done and carries barrier instructions
+model:  receives the continuation in the same turn without polling
+model:  Agent({subagent_type: "general-purpose", prompt: "Merge findings...", run_in_background: false})
 mod:    on completion, writes result.md and marks run complete
 ```
 
@@ -239,7 +235,6 @@ All writes are atomic: write to a temp file, then rename.
 ### v0.3 — Advanced patterns
 
 - Phase types: `pipeline`, `tournament`, `route`, `loop`.
-- Per-phase model routing.
 - Adversarial verification pattern.
 - Skill-distributed workflow templates.
 

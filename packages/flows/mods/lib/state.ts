@@ -160,6 +160,9 @@ export interface RunState {
   updatedAt: string;
   conversationId?: string;
   workingDirectory?: string;
+  // Preferred model handle active in the parent conversation when the run
+  // starts. Flow subagents try this first and fall back to Auto if unavailable.
+  model?: string;
   // The agent ID under which this run's files live. Captured at createRun
   // time so subsequent reads/writes resolve to a stable directory even if the
   // runtime agent ID flips between event handlers. Validated via
@@ -448,12 +451,21 @@ export function readRunResult(runId: string, runAgentId?: string): string | null
   return readTextFile(getRunResultPath(runId, runAgentId));
 }
 
-export async function createRun(workflow: WorkflowDefinition, inputs: Record<string, string> = {}, conversationId?: string, workingDirectory?: string): Promise<RunState> {
+export async function createRun(
+  workflow: WorkflowDefinition,
+  inputs: Record<string, string> = {},
+  conversationId?: string,
+  workingDirectory?: string,
+  model?: string,
+  ownerAgentId?: string,
+): Promise<RunState> {
   const runId = generateRunId();
   const firstPhase = workflow.phases[0] ?? null;
-  // Pin the agent ID at creation so subsequent reads/writes resolve to a
-  // stable directory even if the runtime agent ID flips between events.
-  const currentAgentId = getAgentId();
+  // Invocation context is authoritative. Process-level LETTA_AGENT_ID can
+  // identify a local backend projection rather than the conversation agent.
+  const currentAgentId = ownerAgentId && isSafeIdentifier(ownerAgentId)
+    ? ownerAgentId
+    : getAgentId();
   const run: RunState = {
     runId,
     workflow,
@@ -469,6 +481,7 @@ export async function createRun(workflow: WorkflowDefinition, inputs: Record<str
     updatedAt: new Date().toISOString(),
     conversationId,
     workingDirectory: sanitizeWorkingDirectory(workingDirectory),
+    model: typeof model === "string" && model.trim().length > 0 ? model.trim() : undefined,
     agentId: currentAgentId,
   };
   return withRunMutexFor(runId, () => {
@@ -609,6 +622,7 @@ function tryLoadRunFromAgent(runId: string, runAgentId: string): RunState | null
       updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : new Date().toISOString(),
       conversationId: typeof data.conversationId === "string" ? data.conversationId : undefined,
       workingDirectory: sanitizeWorkingDirectory(typeof data.workingDirectory === "string" ? data.workingDirectory : undefined),
+      model: typeof data.model === "string" && data.model.trim().length > 0 ? data.model.trim() : undefined,
       agentId: runAgentId,
       error: typeof data.error === "string" ? data.error : undefined,
     };

@@ -44,8 +44,7 @@
     "capabilities": [
       "tools",
       "commands",
-      "events.tools",
-      "events.turns"
+      "events.tools"
     ],
     "engines": {
       "lettaCodeCli": ">=0.28.4"

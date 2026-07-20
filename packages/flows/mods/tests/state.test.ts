@@ -19,6 +19,7 @@ import {
   readRunAgentOutput,
 } from "../lib/state.ts";
 import { WORKFLOW_VERSION, type WorkflowDefinition } from "../lib/schema.ts";
+import { stepInlineRun } from "../lib/runner-inline.ts";
 
 let originalLettaHome: string | undefined;
 let tempDir: string;
@@ -111,15 +112,52 @@ describe("library", () => {
 });
 
 describe("runs", () => {
-  test("creates a run with checkpoint", async () => {
-    const run = await createRun(sampleWorkflow);
+  test("creates a run with checkpoint and parent model", async () => {
+    const run = await createRun(
+      sampleWorkflow,
+      {},
+      "conversation-1",
+      "/tmp/project",
+      "openai/gpt-5.6-sol",
+      "agent-owner0001",
+    );
     expect(run.runId).toBeTruthy();
     expect(run.status).toBe("running");
     expect(run.currentPhaseId).toBe("scan");
+    expect(run.model).toBe("openai/gpt-5.6-sol");
+    expect(run.agentId).toBe("agent-owner0001");
 
     const reloaded = loadRun(run.runId);
     expect(reloaded?.runId).toBe(run.runId);
+    expect(reloaded?.model).toBe("openai/gpt-5.6-sol");
+    expect(reloaded?.agentId).toBe("agent-owner0001");
     expect(getRunDir(run.runId)).toContain(tempDir);
+  });
+
+  test("dispatches every agent with the parent conversation model", async () => {
+    const run = await createRun(sampleWorkflow, {}, "conversation-1", "/tmp/project", "openai/gpt-5.6-sol");
+    const step = await stepInlineRun(run.runId);
+    expect(step?.type).toBe("dispatch");
+    if (!step || step.type !== "dispatch") return;
+    expect(step.agents).toHaveLength(1);
+    expect(step.agents?.[0]?.model).toBe("openai/gpt-5.6-sol");
+    expect(step.agents?.[0]?.runInBackground).toBe(false);
+    expect(step.agents?.[0]?.prompt).toContain("Return your complete findings in the Agent tool result");
+    expect(step.agents?.[0]?.prompt).not.toContain("When you are done, write");
+    expect(step.instructions).toContain("together in one response so they run in parallel");
+    expect(step.instructions).toContain("Set run_in_background to false");
+    expect(step.instructions).toContain("never call TaskOutput");
+    expect(step.instructions).toContain('First use model "openai/gpt-5.6-sol"');
+    expect(step.instructions).toContain("retry once with the model argument omitted so Letta uses Auto");
+  });
+
+  test("uses Auto when the parent conversation model is unavailable", async () => {
+    const run = await createRun(sampleWorkflow, {}, "conversation-1", "/tmp/project");
+    const step = await stepInlineRun(run.runId);
+    expect(step?.type).toBe("dispatch");
+    if (!step || step.type !== "dispatch") return;
+    expect(step.agents?.[0]?.model).toBeUndefined();
+    expect(step.instructions).toContain("Use Auto by omitting the Agent model argument");
   });
 
   test("saves and loads agent result", async () => {

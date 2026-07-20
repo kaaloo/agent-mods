@@ -7017,6 +7017,12 @@ function validateWorkflow(value) {
       } else {
         phaseIds.set(id, i);
       }
+      if (p.model !== undefined) {
+        errors.push({
+          path: `phases[${i}].model`,
+          message: "Per-phase model overrides are not supported; the flow runtime tries the current conversation model and falls back to Auto."
+        });
+      }
       const type = typeof p.type === "string" ? p.type : "";
       if (type === "fan-out") {
         if (!Array.isArray(p.agents) || p.agents.length === 0) {
@@ -7566,10 +7572,10 @@ function readRunAgentOutput(runId, phaseId, agentId, runAgentId) {
 function readRunResult(runId, runAgentId) {
   return readTextFile(getRunResultPath(runId, runAgentId));
 }
-async function createRun(workflow, inputs = {}, conversationId, workingDirectory) {
+async function createRun(workflow, inputs = {}, conversationId, workingDirectory, model, ownerAgentId) {
   const runId = generateRunId();
   const firstPhase = workflow.phases[0] ?? null;
-  const currentAgentId = getAgentId();
+  const currentAgentId = ownerAgentId && isSafeIdentifier(ownerAgentId) ? ownerAgentId : getAgentId();
   const run = {
     runId,
     workflow,
@@ -7585,6 +7591,7 @@ async function createRun(workflow, inputs = {}, conversationId, workingDirectory
     updatedAt: new Date().toISOString(),
     conversationId,
     workingDirectory: sanitizeWorkingDirectory(workingDirectory),
+    model: typeof model === "string" && model.trim().length > 0 ? model.trim() : undefined,
     agentId: currentAgentId
   };
   return withRunMutexFor(runId, () => {
@@ -7698,6 +7705,7 @@ function tryLoadRunFromAgent(runId, runAgentId) {
       updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : new Date().toISOString(),
       conversationId: typeof data.conversationId === "string" ? data.conversationId : undefined,
       workingDirectory: sanitizeWorkingDirectory(typeof data.workingDirectory === "string" ? data.workingDirectory : undefined),
+      model: typeof data.model === "string" && data.model.trim().length > 0 ? data.model.trim() : undefined,
       agentId: runAgentId,
       error: typeof data.error === "string" ? data.error : undefined
     };
@@ -7799,6 +7807,12 @@ function sanitizePromptField(value) {
   let cleaned = value.replace(/[\x00-\x1F\x7F\u0085\u200B-\u200F\u2028\u2029\u202E\uFEFF]/g, "");
   cleaned = cleaned.replace(/\[FLOW_AGENT[^\]]*\]/g, "[FLOW_AGENT_REDACTED]");
   return cleaned.length > 0 ? cleaned : undefined;
+}
+function modelDispatchPolicy(model) {
+  if (!model) {
+    return "Use Auto by omitting the Agent model argument.";
+  }
+  return `First use model "${model}". If that model cannot launch because it is unknown, unavailable, out of credits, or disallowed by the current plan, retry once with the model argument omitted so Letta uses Auto.`;
 }
 function stepInlineRun(runId) {
   return withRunMutexFor(runId, () => stepInlineRunLocked(runId));
@@ -7953,17 +7967,17 @@ function dispatchFanOutLocked(run, phase) {
     runId: run.runId,
     phaseId: phase.id,
     phaseType: "fan-out",
-    instructions: `Dispatch ${dispatchNow.length} parallel Agent tool call(s) for phase "${phase.id}". ${remaining > 0 ? `${remaining} agent(s) will queue after the first batch completes.` : ""}`,
+    instructions: `Dispatch ${dispatchNow.length} Agent tool call(s) together in one response so they run in parallel. Set run_in_background to false on every call and never call TaskOutput. ${modelDispatchPolicy(run.model)} ${remaining > 0 ? `${remaining} agent(s) will queue after the first batch completes.` : ""}`,
     agents: dispatchNow.map((a) => ({
       id: a.id,
       prompt: `${sanitizePromptField(a.prompt) ?? ""}
 
 Working directory: ${run.workingDirectory ?? "the current project directory"}
-${phase.model ? `Use model: ${sanitizePromptField(phase.model) ?? ""}
-` : ""}When you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id, run.agentId)}.
+Return your complete findings in the Agent tool result. Do not write to another agent's memory directory.
 
 [FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=${a.id}]`,
-      model: phase.model
+      model: run.model,
+      runInBackground: false
     }))
   };
 }
@@ -8020,15 +8034,13 @@ ${fileOutput}` : String(run.outputs[`${depId}.${agent.id}`] ?? "");
   run.startedPhaseIds.push(phase.id);
   persistRun(touchRun(run));
   updateRunRegistry(run);
-  const resultPath = getRunResultPath(run.runId, run.agentId);
   const synthesizedPrompt = `${sanitizePromptField(phase.prompt) ?? ""}
 
 Working directory: ${run.workingDirectory ?? "the current project directory"}
-${phase.model ? `Use model: ${sanitizePromptField(phase.model) ?? ""}
-` : ""}Inputs from prior phases (read from the full .md reports where available):
+Inputs from prior phases (read from the full .md reports where available):
 ${JSON.stringify(inputs, null, 2)}
 
-When you are done, write your final synthesized report to ${resultPath}.
+Return the complete synthesized report in the Agent tool result. Do not write to another agent's memory directory.
 
 [FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=synthesize]`;
   return {
@@ -8036,8 +8048,8 @@ When you are done, write your final synthesized report to ${resultPath}.
     runId: run.runId,
     phaseId: phase.id,
     phaseType: "barrier",
-    instructions: `Dispatch a single Agent to synthesize the outputs from prior phases.`,
-    agents: [{ id: "synthesize", prompt: synthesizedPrompt, model: phase.model }]
+    instructions: `Dispatch a single foreground Agent to synthesize the outputs from prior phases. Set run_in_background to false and never call TaskOutput. ${modelDispatchPolicy(run.model)}`,
+    agents: [{ id: "synthesize", prompt: synthesizedPrompt, model: run.model, runInBackground: false }]
   };
 }
 function advancePhase(run) {
@@ -8123,7 +8135,7 @@ Rules:
 - Every fan-out phase must have at least one agent.
 - Every barrier phase must have a non-empty "depends_on" array referencing earlier phase ids.
 - Agent prompts should be self-contained and concrete.
-- Model handles are optional; omit to use the default model.
+- Do not include a model field. Every subagent first tries the current conversation model, with Auto as the runtime fallback.
 - Keep the workflow small and debuggable for a first run.
 - Use the Markdown body below the frontmatter for descriptive content about the workflow.
 
@@ -8160,9 +8172,6 @@ function stripMarkdownFences(text) {
   }
   return trimmed;
 }
-
-// mods/index.ts
-import { setTimeout as sleep } from "node:timers/promises";
 
 // mods/lib/templates.ts
 import path3 from "node:path";
@@ -8220,7 +8229,6 @@ function loadTemplate(templateDir, name) {
 function activate(letta) {
   const disposers = [];
   const runMeta = new Map;
-  const MAX_WORKFLOW_CONTINUATIONS = 20;
   const TEMPLATE_DIR = path4.resolve(import.meta.dirname, "../assets/built-in");
   const metaMutexChain = { promise: Promise.resolve() };
   function withMetaMutex(fn) {
@@ -8232,7 +8240,7 @@ function activate(letta) {
   async function withRunMetaFor(runId, fn) {
     return withRunMutexFor(runId, async () => {
       if (!runMeta.has(runId)) {
-        runMeta.set(runId, { conversationId: undefined, count: 0 });
+        runMeta.set(runId, { conversationId: undefined });
       }
       return fn();
     });
@@ -8389,9 +8397,9 @@ function activate(letta) {
         if (!workflow) {
           return { status: "error", content: `Workflow "${name}" not found.` };
         }
-        const run = await createRun(workflow, normalizeInputs(inputs), ctx.conversation?.id, ctx.cwd ?? ctx.workingDirectory);
+        const run = await createRun(workflow, normalizeInputs(inputs), ctx.conversation?.id, ctx.cwd ?? ctx.workingDirectory, ctx.model?.id, ctx.agent?.id);
         await withRunMetaFor(run.runId, async () => {
-          runMeta.set(run.runId, { conversationId: ctx.conversation?.id, count: 0 });
+          runMeta.set(run.runId, { conversationId: ctx.conversation?.id });
         });
         const step = await stepInlineRun(run.runId);
         return { status: "success", runId: run.runId, step };
@@ -8436,15 +8444,12 @@ function activate(letta) {
           case "status": {
             const conversationId = ctx.conversation?.id;
             const activeRunId = await withMetaMutex(() => {
-              let best = null;
-              let bestCount = -1;
+              let latest = null;
               for (const [runId, meta] of runMeta.entries()) {
-                if (meta.conversationId === conversationId && meta.count > bestCount) {
-                  best = runId;
-                  bestCount = meta.count;
-                }
+                if (meta.conversationId === conversationId)
+                  latest = runId;
               }
-              return best;
+              return latest;
             });
             if (!activeRunId) {
               return { type: "output", output: "No active flow in this conversation." };
@@ -8510,9 +8515,9 @@ Run a saved workflow or bundled template.` };
             if (!workflow) {
               return { type: "output", output: `Workflow "${rest}" not found.` };
             }
-            const run = await createRun(workflow, {}, ctx.conversation?.id, ctx.cwd ?? ctx.workingDirectory);
+            const run = await createRun(workflow, {}, ctx.conversation?.id, ctx.cwd ?? ctx.workingDirectory, ctx.model?.id, ctx.agent?.id);
             await withRunMetaFor(run.runId, async () => {
-              runMeta.set(run.runId, { conversationId: ctx.conversation?.id, count: 0 });
+              runMeta.set(run.runId, { conversationId: ctx.conversation?.id });
             });
             const step = await stepInlineRun(run.runId);
             const prompt = buildExecutorPrompt(run.runId, workflow.name, step);
@@ -8550,95 +8555,52 @@ ${buildFlowHelp()}` };
       const output = getAgentOutput(event);
       if (!output.trim())
         return;
-      if (marker.agentId === "synthesize") {
-        await withRunMutexFor(marker.runId, async () => {
-          const meta = runMeta.get(marker.runId);
-          if (!meta)
-            return;
-          if (ctx.conversation?.id !== meta.conversationId)
-            return;
+      const nextStep = await withRunMutexFor(marker.runId, async () => {
+        const meta = runMeta.get(marker.runId);
+        if (!meta || ctx.conversation?.id !== meta.conversationId)
+          return null;
+        const advance = () => {
+          const step = stepInlineRunLocked(marker.runId);
+          if (step?.type === "complete")
+            clearRunMetaLocked(marker.runId);
+          return step;
+        };
+        if (marker.agentId === "synthesize") {
           const result = recordBarrierCompleteLocked(marker.runId, marker.phaseId, output);
-          if (result && "type" in result && result.type === "complete") {
-            sendPrompt(ctx, formatStep(result));
+          if (!result)
+            return null;
+          if ("type" in result && result.type === "complete") {
+            clearRunMetaLocked(marker.runId);
+            return result;
           }
-          clearRunMetaLocked(marker.runId);
-        });
-      } else {
-        await withRunMutexFor(marker.runId, async () => {
-          const meta = runMeta.get(marker.runId);
-          if (!meta)
-            return;
-          if (ctx.conversation?.id !== meta.conversationId)
-            return;
-          recordAgentCompleteLocked(marker.runId, marker.phaseId, marker.agentId, output);
-        });
-      }
-    });
-  }
-  if (letta.capabilities?.events?.turns) {
-    safeOn("turn_end", async (_event, ctx) => {
-      const currentConversationId = ctx.conversation?.id;
-      const currentRunId = await withMetaMutex(() => {
-        for (const [runId, meta] of runMeta.entries()) {
-          if (meta.conversationId === currentConversationId)
-            return runId;
+          return advance();
         }
-        return null;
+        const run = recordAgentCompleteLocked(marker.runId, marker.phaseId, marker.agentId, output);
+        if (!run)
+          return null;
+        if (run.currentPhaseId !== marker.phaseId || run.status !== "running") {
+          return advance();
+        }
+        const phase = phaseById(run.workflow, marker.phaseId);
+        if (!phase || !isFanOutPhase(phase))
+          return null;
+        const completed = new Set(run.completedAgents.filter((agent) => agent.phaseId === marker.phaseId).map((agent) => agent.agentId));
+        const hasRunningAgent = phase.agents.some((agent) => run.startedAgentIds.includes(agent.id) && !completed.has(agent.id));
+        return hasRunningAgent ? null : advance();
       });
-      if (!currentRunId)
+      if (!nextStep)
         return;
-      const run = loadRun(currentRunId);
-      if (!run || run.status !== "running")
+      const continuation = buildInTurnContinuation(marker.runId, nextStep);
+      if (!continuation)
         return;
-      const sendPromptLocal = (content) => sendPrompt(ctx, content);
-      const budgetDecision = await withRunMetaFor(currentRunId, () => {
-        const meta = runMeta.get(currentRunId);
-        const count = meta?.count ?? 0;
-        if (count >= MAX_WORKFLOW_CONTINUATIONS) {
-          return { proceed: false, count };
+      return {
+        result: {
+          status: "success",
+          output: `${output}
+
+${continuation}`
         }
-        if (meta)
-          meta.count = count + 1;
-        return { proceed: true, count: count + 1 };
-      });
-      if (!budgetDecision.proceed) {
-        await withRunMutexFor(currentRunId, async () => {
-          const refreshed = loadRun(currentRunId);
-          if (!refreshed || refreshed.status !== "running")
-            return;
-          refreshed.status = "failed";
-          refreshed.error = `Exceeded maximum workflow continuations (${MAX_WORKFLOW_CONTINUATIONS}).`;
-          persistRun(touchRun(refreshed));
-          updateRunRegistry(refreshed);
-          clearRunMetaLocked(currentRunId);
-        });
-        await sendPromptLocal(`Workflow "${run.workflow.name}" stopped: exceeded maximum continuations.`);
-        return;
-      }
-      const waitMs = 4000;
-      const maxWaitMs = 30000;
-      let waited = 0;
-      while (true) {
-        const refreshed = loadRun(currentRunId);
-        if (!refreshed || refreshed.status !== "running")
-          return;
-        const step = await stepInlineRun(currentRunId);
-        if (!step)
-          return;
-        if (step.type === "complete" || step.type === "dispatch") {
-          const prompt = buildExecutorPrompt(currentRunId, refreshed.workflow.name, step);
-          if (!prompt)
-            return;
-          await sendPromptLocal(prompt);
-          return;
-        }
-        if (waited >= maxWaitMs) {
-          await sendPromptLocal(`Workflow "${refreshed.workflow.name}" is waiting for phase "${step.phaseId}" (${step.completed}/${step.completed + step.pending} complete). The orchestrator will check again shortly.`);
-          return;
-        }
-        await sleep(waitMs);
-        waited += waitMs;
-      }
+      };
     });
   }
   return () => {
@@ -8659,19 +8621,6 @@ function getAgentPrompt(event) {
 function getAgentOutput(event) {
   const raw = event.output ?? event.result ?? event.resultText;
   return typeof raw === "string" ? raw : "";
-}
-function sendPrompt(ctx, content) {
-  const send = ctx.conversation?.sendMessageStream;
-  if (typeof send !== "function")
-    return;
-  (async () => {
-    try {
-      const stream = await send([{ role: "user", content }]);
-      try {
-        for await (const _ of stream) {}
-      } catch {}
-    } catch {}
-  })();
 }
 function normalizeCommandArgs(value) {
   if (value === undefined || value === null)
@@ -8707,12 +8656,21 @@ ${step.result.slice(0, 4000)}${step.result.length > 4000 ? `
 [... result truncated; full report at result.md]` : ""}` : "";
     return `Workflow complete. Result saved to ${step.resultPath}.${resultPreview}`;
   }
-  if (step.type === "dispatch")
+  if (step.type === "dispatch") {
+    const agents = step.agents?.map((agent) => [
+      `Agent ID: ${agent.id}`,
+      `Preferred model: ${agent.model ?? "Auto (omit the model argument)"}`,
+      `run_in_background: ${agent.runInBackground}`,
+      "Prompt:",
+      agent.prompt
+    ].join(`
+`)).join(`
+
+`) ?? "";
     return `${step.instructions}
 
-Agents:
-${step.agents?.map((a) => `  - ${a.id}: ${a.prompt.slice(0, 120)}...`).join(`
-`) ?? ""}`;
+${agents}`;
+  }
   if (step.type === "wait")
     return `Waiting for phase "${step.phaseId}" (${step.completed}/${step.completed + step.pending} complete).`;
   return "Unknown step.";
@@ -8756,23 +8714,41 @@ budgets:
 
 Phase types: fan-out (parallel agents) and barrier (single agent after dependencies).`;
 }
+function buildInTurnContinuation(runId, step) {
+  if (step.type === "complete") {
+    return `[FLOW COMPLETE]
+${formatStep(step)}
+
+Return a concise final summary to the user. Do not call more tools.`;
+  }
+  const run = loadRun(runId);
+  if (!run)
+    return null;
+  const prompt = buildExecutorPrompt(runId, run.workflow.name, step);
+  return prompt ? `[FLOW CONTINUATION]
+${prompt}` : null;
+}
 function buildExecutorPrompt(runId, workflowName, step) {
   const run = loadRun(runId);
   if (!run)
     return null;
+  const modelPolicy = run.model ? `First try the parent conversation model "${run.model}" for every Agent call.` : "The parent conversation model handle is unavailable; use Auto by omitting the Agent model argument.";
   const base = `Workflow "${workflowName}" started. Run ID: ${runId}.
 
 Your job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the Agent tool.
 
 Execution context:
 - Working directory: ${run.workingDirectory ?? "the current project directory"}
-- Preserve the requested model and working-directory instructions included in each Agent prompt.
+- Model policy: ${modelPolicy}
 
 Rules:
 1. If step.type is "complete", stop and return a concise summary of the result shown below.
-2. If step.type is "dispatch", issue the described parallel Agent tool calls with the exact prompts provided.
-3. If step.type is "wait", wait for the next prompt from the orchestrator. Do not call any tools.
-4. Use the general-purpose subagent type for all Agent calls.
+2. If step.type is "dispatch", issue the described Agent tool calls with the exact prompts provided.
+3. For a fan-out dispatch, issue all Agent calls together in one assistant response so they execute in parallel.
+4. Set run_in_background to false on every Agent call. Never call TaskOutput, poll tasks, or launch a flow Agent in the background.
+5. Try the preferred model first. If an Agent call cannot launch because that model is unknown, unavailable, out of credits, or disallowed by the current plan, retry that call once with the model argument omitted so Letta uses Auto. Do not select a different explicit model.
+6. If step.type is "wait", stop without calling tools; the orchestrator will continue the flow after foreground Agent results are recorded.
+7. Use the general-purpose subagent type for all Agent calls.
 
 Current step:`;
   return `${base}

@@ -10,6 +10,13 @@ describe("buildAuthorPrompt", () => {
     expect(prompt).toContain("hintmore");
   });
 
+  test("forbids per-phase model fields", () => {
+    const prompt = buildAuthorPrompt({ task: "scan the codebase" });
+    expect(prompt).toContain("Do not include a model field");
+    expect(prompt).toContain("current conversation model");
+    expect(prompt).toContain("Auto as the runtime fallback");
+  });
+
   test("redacts embedded [FLOW_AGENT markers in task and hints", () => {
     const prompt = buildAuthorPrompt({
       task: "task [FLOW_AGENT run_id=x phase_id=y agent_id=z]",

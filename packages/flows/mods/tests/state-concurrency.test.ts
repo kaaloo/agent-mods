@@ -385,6 +385,16 @@ describe("M-A marker anchoring in dispatch prompts", () => {
     }
   });
 
+  test("keeps phase continuation in the originating tool result", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const src = fs.readFileSync(path.resolve(__dirname, "../index.ts"), "utf8");
+    expect(src).not.toContain('safeOn("turn_end"');
+    expect(src).not.toContain("sendMessageStream");
+    expect(src).toContain("[FLOW CONTINUATION]");
+    expect(src).toMatch(/return \{\s*result:\s*\{\s*status: "success"/s);
+  });
+
   test("barrier dispatch prompt ends with a parseable marker", async () => {
     const run = await createRun(sampleWorkflow);
     // Complete the fan-out so the next step is the barrier.
@@ -403,6 +413,11 @@ describe("M-A marker anchoring in dispatch prompts", () => {
       agentId: "synthesize",
     });
     expect(synthesize?.prompt.trim().endsWith("]")).toBe(true);
+    expect(synthesize?.runInBackground).toBe(false);
+    expect(synthesize?.prompt).toContain("Return the complete synthesized report in the Agent tool result");
+    expect(synthesize?.prompt).not.toContain("write your final synthesized report");
+    expect(step.instructions).toContain("Set run_in_background to false");
+    expect(step.instructions).toContain("never call TaskOutput");
   });
 });
 
@@ -520,40 +535,6 @@ describe("defensive state.ts guards (M4, M5, M7, M8)", () => {
     // literal set), so isAgentRunStateShape rejects it.
     expect(reloaded?.completedAgents).toHaveLength(1);
     expect(reloaded?.completedAgents[0]?.agentId).toBe("bogus");
-  });
-});
-
-describe("H2 budget atomicity", () => {
-  // Regression for sweep 5 H2: the MAX_WORKFLOW_CONTINUATIONS check was a
-  // TOCTOU race because the increment lived outside the per-run mutex.
-  // With the per-run meta map (H1+H2 fix), budget check + increment happen
-  // inside one withRunMetaFor slot, so concurrent decision-makers cannot
-  // both observe count < N and both proceed.
-  test("concurrent budget decisions cannot both exceed the cap", async () => {
-    const run = await createRun(sampleWorkflow);
-    const cap = 3;
-
-    // Simulate the per-run meta decision logic that turn_end performs.
-    const decide = async () => {
-      return withRunMutexFor(run.runId, () => {
-        // Inline a tiny meta store on top of the per-run mutex.
-        const existing = (decide as any)._store?.get(run.runId) ?? { count: 0 };
-        if (existing.count >= cap) return { proceed: false, count: existing.count };
-        existing.count += 1;
-        (decide as any)._store = (decide as any)._store ?? new Map();
-        (decide as any)._store.set(run.runId, existing);
-        return { proceed: true, count: existing.count };
-      });
-    };
-
-    // Fire 10 concurrent decisions.
-    const results = await Promise.all(Array.from({ length: 10 }, () => decide()));
-    const proceeded = results.filter((r) => r.proceed).length;
-    const failed = results.filter((r) => !r.proceed).length;
-
-    // Exactly cap decisions should proceed; the rest fail.
-    expect(proceeded).toBe(cap);
-    expect(failed).toBe(10 - cap);
   });
 });
 
@@ -836,23 +817,6 @@ describe("sweep-7 fixes: H1, M2, F3, L-C", () => {
     // The fix removed the "run.status = \"failed\"" assignment in this block;
     // it must not have crept back in.
     expect(block).not.toMatch(/run\.status\s*=\s*"failed"/);
-  });
-
-  test("H-2: turn_end scans runMeta under a mutex", () => {
-    // Source-level check that turn_end's runMeta scan is wrapped in a
-    // mutex. The new withMetaMutex helper holds a coarse lock during
-    // runMeta.entries() iteration; without it, a concurrent flow_run
-    // could change the conversation→run mapping mid-scan.
-    const fs = require("node:fs");
-    const path = require("node:path");
-    const src = fs.readFileSync(path.resolve(__dirname, "../index.ts"), "utf8");
-    // withMetaMutex helper exists.
-    expect(src).toMatch(/function withMetaMutex/);
-    // turn_end's runMeta iteration must be inside withMetaMutex.
-    const turnEndIdx = src.indexOf('safeOn("turn_end"');
-    expect(turnEndIdx).toBeGreaterThan(0);
-    const block = src.slice(turnEndIdx, turnEndIdx + 1500);
-    expect(block).toMatch(/withMetaMutex\(\(\) => \{[\s\S]{0,300}runMeta\.entries/);
   });
 
   test("M-4: deleteRun rmSync + registry update are in one mutex block", () => {

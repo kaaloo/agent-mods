@@ -21,7 +21,6 @@ import {
   readRunResult,
   readRunAgentOutput,
   getRunAgentOutputPath,
-  getRunResultPath,
   getRunResultDisplayPath,
 } from "./state.ts";
 
@@ -40,7 +39,7 @@ export function parseFlowAgentMarker(prompt: unknown): { runId: string; phaseId:
 // ASCII control characters and Unicode line/paragraph separators, mirrors
 // sanitizeWorkingDirectory but stricter (also collapses embedded [FLOW_AGENT
 // markers so a workflow author cannot spoof a routing marker). Closes M-A
-// (marker spoofing) and H-C (phase.model control chars).
+// (marker spoofing) and H-C (model-handle control chars).
 export function sanitizePromptField(value: string | undefined): string | undefined {
   if (typeof value !== "string") return undefined;
   let cleaned = value.replace(/[\x00-\x1F\x7F\u0085\u200B-\u200F\u2028\u2029\u202E\uFEFF]/g, "");
@@ -56,7 +55,7 @@ export interface InlineDispatch {
   phaseId: string;
   phaseType: "fan-out" | "barrier";
   instructions: string;
-  agents?: Array<{ id: string; prompt: string; model?: string }>;
+  agents?: Array<{ id: string; prompt: string; model?: string; runInBackground: false }>;
 }
 
 export interface InlineComplete {
@@ -75,6 +74,13 @@ export interface InlineWait {
 }
 
 export type InlineStep = InlineDispatch | InlineComplete | InlineWait;
+
+function modelDispatchPolicy(model: string | undefined): string {
+  if (!model) {
+    return "Use Auto by omitting the Agent model argument.";
+  }
+  return `First use model "${model}". If that model cannot launch because it is unknown, unavailable, out of credits, or disallowed by the current plan, retry once with the model argument omitted so Letta uses Auto.`;
+}
 
 // ---------------------------------------------------------------------------
 // Locking contract.
@@ -315,11 +321,12 @@ function dispatchFanOutLocked(run: RunState, phase: FanOutPhase): InlineStep | n
     runId: run.runId,
     phaseId: phase.id,
     phaseType: "fan-out",
-    instructions: `Dispatch ${dispatchNow.length} parallel Agent tool call(s) for phase "${phase.id}". ${remaining > 0 ? `${remaining} agent(s) will queue after the first batch completes.` : ""}`,
+    instructions: `Dispatch ${dispatchNow.length} Agent tool call(s) together in one response so they run in parallel. Set run_in_background to false on every call and never call TaskOutput. ${modelDispatchPolicy(run.model)} ${remaining > 0 ? `${remaining} agent(s) will queue after the first batch completes.` : ""}`,
     agents: dispatchNow.map((a) => ({
       id: a.id,
-      prompt: `${sanitizePromptField(a.prompt) ?? ""}\n\nWorking directory: ${run.workingDirectory ?? "the current project directory"}\n${phase.model ? `Use model: ${sanitizePromptField(phase.model) ?? ""}\n` : ""}When you are done, write your complete findings to ${getRunAgentOutputPath(run.runId, phase.id, a.id, run.agentId)}.\n\n[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=${a.id}]`,
-      model: phase.model,
+      prompt: `${sanitizePromptField(a.prompt) ?? ""}\n\nWorking directory: ${run.workingDirectory ?? "the current project directory"}\nReturn your complete findings in the Agent tool result. Do not write to another agent's memory directory.\n\n[FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=${a.id}]`,
+      model: run.model,
+      runInBackground: false,
     })),
   };
 }
@@ -386,14 +393,13 @@ function dispatchBarrierLocked(run: RunState, phase: BarrierPhase): InlineStep |
   persistRun(touchRun(run));
   updateRunRegistry(run);
 
-  const resultPath = getRunResultPath(run.runId, run.agentId);
   const synthesizedPrompt = `${sanitizePromptField(phase.prompt) ?? ""}
 
 Working directory: ${run.workingDirectory ?? "the current project directory"}
-${phase.model ? `Use model: ${sanitizePromptField(phase.model) ?? ""}\n` : ""}Inputs from prior phases (read from the full .md reports where available):
+Inputs from prior phases (read from the full .md reports where available):
 ${JSON.stringify(inputs, null, 2)}
 
-When you are done, write your final synthesized report to ${resultPath}.
+Return the complete synthesized report in the Agent tool result. Do not write to another agent's memory directory.
 
 [FLOW_AGENT run_id=${run.runId} phase_id=${phase.id} agent_id=synthesize]`;
 
@@ -402,8 +408,8 @@ When you are done, write your final synthesized report to ${resultPath}.
     runId: run.runId,
     phaseId: phase.id,
     phaseType: "barrier",
-    instructions: `Dispatch a single Agent to synthesize the outputs from prior phases.`,
-    agents: [{ id: "synthesize", prompt: synthesizedPrompt, model: phase.model }],
+    instructions: `Dispatch a single foreground Agent to synthesize the outputs from prior phases. Set run_in_background to false and never call TaskOutput. ${modelDispatchPolicy(run.model)}`,
+    agents: [{ id: "synthesize", prompt: synthesizedPrompt, model: run.model, runInBackground: false }],
   };
 }
 
@@ -424,7 +430,8 @@ function advancePhase(run: RunState): void {
 function completeRunLocked(run: RunState, result: string): InlineComplete & { error?: string } {
   run.status = "completed";
   run.currentPhaseId = null;
-  // If a barrier agent was instructed to write result.md, prefer that file.
+  // Preserve a legacy result.md when resuming older runs; new foreground
+  // dispatches return the synthesis through tool_end instead of direct writes.
   const fileResult = readRunResult(run.runId, run.agentId);
   const finalResult = fileResult ?? result;
   persistRun(touchRun(run));

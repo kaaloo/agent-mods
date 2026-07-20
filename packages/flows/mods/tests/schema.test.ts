@@ -84,6 +84,18 @@ describe("validateWorkflow", () => {
     expect(errors.some((e) => e.path.includes("type"))).toBe(true);
   });
 
+  test("rejects per-phase model overrides", () => {
+    const bad = {
+      ...validWorkflow,
+      phases: [{ ...validWorkflow.phases[0], model: "kimi-for-coding" }, validWorkflow.phases[1]],
+    };
+    const { errors } = validateWorkflow(bad);
+    expect(errors).toContainEqual({
+      path: "phases[0].model",
+      message: "Per-phase model overrides are not supported; the flow runtime tries the current conversation model and falls back to Auto.",
+    });
+  });
+
   test("rejects negative budgets", () => {
     const bad = { ...validWorkflow, budgets: { max_tokens: -1 } };
     const { errors } = validateWorkflow(bad);

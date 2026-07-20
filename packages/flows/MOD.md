@@ -112,4 +112,8 @@ All state lives in the agent's MemFS:
 - Use the public mod API and Node built-ins.
 - Keep the DSL bounded and validate it before running.
 - In v0.1, only `fan-out` and `barrier` phases are supported.
+- Every subagent first tries the model from the conversation that started the flow. If that model cannot launch, retry once with Auto. Per-phase `model` overrides are rejected.
+- Flow Agent calls use `run_in_background: false`. Fan-out calls are issued together for parallel execution; the orchestrator must not poll with `TaskOutput`.
+- Subagents return reports through their Agent tool results. The parent mod persists them; subagents do not write into another agent's MemFS.
+- The final `tool_end` result for each phase carries the next-phase instruction, keeping continuation in the originating CLI turn.
 - Workflows are scoped to the conversation that started them; other conversations will not receive continuation prompts.

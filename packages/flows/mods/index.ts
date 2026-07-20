@@ -1,7 +1,6 @@
 import path from "node:path";
 import type { LettaModContext, LettaToolContext, LettaCommandContext, LettaEvent, LettaEventHandlerContext } from "./types.ts";
 import { authorWorkflow, parseWorkflowMarkdownText, stripMarkdownFences } from "./lib/author.ts";
-import { setTimeout as sleep } from "node:timers/promises";
 import {
   createRun,
   loadRun,
@@ -9,29 +8,22 @@ import {
   saveLibraryEntry,
   deleteLibraryEntry,
   listLibrary,
-  persistRun,
-  touchRun,
-  updateRunRegistry,
   withRunMutexFor,
 } from "./lib/state.ts";
-import { stepInlineRun, recordAgentCompleteLocked, recordBarrierCompleteLocked, parseFlowAgentMarker, sanitizePromptField, type InlineStep } from "./lib/runner-inline.ts";
+import { stepInlineRun, stepInlineRunLocked, recordAgentCompleteLocked, recordBarrierCompleteLocked, parseFlowAgentMarker, sanitizePromptField, type InlineStep } from "./lib/runner-inline.ts";
 import { listTemplates, loadTemplate } from "./lib/templates.ts";
+import { isFanOutPhase, phaseById } from "./lib/schema.ts";
 import { isNonEmptyString } from "./lib/utils.ts";
 
 export default function activate(letta: LettaModContext): (() => void) {
   const disposers: Array<() => void> = [];
-  // Per-run meta: which conversation owns the run, and how many executor
-  // dispatch cycles have been issued. Replaces the previous closure-mutable
-  // activeRunId / activeRunConversationId / workflowContinuationCount, which
-  // raced across concurrent event handlers (sweep 5 H1, H2). All reads and
-  // writes happen under the per-run mutex via withRunMetaFor below.
-  const runMeta = new Map<string, { conversationId: string | undefined; count: number }>();
-  const MAX_WORKFLOW_CONTINUATIONS = 20;
+  // Per-run conversation ownership. Mutations happen under the per-run mutex.
+  const runMeta = new Map<string, { conversationId: string | undefined }>();
 
   const TEMPLATE_DIR = path.resolve(import.meta.dirname, "../assets/built-in");
 
-  // Coarse mutex for runMeta scans used by /flow status and turn_end. Per-run
-  // mutations remain serialized through withRunMutexFor.
+  // Coarse mutex for /flow status scans. Per-run mutations remain serialized
+  // through withRunMutexFor.
   const metaMutexChain: { promise: Promise<void> } = { promise: Promise.resolve() };
   function withMetaMutex<T>(fn: () => T): Promise<T> {
     const previous = metaMutexChain.promise;
@@ -43,7 +35,7 @@ export default function activate(letta: LettaModContext): (() => void) {
   async function withRunMetaFor<T>(runId: string, fn: () => Promise<T> | T): Promise<T> {
     return withRunMutexFor(runId, async () => {
       if (!runMeta.has(runId)) {
-        runMeta.set(runId, { conversationId: undefined, count: 0 });
+        runMeta.set(runId, { conversationId: undefined });
       }
       return fn();
     });
@@ -54,7 +46,7 @@ export default function activate(letta: LettaModContext): (() => void) {
     runMeta.delete(runId);
   }
 
-  function safeOn(event: string, handler: (event: LettaEvent, ctx: LettaEventHandlerContext) => void): void {
+  function safeOn(event: string, handler: (event: LettaEvent, ctx: LettaEventHandlerContext) => unknown): void {
     try { disposers.push(letta.events.on(event, handler)); } catch { /* ignore */ }
   }
 
@@ -215,11 +207,18 @@ export default function activate(letta: LettaModContext): (() => void) {
         if (!workflow) {
           return { status: "error", content: `Workflow "${name}" not found.` };
         }
-        const run = await createRun(workflow, normalizeInputs(inputs), ctx.conversation?.id, ctx.cwd ?? ctx.workingDirectory);
+        const run = await createRun(
+          workflow,
+          normalizeInputs(inputs),
+          ctx.conversation?.id,
+          ctx.cwd ?? ctx.workingDirectory,
+          ctx.model?.id,
+          ctx.agent?.id,
+        );
         // Record the meta entry under the per-run mutex so concurrent
         // flow_run calls don't trample each other's conversationId.
         await withRunMetaFor(run.runId, async () => {
-          runMeta.set(run.runId, { conversationId: ctx.conversation?.id, count: 0 });
+          runMeta.set(run.runId, { conversationId: ctx.conversation?.id });
         });
         const step = await stepInlineRun(run.runId);
         return { status: "success", runId: run.runId, step };
@@ -269,15 +268,11 @@ export default function activate(letta: LettaModContext): (() => void) {
           case "status": {
             const conversationId = ctx.conversation?.id;
             const activeRunId = await withMetaMutex(() => {
-              let best: string | null = null;
-              let bestCount = -1;
+              let latest: string | null = null;
               for (const [runId, meta] of runMeta.entries()) {
-                if (meta.conversationId === conversationId && meta.count > bestCount) {
-                  best = runId;
-                  bestCount = meta.count;
-                }
+                if (meta.conversationId === conversationId) latest = runId;
               }
-              return best;
+              return latest;
             });
             if (!activeRunId) {
               return { type: "output", output: "No active flow in this conversation." };
@@ -336,9 +331,16 @@ export default function activate(letta: LettaModContext): (() => void) {
             if (!workflow) {
               return { type: "output", output: `Workflow "${rest}" not found.` };
             }
-            const run = await createRun(workflow, {}, ctx.conversation?.id, ctx.cwd ?? ctx.workingDirectory);
+            const run = await createRun(
+              workflow,
+              {},
+              ctx.conversation?.id,
+              ctx.cwd ?? ctx.workingDirectory,
+              ctx.model?.id,
+              ctx.agent?.id,
+            );
             await withRunMetaFor(run.runId, async () => {
-              runMeta.set(run.runId, { conversationId: ctx.conversation?.id, count: 0 });
+              runMeta.set(run.runId, { conversationId: ctx.conversation?.id });
             });
             const step = await stepInlineRun(run.runId);
             const prompt = buildExecutorPrompt(run.runId, workflow.name, step);
@@ -374,118 +376,55 @@ export default function activate(letta: LettaModContext): (() => void) {
       const output = getAgentOutput(event);
       if (!output.trim()) return;
 
-      if (marker.agentId === "synthesize") {
-        // M1 fix: keep the meta check, the completion write, and the meta
-        // cleanup inside a single per-run mutex acquisition so a concurrent
-        // turn_end cannot clear the meta entry between the check and the write.
-        await withRunMutexFor(marker.runId, async () => {
-          const meta = runMeta.get(marker.runId);
-          if (!meta) return;
-          if (ctx.conversation?.id !== meta.conversationId) return;
+      const nextStep = await withRunMutexFor(marker.runId, async (): Promise<InlineStep | null> => {
+        const meta = runMeta.get(marker.runId);
+        if (!meta || ctx.conversation?.id !== meta.conversationId) return null;
+        const advance = (): InlineStep | null => {
+          const step = stepInlineRunLocked(marker.runId);
+          if (step?.type === "complete") clearRunMetaLocked(marker.runId);
+          return step;
+        };
+
+        if (marker.agentId === "synthesize") {
           const result = recordBarrierCompleteLocked(marker.runId, marker.phaseId, output);
-          if (result && "type" in result && result.type === "complete") {
-            sendPrompt(ctx, formatStep(result));
+          if (!result) return null;
+          if ("type" in result && result.type === "complete") {
+            clearRunMetaLocked(marker.runId);
+            return result;
           }
-          clearRunMetaLocked(marker.runId);
-        });
-      } else {
-        await withRunMutexFor(marker.runId, async () => {
-          const meta = runMeta.get(marker.runId);
-          if (!meta) return;
-          if (ctx.conversation?.id !== meta.conversationId) return;
-          recordAgentCompleteLocked(marker.runId, marker.phaseId, marker.agentId, output);
-        });
-      }
-    });
-  }
-
-  if (letta.capabilities?.events?.turns) {
-    safeOn("turn_end", async (_event: LettaEvent, ctx: LettaEventHandlerContext) => {
-      // Find the run owned by this conversation, atomically. We iterate
-      // H-2 from sweep 10: snapshot currentRunId under the meta mutex so
-      // a concurrent flow_run cannot change the conversation→run mapping
-      // between the scan and the loadRun. The per-run mutex can't be used
-      // here because we don't know which runId belongs to this conversation
-      // yet — instead we use the coarse meta mutex.
-      const currentConversationId = ctx.conversation?.id;
-      const currentRunId: string | null = await withMetaMutex(() => {
-        for (const [runId, meta] of runMeta.entries()) {
-          if (meta.conversationId === currentConversationId) return runId;
+          return advance();
         }
-        return null;
-      });
-      if (!currentRunId) return;
-      const run = loadRun(currentRunId);
-      if (!run || run.status !== "running") return;
 
-      const sendPromptLocal = (content: string) => sendPrompt(ctx, content);
-
-      // The budget check + run-state update happen inside withRunMetaFor so
-      // the count read, the limit check, the increment, and any persistence
-      // are one atomic block. Closes H2 (TOCTOU on MAX_WORKFLOW_CONTINUATIONS).
-      const budgetDecision = await withRunMetaFor(currentRunId, () => {
-        const meta = runMeta.get(currentRunId);
-        const count = meta?.count ?? 0;
-        if (count >= MAX_WORKFLOW_CONTINUATIONS) {
-          return { proceed: false as const, count };
+        const run = recordAgentCompleteLocked(marker.runId, marker.phaseId, marker.agentId, output);
+        if (!run) return null;
+        if (run.currentPhaseId !== marker.phaseId || run.status !== "running") {
+          return advance();
         }
-        if (meta) meta.count = count + 1;
-        return { proceed: true as const, count: count + 1 };
+
+        // For a batched fan-out, only dispatch the next batch after every
+        // foreground Agent in the current batch has returned.
+        const phase = phaseById(run.workflow, marker.phaseId);
+        if (!phase || !isFanOutPhase(phase)) return null;
+        const completed = new Set(
+          run.completedAgents
+            .filter((agent) => agent.phaseId === marker.phaseId)
+            .map((agent) => agent.agentId),
+        );
+        const hasRunningAgent = phase.agents.some(
+          (agent) => run.startedAgentIds.includes(agent.id) && !completed.has(agent.id),
+        );
+        return hasRunningAgent ? null : advance();
       });
 
-      if (!budgetDecision.proceed) {
-        await withRunMutexFor(currentRunId, async () => {
-          const refreshed = loadRun(currentRunId);
-          if (!refreshed || refreshed.status !== "running") return;
-          refreshed.status = "failed";
-          refreshed.error = `Exceeded maximum workflow continuations (${MAX_WORKFLOW_CONTINUATIONS}).`;
-          persistRun(touchRun(refreshed));
-          updateRunRegistry(refreshed);
-          // Drop the meta entry on terminal failure. Must run under the
-          // mutex so a concurrent tool_end handler can't observe the meta
-          // entry after the run has been marked failed.
-          clearRunMetaLocked(currentRunId);
-        });
-        await sendPromptLocal(`Workflow "${run.workflow.name}" stopped: exceeded maximum continuations.`);
-        return;
-      }
-
-      // Poll the run inline until it is ready to advance. The orchestrator
-      // never asks the model to call flow_status during normal execution; the
-      // mod drives the loop by reading the run state directly.
-      // Gemini review fix: the previous `while (waited <= maxWaitMs)` loop
-      // terminated before the timeout check inside the loop body could fire,
-      // so the "still waiting" message was unreachable. The loop now runs
-      // unconditionally and bails on the timeout check before sleeping.
-      const waitMs = 4000;
-      const maxWaitMs = 30000;
-      let waited = 0;
-
-      while (true) {
-        const refreshed = loadRun(currentRunId);
-        if (!refreshed || refreshed.status !== "running") return;
-
-        const step = await stepInlineRun(currentRunId);
-        if (!step) return;
-
-        if (step.type === "complete" || step.type === "dispatch") {
-          const prompt = buildExecutorPrompt(currentRunId, refreshed.workflow.name, step);
-          if (!prompt) return;
-          await sendPromptLocal(prompt);
-          return;
-        }
-
-        // step.type === "wait"
-        if (waited >= maxWaitMs) {
-          await sendPromptLocal(
-            `Workflow "${refreshed.workflow.name}" is waiting for phase "${step.phaseId}" (${step.completed}/${step.completed + step.pending} complete). The orchestrator will check again shortly.`
-          );
-          return;
-        }
-
-        await sleep(waitMs);
-        waited += waitMs;
-      }
+      if (!nextStep) return;
+      const continuation = buildInTurnContinuation(marker.runId, nextStep);
+      if (!continuation) return;
+      return {
+        result: {
+          status: "success",
+          output: `${output}\n\n${continuation}`,
+        },
+      };
     });
   }
 
@@ -507,17 +446,6 @@ function getAgentPrompt(event: LettaEvent): string | undefined {
 function getAgentOutput(event: LettaEvent): string {
   const raw = event.output ?? event.result ?? event.resultText;
   return typeof raw === "string" ? raw : "";
-}
-
-function sendPrompt(ctx: LettaEventHandlerContext, content: string): void {
-  const send = ctx.conversation?.sendMessageStream;
-  if (typeof send !== "function") return;
-  void (async () => {
-    try {
-      const stream = await send([{ role: "user", content }]);
-      try { for await (const _ of stream) { /* discard */ } } catch { /* ignore */ }
-    } catch { /* ignore */ }
-  })();
 }
 
 function normalizeCommandArgs(value: string | Record<string, unknown> | undefined): string | null {
@@ -549,7 +477,16 @@ function formatStep(step: InlineStep | null): string {
       : "";
     return `Workflow complete. Result saved to ${step.resultPath}.${resultPreview}`;
   }
-  if (step.type === "dispatch") return `${step.instructions}\n\nAgents:\n${step.agents?.map((a) => `  - ${a.id}: ${a.prompt.slice(0, 120)}...`).join("\n") ?? ""}`;
+  if (step.type === "dispatch") {
+    const agents = step.agents?.map((agent) => [
+      `Agent ID: ${agent.id}`,
+      `Preferred model: ${agent.model ?? "Auto (omit the model argument)"}`,
+      `run_in_background: ${agent.runInBackground}`,
+      "Prompt:",
+      agent.prompt,
+    ].join("\n")).join("\n\n") ?? "";
+    return `${step.instructions}\n\n${agents}`;
+  }
   if (step.type === "wait") return `Waiting for phase "${step.phaseId}" (${step.completed}/${step.completed + step.pending} complete).`;
   return "Unknown step.";
 }
@@ -594,10 +531,23 @@ budgets:
 Phase types: fan-out (parallel agents) and barrier (single agent after dependencies).`;
 }
 
+function buildInTurnContinuation(runId: string, step: InlineStep): string | null {
+  if (step.type === "complete") {
+    return `[FLOW COMPLETE]\n${formatStep(step)}\n\nReturn a concise final summary to the user. Do not call more tools.`;
+  }
+  const run = loadRun(runId);
+  if (!run) return null;
+  const prompt = buildExecutorPrompt(runId, run.workflow.name, step);
+  return prompt ? `[FLOW CONTINUATION]\n${prompt}` : null;
+}
+
 function buildExecutorPrompt(runId: string, workflowName: string, step: InlineStep | null): string | null {
   const run = loadRun(runId);
   if (!run) return null;
-  const base = `Workflow "${workflowName}" started. Run ID: ${runId}.\n\nYour job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the Agent tool.\n\nExecution context:\n- Working directory: ${run.workingDirectory ?? "the current project directory"}\n- Preserve the requested model and working-directory instructions included in each Agent prompt.\n\nRules:\n1. If step.type is "complete", stop and return a concise summary of the result shown below.\n2. If step.type is "dispatch", issue the described parallel Agent tool calls with the exact prompts provided.\n3. If step.type is "wait", wait for the next prompt from the orchestrator. Do not call any tools.\n4. Use the general-purpose subagent type for all Agent calls.\n\nCurrent step:`;
+  const modelPolicy = run.model
+    ? `First try the parent conversation model "${run.model}" for every Agent call.`
+    : "The parent conversation model handle is unavailable; use Auto by omitting the Agent model argument.";
+  const base = `Workflow "${workflowName}" started. Run ID: ${runId}.\n\nYour job is to execute this workflow to completion in the current conversation. Do not explain your reasoning. Do not ask the user questions. Only use the Agent tool.\n\nExecution context:\n- Working directory: ${run.workingDirectory ?? "the current project directory"}\n- Model policy: ${modelPolicy}\n\nRules:\n1. If step.type is "complete", stop and return a concise summary of the result shown below.\n2. If step.type is "dispatch", issue the described Agent tool calls with the exact prompts provided.\n3. For a fan-out dispatch, issue all Agent calls together in one assistant response so they execute in parallel.\n4. Set run_in_background to false on every Agent call. Never call TaskOutput, poll tasks, or launch a flow Agent in the background.\n5. Try the preferred model first. If an Agent call cannot launch because that model is unknown, unavailable, out of credits, or disallowed by the current plan, retry that call once with the model argument omitted so Letta uses Auto. Do not select a different explicit model.\n6. If step.type is "wait", stop without calling tools; the orchestrator will continue the flow after foreground Agent results are recorded.\n7. Use the general-purpose subagent type for all Agent calls.\n\nCurrent step:`;
   return `${base}\n\n${formatStep(step)}`;
 }
 
