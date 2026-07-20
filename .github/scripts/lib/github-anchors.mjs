@@ -107,50 +107,45 @@ function extractBPath(headerLine) {
 }
 
 function parseQuotedDiffHeader(headerLine) {
-  if (!headerLine.startsWith('"')) return null;
-  const paths = [];
-  let current = '';
-  let escaped = false;
-  let inQuote = false;
-  for (const ch of headerLine) {
-    if (!inQuote) {
-      if (ch === '"') inQuote = true;
-      continue;
-    }
-    if (escaped) {
-      current += decodeGitPathEscape(ch);
-      escaped = false;
-      continue;
-    }
-    if (ch === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (ch === '"') {
-      paths.push(current);
-      current = '';
-      inQuote = false;
-      continue;
-    }
-    current += ch;
-  }
-  if (paths.length < 2) return null;
-  return { oldPath: stripABPrefix(paths[0]), newPath: stripABPrefix(paths[1]) };
+  const match = headerLine.match(/^"((?:\\.|[^"])*)"\s+"((?:\\.|[^"])*)"$/);
+  if (!match) return null;
+  return {
+    oldPath: stripABPrefix(decodeGitQuotedPath(match[1])),
+    newPath: stripABPrefix(decodeGitQuotedPath(match[2])),
+  };
 }
 
 function unquoteGitPath(path) {
   if (!path.startsWith('"') || !path.endsWith('"')) return path;
-  return parseQuotedDiffHeader(`${path} ${path}`)?.newPath ?? path.slice(1, -1);
+  return decodeGitQuotedPath(path.slice(1, -1));
 }
 
-function decodeGitPathEscape(ch) {
-  // Git quotes common C-style escapes in diff headers. Preserve
-  // unknown escapes as the escaped character, matching Git's visible
-  // path semantics closely enough for GitHub anchor validation.
-  if (ch === 't') return '\t';
-  if (ch === 'n') return '\n';
-  if (ch === 'r') return '\r';
-  return ch;
+function decodeGitQuotedPath(path) {
+  const bytes = [];
+  const encoder = new TextEncoder();
+  const escapes = { a: '\x07', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\x0b' };
+
+  for (let i = 0; i < path.length; i += 1) {
+    if (path[i] !== '\\') {
+      const character = String.fromCodePoint(path.codePointAt(i));
+      bytes.push(...encoder.encode(character));
+      i += character.length - 1;
+      continue;
+    }
+
+    const octal = path.slice(i + 1).match(/^[0-7]{1,3}/)?.[0];
+    if (octal) {
+      bytes.push(Number.parseInt(octal, 8));
+      i += octal.length;
+      continue;
+    }
+
+    const escaped = path[i + 1];
+    bytes.push(...encoder.encode(escapes[escaped] ?? escaped ?? '\\'));
+    i += 1;
+  }
+
+  return new TextDecoder().decode(Uint8Array.from(bytes));
 }
 
 function stripABPrefix(p) {

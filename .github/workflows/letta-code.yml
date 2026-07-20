@@ -28,7 +28,7 @@ on:
     types: [opened, labeled]
   issue_comment:
     types: [created]
-  pull_request:
+  pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review, labeled]
   pull_request_review_comment:
     types: [created]
@@ -44,7 +44,7 @@ permissions: {}
 jobs:
   letta-conversational:
     if: |
-      github.event_name != 'pull_request'
+      github.event_name != 'pull_request_target'
       || github.event.action == 'labeled'
     runs-on: ubuntu-latest
     permissions:
@@ -63,7 +63,7 @@ jobs:
 
   letta-inline-review:
     if: |
-      github.event_name == 'pull_request'
+      github.event_name == 'pull_request_target'
       && github.event.action != 'labeled'
       && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
@@ -71,7 +71,10 @@ jobs:
       contents: read
       pull-requests: write
     steps:
+      # Keep executable reviewer code on the trusted base revision.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
 
       - name: Install review dependencies
         run: npm ci --prefix .github/scripts --ignore-scripts

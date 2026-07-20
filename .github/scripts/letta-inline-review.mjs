@@ -39,6 +39,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROMPT_PATH = resolve(__dirname, '..', 'prompts', 'letta-inline-review.system.md');
 
 const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+const MAX_DIFF_CHARS = 100_000;
 const MAX_GH_OUTPUT_BYTES = 20 * 1024 * 1024;
 
 function required(name) {
@@ -73,11 +74,6 @@ function asBool(v, fallback = false) {
 function asInt(v, fallback) {
   const n = Number.parseInt(String(v ?? ''), 10);
   return Number.isFinite(n) ? n : fallback;
-}
-
-function diffForPrompt(patch, maxChars = 100_000) {
-  if (patch.length <= maxChars) return patch;
-  return patch.slice(0, maxChars) + '\n... (diff truncated to fit prompt budget)';
 }
 
 function buildUserMessage({ repository, pullNumber, title, author, baseRef, headRef, diff, prUrl }) {
@@ -133,8 +129,10 @@ function parseFindings(jsonText) {
     return { findings: [], parseError: 'Top-level JSON value is not an array.' };
   }
   const findings = [];
-  for (const item of parsed) {
-    if (!item || typeof item !== 'object') continue;
+  for (const [index, item] of parsed.entries()) {
+    if (!item || typeof item !== 'object') {
+      return { findings: [], parseError: `Finding ${index + 1} is not an object.` };
+    }
     const path = typeof item.path === 'string' ? item.path : null;
     const line = parseLineNumber(item.line);
     const side = normalizeSide(item.side);
@@ -142,8 +140,9 @@ function parseFindings(jsonText) {
     const title = typeof item.title === 'string' ? item.title : null;
     const body = typeof item.body === 'string' ? item.body : null;
     const suggestion = typeof item.suggestion === 'string' ? item.suggestion : null;
-    if (!path || !line || !severity || !title || !body) {
-      continue; // Drop malformed entries silently.
+    const suggestionIsValid = item.suggestion === undefined || typeof item.suggestion === 'string';
+    if (!path || !line || !side || !severity || !title || !body || !suggestionIsValid) {
+      return { findings: [], parseError: `Finding ${index + 1} is missing a required field.` };
     }
     findings.push({ path, line, side, severity, title, body, suggestion });
   }
@@ -160,7 +159,10 @@ function parseLineNumber(value) {
 }
 
 function normalizeSide(value) {
-  return typeof value === 'string' && value.toUpperCase() === 'LEFT' ? 'LEFT' : 'RIGHT';
+  if (value === undefined) return 'RIGHT';
+  if (typeof value !== 'string') return null;
+  const normalized = value.toUpperCase();
+  return normalized === 'LEFT' || normalized === 'RIGHT' ? normalized : null;
 }
 
 function normalizeSeverity(value) {
@@ -201,6 +203,13 @@ function fetchPullRequestDiff(repository, pullNumber) {
   });
 }
 
+function assertPullRequestHead(pr, expectedHeadSha) {
+  const actualHeadSha = pr.head?.sha;
+  if (actualHeadSha !== expectedHeadSha) {
+    throw new Error(`PR head changed from ${expectedHeadSha} to ${actualHeadSha ?? 'unknown'} during review.`);
+  }
+}
+
 async function main() {
   required('GITHUB_TOKEN');
   const apiKey = required('LETTA_API_KEY');
@@ -221,10 +230,14 @@ async function main() {
   appendStepSummary(`### Letta Code inline review\n\nFetching PR #${pullNumber} from ${repository} @ ${headSha.slice(0, 7)}...\n`);
 
   const pr = fetchPullRequest(repository, pullNumber);
+  assertPullRequestHead(pr, headSha);
   const patch = fetchPullRequestDiff(repository, pullNumber);
   if (!patch.trim()) {
     appendStepSummary('_No patch content in PR response. The PR may be too large to diff, or consist entirely of binary changes. Skipping inline review._\n');
     return;
+  }
+  if (patch.length > MAX_DIFF_CHARS) {
+    throw new Error(`PR diff is ${patch.length} characters; maximum reviewable size is ${MAX_DIFF_CHARS}.`);
   }
 
   const anchors = parsePatchAnchors(patch);
@@ -235,7 +248,7 @@ async function main() {
     author: pr.user?.login ?? 'unknown',
     baseRef,
     headRef,
-    diff: diffForPrompt(patch),
+    diff: patch,
     prUrl: pr.html_url ?? prUrl,
   });
 
@@ -254,12 +267,13 @@ async function main() {
     ...(model !== 'auto' ? { override_model: model } : {}),
   });
   const text = extractAssistantText(response.messages);
+  assertPullRequestHead(fetchPullRequest(repository, pullNumber), headSha);
 
   const jsonText = extractJsonBlock(text);
   const { findings: rawFindings, parseError } = parseFindings(jsonText);
 
   if (parseError) {
-    appendStepSummary(`**Parse error:** ${parseError}\n\nRaw model output (first 500 chars):\n\n\`\`\`\n${(text ?? '').slice(0, 500)}\n\`\`\`\n`);
+    throw new Error(`${parseError}\n\nRaw model output (first 500 chars):\n${(text ?? '').slice(0, 500)}`);
   }
 
   const { valid, dropped } = validateAnchors(rawFindings, anchors);
