@@ -1,0 +1,8 @@
+{
+  "name": "@kaaloo/letta-review-scripts",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@letta-ai/letta-client": "1.12.1"
+  }
+}
