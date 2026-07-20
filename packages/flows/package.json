@@ -1,7 +1,7 @@
 {
   "name": "@kaaloo/flows",
   "version": "0.1.0",
-  "description": "A Letta-native mod for authoring and running multi-agent dynamic workflows.",
+  "description": "A Letta-native mod for authoring and running multi-agent flows.",
   "author": "Luis Arias",
   "license": "Apache-2.0",
   "type": "module",

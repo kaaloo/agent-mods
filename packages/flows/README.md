@@ -1,6 +1,6 @@
 # @kaaloo/flows
 
-A Letta-native mod for authoring and running multi-agent dynamic workflows.
+A Letta-native mod for authoring and running multi-agent flows.
 
 ## What it does
 
