@@ -4,7 +4,7 @@ A Letta-native mod for authoring and running multi-agent flows.
 
 ## What it does
 
-Flows lets you describe a task as a JSON workflow, then run it across multiple parallel subagents with a state machine that tracks progress, synchronizes barriers, and synthesizes results.
+Flows lets you describe a task as a markdown file with YAML frontmatter, then run it across multiple parallel subagents with a state machine that tracks progress, synchronizes barriers, and synthesizes results.
 
 ## Install
 

@@ -34,15 +34,15 @@ packages/flows/
 │   │   ├── runner-inline.ts  # inline execution mode
 │   │   ├── runner-bg.ts      # background execution mode (v0.2)
 │   │   ├── panel.ts          # progress panel rendering
-│   │   └── utils.ts          # id generation, path helpers, safe JSON writes
+│   │   ├── utils.ts          # id generation, path helpers, safe YAML frontmatter writes
 │   └── tests/
 │       ├── schema.test.ts
 │       ├── state.test.ts
 │       ├── author.test.ts
 │       └── runner-inline.test.ts
 └── assets/
-    └── templates/
-        └── example-bug-sweep.json
+    └── built-in/
+        └── code-audit.md
 ```
 
 ---
@@ -76,7 +76,7 @@ packages/flows/
 
 ## 4. Workflow DSL (v0.1)
 
-JSON, validated by the mod. Two phase types in v0.1; more later.
+YAML frontmatter in a markdown file, validated by the mod. Two phase types in v0.1; more later.
 
 ```ts
 interface WorkflowDefinition {
@@ -122,31 +122,32 @@ Validation rules:
 
 Example:
 
-```json
-{
-  "name": "codebase-bug-sweep",
-  "version": "1",
-  "description": "Sweep src/ for race conditions, null derefs, and injection vectors.",
-  "phases": [
-    {
-      "id": "scan",
-      "type": "fan-out",
-      "model": "anthropic/claude-sonnet-4-6",
-      "agents": [
-        { "id": "race", "prompt": "Scan src/ for race conditions." },
-        { "id": "null", "prompt": "Scan src/ for null dereference risks." },
-        { "id": "inject", "prompt": "Scan src/ for injection vectors." }
-      ]
-    },
-    {
-      "id": "synthesize",
-      "type": "barrier",
-      "depends_on": ["scan"],
-      "model": "anthropic/claude-opus-4-8",
-      "prompt": "Merge the scan findings into a single prioritized report."
-    }
-  ]
-}
+```markdown
+---
+name: codebase-bug-sweep
+version: "1"
+description: Sweep src/ for race conditions, null derefs, and injection vectors.
+phases:
+  - id: scan
+    type: fan-out
+    model: anthropic/claude-sonnet-4-6
+    agents:
+      - id: race
+        prompt: Scan src/ for race conditions.
+      - id: "null"
+        prompt: Scan src/ for null dereference risks.
+      - id: inject
+        prompt: Scan src/ for injection vectors.
+  - id: synthesize
+    type: barrier
+    depends_on:
+      - scan
+    model: anthropic/claude-opus-4-8
+    prompt: Merge the scan findings into a single prioritized report.
+---
+
+Sweep src/ for race conditions, null derefs, and injection vectors,
+then synthesize the results.
 ```
 
 ---
@@ -201,7 +202,7 @@ The model is the orchestrator. The mod is the state machine and dispatcher.
 
 ```text
 user:   /workflow-run codebase-bug-sweep
-mod:    creates run_id, persists plan.json, returns first-phase instructions
+mod:    creates run_id, persists plan.md, returns first-phase instructions
 model:  Agent({subagent_type: "general-purpose", prompt: "Scan src/ for race conditions."})
         Agent({subagent_type: "general-purpose", prompt: "Scan src/ for null dereference risks."})
         Agent({subagent_type: "general-purpose", prompt: "Scan src/ for injection vectors."})
@@ -220,12 +221,12 @@ Why inline first? It is debuggable. The model's own tool-calling loop handles th
 
 Two files:
 
-- `~/.letta/mods/flows.state.json` — library index, ultracode toggle, run registry.
+- `~/.letta/workflows/registry.md` — run registry (YAML frontmatter).
 - `~/.letta/workflows/runs/<run_id>/` — per-run state:
-  - `plan.json` — frozen workflow definition
-  - `phases/<phase_id>/<agent_id>.json` — agent prompt, output, status, tokens
+  - `plan.md` — frozen workflow definition (YAML frontmatter markdown)
+  - `phases/<phase_id>/<agent_id>.md` — agent prompt, output, status, tokens (YAML frontmatter markdown)
   - `result.md` — final synthesized output
-  - `checkpoint.json` — current phase index, completed agents, budgets
+  - `run.md` — current phase index, completed agents, budgets (YAML frontmatter markdown)
 
 All writes are atomic: write to a temp file, then rename.
 
@@ -268,7 +269,7 @@ All writes are atomic: write to a temp file, then rename.
 
 ## 9. Dynamic mod generation (deferred)
 
-Agent-generated mods are a documented Letta pattern (see [docs.letta.com/letta-agent/mods](https://docs.letta.com/letta-agent/mods)), but they are intentionally **out of scope for v0.1–v0.3**. The JSON DSL is safer and easier to validate.
+Agent-generated mods are a documented Letta pattern (see [docs.letta.com/letta-agent/mods](https://docs.letta.com/letta-agent/mods)), but they are intentionally **out of scope for v0.1–v0.3**. The YAML frontmatter DSL is safer and easier to validate.
 
 When the time comes, there are two designs to consider:
 
@@ -321,7 +322,7 @@ npm run check
 A user can:
 
 1. Install the mod from the worktree.
-2. Run `/workflow-author "scan this codebase for bugs"` and get a valid JSON workflow.
+2. Run `/workflow-author "scan this codebase for bugs"` and get a valid YAML workflow.
 3. Run `/workflow-save bug-sweep` to persist it.
 4. Run `/workflow-run bug-sweep` and see the model dispatch parallel agents.
 5. See the panel update as agents complete.

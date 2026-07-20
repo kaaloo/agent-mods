@@ -131,7 +131,7 @@ export default function activate(letta: LettaModContext): (() => void) {
   if (letta.capabilities?.tools && letta.tools) {
     disposers.push(letta.tools.register({
       name: "flow_author",
-      description: "Generate a workflow prompt for the model to author a JSON workflow definition for a given task.",
+      description: "Generate a workflow prompt for the model to author a markdown file with YAML frontmatter defining a workflow.",
       parameters: {
         type: "object",
         properties: {
