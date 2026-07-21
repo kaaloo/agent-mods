@@ -322,6 +322,60 @@ test('fetchChangedLinesSince handles rename status', async () => {
   assert.equal(result.renamedFiles.get('new/path.ts'), 'old/path.ts');
 });
 
+test('fetchChangedLinesSince: all-removal push keeps files in removedFiles only', async () => {
+  const fakeGhApi = (endpoint) => {
+    if (endpoint.includes('/compare/')) {
+      return buildComparePayload({
+        files: [
+          { filename: 'pkg/gone.ts', status: 'removed', patch: '' },
+          { filename: 'pkg/also-gone.ts', status: 'removed', patch: '' },
+        ],
+      });
+    }
+    return '{}';
+  };
+  const result = await fetchChangedLinesSince({
+    repository: 'o/r',
+    baseSha: BASE,
+    headSha: HEAD,
+    ghApi: fakeGhApi,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.changedLines.size, 0, 'no added lines');
+  assert.equal(result.removedFiles.size, 2);
+  assert.ok(result.removedFiles.has('pkg/gone.ts'));
+  assert.ok(result.removedFiles.has('pkg/also-gone.ts'));
+});
+
+test('filterPatchToChangedLines: all-removal push passes deletions through', () => {
+  // Simulates the PR-side patch for two removed files.
+  const deletionPatch = [
+    'diff --git a/pkg/gone.ts b/pkg/gone.ts',
+    'deleted file mode 100644',
+    'index 1111111..0000000',
+    '--- a/pkg/gone.ts',
+    '+++ /dev/null',
+    '@@ -1,3 +0,0 @@',
+    '-line1',
+    '-line2',
+    '-line3',
+    'diff --git a/pkg/also-gone.ts b/pkg/also-gone.ts',
+    'deleted file mode 100644',
+    'index 2222222..0000000',
+    '--- a/pkg/also-gone.ts',
+    '+++ /dev/null',
+    '@@ -1,2 +0,0 @@',
+    '-a',
+    '-b',
+  ].join('\n');
+
+  const result = filterPatchToChangedLines(deletionPatch, new Map(), {
+    removedFiles: new Set(['pkg/gone.ts', 'pkg/also-gone.ts']),
+  });
+  assert.ok(result.includes('pkg/gone.ts'), 'gone file block should pass through');
+  assert.ok(result.includes('pkg/also-gone.ts'), 'also-gone file block should pass through');
+});
+
 test('extractNewPathFromHeader: parses standard and tab-separated forms', () => {
   assert.equal(__test__.extractNewPathFromHeader('a/pkg/a.ts b/pkg/a.ts'), 'pkg/a.ts');
   assert.equal(__test__.extractNewPathFromHeader('a/pkg/a.ts\tb/pkg/a.ts'), 'pkg/a.ts');

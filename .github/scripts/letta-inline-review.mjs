@@ -407,7 +407,11 @@ async function main() {
     if (delta.ok) {
       changedLines = delta.changedLines;
       removedFiles = delta.removedFiles;
-      if (changedLines.size === 0 && delta.removedFiles.size === 0) {
+      // A push counts as "no changes" only when the compare API
+      // returns zero modified files AND zero removed files.
+      // File removals are real changes and must still surface to
+      // the reviewer even when nothing was added.
+      if (changedLines.size === 0 && removedFiles.size === 0) {
         appendStepSummary(
           `_No lines changed since last reviewed commit \`${prior.sha.slice(0, 7)}\`. ` +
           `Posting a 'no new findings' note instead of re-running the reviewer._\n`,
@@ -497,21 +501,20 @@ async function main() {
   let { valid } = anchorValidation;
   const { dropped: anchorDropped } = anchorValidation;
 
-  // Secondary safety net: drop findings anchored to lines the PR
-  // author or repo owner has already replied to. This catches
-  // already-acked line noise in the full-review paths (first push,
-  // force-push orphan). The delta filter already handles the
-  // common case; this layer is belt-and-suspenders.
+  // Drop findings anchored to lines the PR author or repo owner
+  // has already replied to on a prior review. Run on every push
+  // path, not just the fallbacks: when the delta filter retains a
+  // hunk whose only new line is line N, the surrounding context
+  // lines are still in the diff, and the model could legitimately
+  // re-fire on them. The acked-anchor set silences that.
   const ackedDropped = [];
-  if (deltaMode !== 'delta') {
-    const ackers = collectAckers(pr);
-    if (ackers.length > 0) {
-      const { acked } = await loadAckedAnchors({ repository, pullNumber, ghApi, ackers });
-      if (acked.size > 0) {
-        const result = dropAckedFindings(valid, acked);
-        valid = result.kept;
-        ackedDropped.push(...result.dropped);
-      }
+  const ackers = collectAckers(pr);
+  if (ackers.length > 0) {
+    const { acked } = await loadAckedAnchors({ repository, pullNumber, ghApi, ackers });
+    if (acked.size > 0) {
+      const result = dropAckedFindings(valid, acked);
+      valid = result.kept;
+      ackedDropped.push(...result.dropped);
     }
   }
 

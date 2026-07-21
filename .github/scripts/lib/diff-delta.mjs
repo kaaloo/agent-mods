@@ -143,7 +143,11 @@ export async function fetchChangedLinesSince({ repository, baseSha, headSha, ghA
  */
 export function filterPatchToChangedLines(patch, changedLines, { removedFiles = new Set() } = {}) {
   if (!patch || !patch.trim()) return '';
-  if (!changedLines || (changedLines instanceof Map && changedLines.size === 0)) {
+  // If there are no in-place changes AND no removed files to surface,
+  // there is nothing for the reviewer to look at.
+  const changedIsEmpty =
+    !changedLines || (changedLines instanceof Map && changedLines.size === 0);
+  if (changedIsEmpty && removedFiles.size === 0) {
     return '';
   }
 
