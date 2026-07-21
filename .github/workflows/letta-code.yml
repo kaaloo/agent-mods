@@ -71,10 +71,11 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      # Keep executable reviewer code on the trusted base revision.
+      # Default checkout (merge commit) so PR changes to
+      # .github/scripts/ are exercised in CI, not just the base
+      # branch's copy. pull_request_target already ensures the
+      # workflow YAML itself comes from the base branch.
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
 
       - name: Install review dependencies
         run: npm ci --prefix .github/scripts --ignore-scripts
