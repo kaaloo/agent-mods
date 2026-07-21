@@ -1,7 +1,7 @@
 {
   "name": "@kaaloo/kimi-platform",
   "version": "0.1.0",
-  "description": "Letta Code provider mod for Kimi models via the Moonshot AI Platform API (api.moonshot.ai/v1) with dynamic model discovery.",
+  "description": "Letta Code provider mod for Kimi models via the Kimi Code API (api.kimi.com/coding) with dynamic model discovery.",
   "author": "Luis Arias",
   "license": "MIT",
   "type": "module",

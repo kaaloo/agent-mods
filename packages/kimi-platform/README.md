@@ -1,10 +1,10 @@
 # @kaaloo/kimi-platform
 
-Letta Code provider mod for Kimi models via the [Moonshot AI Platform API](https://platform.kimi.ai).
+Letta Code provider mod for Kimi models via the [Kimi Code API](https://api.kimi.com/coding).
 
 ## What it does
 
-Registers a local provider (`kimi-platform`) that connects to `api.moonshot.ai/v1` and dynamically discovers available Kimi models (`kimi-k3`, `kimi-k2.7-code`, `kimi-k2.6`, etc.) from the `/v1/models` endpoint.
+Registers a local provider (`lc-kimi-code`) that connects to `api.kimi.com/coding` and dynamically discovers available Kimi models (`k3`, `kimi-for-coding`, `kimi-for-coding-highspeed`) from the `/v1/models` endpoint.
 
 ## Installation
 
@@ -14,10 +14,10 @@ npm install
 letta install .
 ```
 
-Then `/reload` in Letta Code, `/connect` and select "Kimi Platform", and enter your Moonshot API key from the [Kimi Platform Console](https://platform.kimi.ai/console/api-keys).
+Then `/reload` in Letta Code, `/connect` and select "Kimi Code", and enter your Kimi API key from the [Kimi Platform Console](https://platform.kimi.ai/console/api-keys).
 
 ## Models
 
-Models are discovered dynamically at connect time. After connecting, use `/model kimi-platform/kimi-k3` (or any other discovered model) to switch.
+Models are discovered dynamically at connect time. After connecting, use `/model lc-kimi-code/k3` (or any other discovered model) to switch.
 
-Requires a Kimi Platform API key (starts with `sk-`). Not compatible with Kimi Code CLI keys.
+Requires a Kimi API key (starts with `sk-kimi-`). Compatible with Kimi Coding plan keys.
