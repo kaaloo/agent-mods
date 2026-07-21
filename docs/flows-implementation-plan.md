@@ -81,9 +81,7 @@ interface WorkflowDefinition {
   description: string;
   phases: Phase[];
   budgets?: {
-    max_tokens?: number;
     max_concurrent?: number;
-    max_duration_ms?: number;
   };
 }
 
@@ -113,7 +111,7 @@ Validation rules:
 - `depends_on` resolves to existing phases.
 - No cycles (v0.1 only allows linear fan-out → barrier).
 - Per-phase `model` overrides are rejected. Every Agent call first tries the `ctx.model.id` captured from the conversation that starts the run, then retries once with Auto if that model cannot launch.
-- `max_concurrent` defaults to `4` and is capped by the global background task ceiling.
+- `max_concurrent` defaults to `4`. It is the only budget field supported in workflow version 1; `max_tokens` and `max_duration_ms` are rejected rather than silently ignored.
 
 Example:
 
@@ -179,7 +177,7 @@ then synthesize the results.
 
 ## 6. Inline execution mode (v0.1)
 
-The model is the orchestrator. The mod is the state machine and dispatcher. Agent calls use `run_in_background: false`; fan-out calls are emitted together so they execute concurrently without `TaskOutput` polling.
+The model is the orchestrator. The mod is the state machine and dispatcher. Agent calls use `run_in_background: false`; fan-out calls are emitted together so they execute concurrently without `TaskOutput` polling. A failed preferred-model call receives one bounded Auto retry; a subsequent or Auto failure marks the run terminally failed and surfaces the diagnostic in the initiating turn.
 
 ```text
 user:   /flow run code-audit

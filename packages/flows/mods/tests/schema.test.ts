@@ -96,10 +96,19 @@ describe("validateWorkflow", () => {
     });
   });
 
-  test("rejects negative budgets", () => {
-    const bad = { ...validWorkflow, budgets: { max_tokens: -1 } };
+  test("rejects invalid max_concurrent", () => {
+    const bad = { ...validWorkflow, budgets: { max_concurrent: -1 } };
     const { errors } = validateWorkflow(bad);
-    expect(errors.some((e) => e.path.includes("max_tokens"))).toBe(true);
+    expect(errors.some((e) => e.path === "budgets.max_concurrent")).toBe(true);
+  });
+
+  test.each(["max_tokens", "max_duration_ms"])("rejects unsupported v1 budget %s", (field) => {
+    const bad = { ...validWorkflow, budgets: { [field]: 1000 } };
+    const { errors } = validateWorkflow(bad);
+    expect(errors).toContainEqual({
+      path: `budgets.${field}`,
+      message: `${field} is not supported in workflow version 1.`,
+    });
   });
 
   test("rejects barrier depending on a later phase", () => {

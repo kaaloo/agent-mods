@@ -10,7 +10,7 @@ import {
   listLibrary,
   withRunMutexFor,
 } from "./lib/state.ts";
-import { stepInlineRun, stepInlineRunLocked, recordAgentCompleteLocked, recordBarrierCompleteLocked, parseFlowAgentMarker, sanitizePromptField, type InlineStep } from "./lib/runner-inline.ts";
+import { stepInlineRun, stepInlineRunLocked, recordAgentCompleteLocked, recordBarrierCompleteLocked, recordAgentFailureLocked, parseFlowAgentMarker, sanitizePromptField, type InlineStep } from "./lib/runner-inline.ts";
 import { listTemplates, loadTemplate } from "./lib/templates.ts";
 import { isFanOutPhase, phaseById } from "./lib/schema.ts";
 import { isNonEmptyString } from "./lib/utils.ts";
@@ -244,8 +244,7 @@ export default function activate(letta: LettaModContext): (() => void) {
         if (!run) {
           return { status: "error", content: `Run "${run_id}" not found.` };
         }
-        const step = await stepInlineRun(run_id);
-        return { status: "success", run, step };
+        return { status: "success", run };
       },
     }));
 
@@ -368,63 +367,104 @@ export default function activate(letta: LettaModContext): (() => void) {
   // ── Events ──
   if (letta.capabilities?.events?.tools) {
     safeOn("tool_end", async (event: LettaEvent, ctx: LettaEventHandlerContext) => {
-      if (!event || typeof event !== "object") return;
-      if (typeof event.toolName !== "string" || event.toolName.toLowerCase() !== "agent" || event.status !== "success") return;
+      let output = "";
+      try {
+        if (!event || typeof event !== "object") return;
+        if (typeof event.toolName !== "string" || event.toolName.toLowerCase() !== "agent") return;
+        output = getAgentOutput(event);
 
-      const marker = parseFlowAgentMarker(getAgentPrompt(event));
-      if (!marker) return;
-      const output = getAgentOutput(event);
-      if (!output.trim()) return;
+        const marker = parseFlowAgentMarker(getAgentPrompt(event));
+        if (!marker) return;
 
-      const nextStep = await withRunMutexFor(marker.runId, async (): Promise<InlineStep | null> => {
-        const meta = runMeta.get(marker.runId);
-        if (!meta || ctx.conversation?.id !== meta.conversationId) return null;
-        const advance = (): InlineStep | null => {
-          const step = stepInlineRunLocked(marker.runId);
-          if (step?.type === "complete") clearRunMetaLocked(marker.runId);
-          return step;
-        };
-
-        if (marker.agentId === "synthesize") {
-          const result = recordBarrierCompleteLocked(marker.runId, marker.phaseId, output);
-          if (!result) return null;
-          if ("type" in result && result.type === "complete") {
-            clearRunMetaLocked(marker.runId);
-            return result;
+        if (event.status === "error") {
+          const failure = await withRunMutexFor(marker.runId, () => {
+            const meta = runMeta.get(marker.runId);
+            if (!meta || ctx.conversation?.id !== meta.conversationId) return null;
+            const decision = recordAgentFailureLocked(
+              marker.runId,
+              marker.phaseId,
+              marker.agentId,
+              getAgentModel(event),
+              output,
+            );
+            if (decision?.type === "failed") clearRunMetaLocked(marker.runId);
+            return decision;
+          });
+          if (!failure) return;
+          if (failure.type === "retry") {
+            return {
+              result: {
+                status: "error",
+                output: `${failure.error}\n\n[FLOW RETRY]\nRetry this exact Agent call once with the model argument omitted so Letta uses Auto. Keep the prompt unchanged and set run_in_background to false.`,
+              },
+            };
           }
-          return advance();
+          return {
+            result: {
+              status: "error",
+              output: `${failure.error}\n\n[FLOW FAILED]\nThe workflow is terminally failed. Do not call more flow Agents for this run.`,
+            },
+          };
         }
+        if (event.status !== "success" || !output.trim()) return;
 
-        const run = recordAgentCompleteLocked(marker.runId, marker.phaseId, marker.agentId, output);
-        if (!run) return null;
-        if (run.currentPhaseId !== marker.phaseId || run.status !== "running") {
-          return advance();
-        }
+        const nextStep = await withRunMutexFor(marker.runId, async (): Promise<InlineStep | null> => {
+          const meta = runMeta.get(marker.runId);
+          if (!meta || ctx.conversation?.id !== meta.conversationId) return null;
+          const advance = (): InlineStep | null => {
+            const step = stepInlineRunLocked(marker.runId);
+            if (step?.type === "complete") clearRunMetaLocked(marker.runId);
+            return step;
+          };
 
-        // For a batched fan-out, only dispatch the next batch after every
-        // foreground Agent in the current batch has returned.
-        const phase = phaseById(run.workflow, marker.phaseId);
-        if (!phase || !isFanOutPhase(phase)) return null;
-        const completed = new Set(
-          run.completedAgents
-            .filter((agent) => agent.phaseId === marker.phaseId)
-            .map((agent) => agent.agentId),
-        );
-        const hasRunningAgent = phase.agents.some(
-          (agent) => run.startedAgentIds.includes(agent.id) && !completed.has(agent.id),
-        );
-        return hasRunningAgent ? null : advance();
-      });
+          if (marker.agentId === "synthesize") {
+            const result = recordBarrierCompleteLocked(marker.runId, marker.phaseId, output);
+            if (!result) return null;
+            if ("type" in result && result.type === "complete") {
+              clearRunMetaLocked(marker.runId);
+              return result;
+            }
+            return advance();
+          }
 
-      if (!nextStep) return;
-      const continuation = buildInTurnContinuation(marker.runId, nextStep);
-      if (!continuation) return;
-      return {
-        result: {
-          status: "success",
-          output: `${output}\n\n${continuation}`,
-        },
-      };
+          const run = recordAgentCompleteLocked(marker.runId, marker.phaseId, marker.agentId, output);
+          if (!run) return null;
+          if (run.currentPhaseId !== marker.phaseId || run.status !== "running") {
+            return advance();
+          }
+
+          // For a batched fan-out, only dispatch the next batch after every
+          // foreground Agent in the current batch has returned.
+          const phase = phaseById(run.workflow, marker.phaseId);
+          if (!phase || !isFanOutPhase(phase)) return null;
+          const completed = new Set(
+            run.completedAgents
+              .filter((agent) => agent.phaseId === marker.phaseId)
+              .map((agent) => agent.agentId),
+          );
+          const hasRunningAgent = phase.agents.some(
+            (agent) => run.startedAgentIds.includes(agent.id) && !completed.has(agent.id),
+          );
+          return hasRunningAgent ? null : advance();
+        });
+
+        if (!nextStep) return;
+        const continuation = buildInTurnContinuation(marker.runId, nextStep);
+        if (!continuation) return;
+        return {
+          result: {
+            status: "success",
+            output: `${output}\n\n${continuation}`,
+          },
+        };
+      } catch (err) {
+        return {
+          result: {
+            status: "error",
+            output: `${output ? `${output}\n\n` : ""}[FLOW ERROR]\nThe flow event handler failed: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        };
+      }
     });
   }
 
@@ -444,8 +484,13 @@ function getAgentPrompt(event: LettaEvent): string | undefined {
 }
 
 function getAgentOutput(event: LettaEvent): string {
-  const raw = event.output ?? event.result ?? event.resultText;
+  const raw = event.output ?? event.result ?? event.resultText ?? event.reason;
   return typeof raw === "string" ? raw : "";
+}
+
+function getAgentModel(event: LettaEvent): string | undefined {
+  const args = event.args ?? event.arguments;
+  return args && typeof args.model === "string" ? args.model : undefined;
 }
 
 function normalizeCommandArgs(value: string | Record<string, unknown> | undefined): string | null {
@@ -525,7 +570,6 @@ phases:
     prompt: "Merge the prior outputs into a report."
 budgets:
   max_concurrent: 3
-  max_duration_ms: 600000
 ---
 
 Phase types: fan-out (parallel agents) and barrier (single agent after dependencies).`;

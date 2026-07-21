@@ -19,7 +19,7 @@ import {
   readRunAgentOutput,
 } from "../lib/state.ts";
 import { WORKFLOW_VERSION, type WorkflowDefinition } from "../lib/schema.ts";
-import { stepInlineRun } from "../lib/runner-inline.ts";
+import { recordAgentComplete, recordAgentFailure, stepInlineRun } from "../lib/runner-inline.ts";
 
 let originalLettaHome: string | undefined;
 let tempDir: string;
@@ -158,6 +158,43 @@ describe("runs", () => {
     if (!step || step.type !== "dispatch") return;
     expect(step.agents?.[0]?.model).toBeUndefined();
     expect(step.instructions).toContain("Use Auto by omitting the Agent model argument");
+  });
+
+  test("retries a failed fan-out agent once with Auto, then fails the run", async () => {
+    const model = "openai/gpt-5.6-sol";
+    const run = await createRun(sampleWorkflow, {}, "conversation-1", "/tmp/project", model);
+    await stepInlineRun(run.runId);
+
+    const retry = await recordAgentFailure(run.runId, "scan", "a1", model, "preferred model unavailable");
+    expect(retry?.type).toBe("retry");
+    expect(loadRun(run.runId)?.status).toBe("running");
+    expect(loadRun(run.runId)?.retriedAgentKeys).toContain("scan/a1");
+
+    const failed = await recordAgentFailure(run.runId, "scan", "a1", undefined, "Auto launch failed");
+    expect(failed?.type).toBe("failed");
+    const reloaded = loadRun(run.runId);
+    expect(reloaded?.status).toBe("failed");
+    expect(reloaded?.error).toContain("Auto launch failed");
+    expect(reloaded?.completedAgents).toContainEqual(expect.objectContaining({
+      phaseId: "scan",
+      agentId: "a1",
+      status: "failed",
+    }));
+  });
+
+  test("retries a failed barrier once with Auto, then fails the run", async () => {
+    const model = "openai/gpt-5.6-sol";
+    const run = await createRun(sampleWorkflow, {}, "conversation-1", "/tmp/project", model);
+    await stepInlineRun(run.runId);
+    await recordAgentComplete(run.runId, "scan", "a1", "scan report");
+    const barrier = await stepInlineRun(run.runId);
+    expect(barrier?.type).toBe("dispatch");
+
+    const retry = await recordAgentFailure(run.runId, "synthesize", "synthesize", model, "preferred model unavailable");
+    expect(retry?.type).toBe("retry");
+    const failed = await recordAgentFailure(run.runId, "synthesize", "synthesize", undefined, "Auto launch failed");
+    expect(failed?.type).toBe("failed");
+    expect(loadRun(run.runId)?.status).toBe("failed");
   });
 
   test("saves and loads agent result", async () => {

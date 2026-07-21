@@ -58,34 +58,23 @@ describe("sanitizePromptField", () => {
   });
 });
 
-// Mirrors the tool_end handler predicate in mods/index.ts: only proceed when
-// the event is for the Agent tool with a successful status. Regression test
-// for H3 (fifth bug-sweep 1784445631272-bdac05f1): the original
-// `event.status === "error"` check was a false-negative for missing status.
-describe("tool_end status predicate (H3 regression)", () => {
-  function shouldRecord(event: { toolName?: string; status?: unknown }): boolean {
-    return typeof event.toolName === "string" && event.toolName.toLowerCase() === "agent" && event.status === "success";
+// Mirrors the tool_end handler's supported Agent outcomes. Successful calls
+// advance the run; errors enter the bounded retry/terminal-failure path.
+describe("tool_end status predicate", () => {
+  function shouldHandle(event: { toolName?: string; status?: unknown }): boolean {
+    return typeof event.toolName === "string"
+      && event.toolName.toLowerCase() === "agent"
+      && (event.status === "success" || event.status === "error");
   }
 
-  test("accepts a successful Agent tool_end", () => {
-    expect(shouldRecord({ toolName: "Agent", status: "success" })).toBe(true);
+  test("accepts successful and failed Agent tool_end events", () => {
+    expect(shouldHandle({ toolName: "Agent", status: "success" })).toBe(true);
+    expect(shouldHandle({ toolName: "agent", status: "error" })).toBe(true);
   });
 
-  test("accepts lowercase agent tool name", () => {
-    expect(shouldRecord({ toolName: "agent", status: "success" })).toBe(true);
-  });
-
-  test("rejects an explicit error", () => {
-    expect(shouldRecord({ toolName: "Agent", status: "error" })).toBe(false);
-  });
-
-  test("rejects an undefined status (the H3 fix)", () => {
-    expect(shouldRecord({ toolName: "Agent" })).toBe(false);
-    expect(shouldRecord({ toolName: "Agent", status: undefined })).toBe(false);
-  });
-
-  test("rejects non-Agent tools regardless of status", () => {
-    expect(shouldRecord({ toolName: "Bash", status: "success" })).toBe(false);
-    expect(shouldRecord({ toolName: undefined, status: "success" })).toBe(false);
+  test("rejects missing statuses and non-Agent tools", () => {
+    expect(shouldHandle({ toolName: "Agent" })).toBe(false);
+    expect(shouldHandle({ toolName: "Bash", status: "success" })).toBe(false);
+    expect(shouldHandle({ toolName: undefined, status: "error" })).toBe(false);
   });
 });

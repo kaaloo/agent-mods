@@ -95,6 +95,9 @@ so they are not re-discovered and re-prioritized in every sweep.
 | I-STREAM | Silent `sendMessageStream` failures | Closed | Detached continuation streams were removed. `tool_end` now appends the next phase to the final foreground Agent result, keeping execution in the originating CLI stream. |
 | I-META | `latestMetaView` stale reads | Closed | The live panel and its cached `latestMetaView` were removed from v0.1 because background task completion notifications are not exposed as mod `tool_end` events. `/flow status` now reads current run state on demand. |
 | I-BG | Background Agent polling stalls the parent turn | Closed | Flow Agent calls require `run_in_background: false`; fan-out calls are issued together and the executor forbids `TaskOutput`. The final `tool_end` result carries the next phase in the same turn. |
+| I-AGENT-ERROR | Failed Agent calls leave runs waiting | Closed | A preferred-model failure gets one persisted Auto retry; a subsequent or Auto failure marks the run failed and returns a terminal diagnostic. |
+| I-BUDGET | Unenforced token and duration budgets | Closed | `max_tokens` and `max_duration_ms` were removed from the v0.1 contract and are rejected by validation. `max_concurrent` remains supported. |
+| I-STATUS | `flow_status` mutates run state | Closed | The tool now returns the persisted run without stepping or dispatching it. |
 | I-LOAD | `loadRun` agent directory walk without mutex | Accepted | The directory walk is best-effort. Try/catch blocks prevent crashes, and a transient miss can self-correct on a subsequent status or tool event. |
 | I-ERROR | Error messages include user input | Accepted | Tool return values are not public-facing logs; the risk is limited to display issues in the same conversation. |
 

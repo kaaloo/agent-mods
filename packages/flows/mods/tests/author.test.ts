@@ -10,11 +10,14 @@ describe("buildAuthorPrompt", () => {
     expect(prompt).toContain("hintmore");
   });
 
-  test("forbids per-phase model fields", () => {
+  test("forbids unsupported model and budget fields", () => {
     const prompt = buildAuthorPrompt({ task: "scan the codebase" });
     expect(prompt).toContain("Do not include a model field");
     expect(prompt).toContain("current conversation model");
     expect(prompt).toContain("Auto as the runtime fallback");
+    expect(prompt).toContain("budgets supports only max_concurrent");
+    expect(prompt).not.toContain("max_tokens: 500000");
+    expect(prompt).not.toContain("max_duration_ms: 3600000");
   });
 
   test("redacts embedded [FLOW_AGENT markers in task and hints", () => {

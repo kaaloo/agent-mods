@@ -75,6 +75,10 @@ export interface InlineWait {
 
 export type InlineStep = InlineDispatch | InlineComplete | InlineWait;
 
+export type AgentFailureDecision =
+  | { type: "retry"; runId: string; phaseId: string; agentId: string; error: string }
+  | { type: "failed"; runId: string; phaseId: string; agentId: string; error: string };
+
 function modelDispatchPolicy(model: string | undefined): string {
   if (!model) {
     return "Use Auto by omitting the Agent model argument.";
@@ -109,6 +113,16 @@ export async function recordAgentComplete(runId: string, phaseId: string, agentI
 
 export async function recordBarrierComplete(runId: string, phaseId: string, output: string): Promise<InlineComplete | RunState | null> {
   return withRunMutexFor(runId, () => recordBarrierCompleteLocked(runId, phaseId, output));
+}
+
+export async function recordAgentFailure(
+  runId: string,
+  phaseId: string,
+  agentId: string,
+  usedModel: string | undefined,
+  error: string,
+): Promise<AgentFailureDecision | null> {
+  return withRunMutexFor(runId, () => recordAgentFailureLocked(runId, phaseId, agentId, usedModel, error));
 }
 
 // Internal: assumes caller holds the per-run mutex. Reads run state from
@@ -244,6 +258,53 @@ export function recordBarrierCompleteLocked(runId: string, phaseId: string, outp
   persistRun(touchRun(run));
   updateRunRegistry(run);
   return run;
+}
+
+export function recordAgentFailureLocked(
+  runId: string,
+  phaseId: string,
+  agentId: string,
+  usedModel: string | undefined,
+  error: string,
+): AgentFailureDecision | null {
+  const run = loadRun(runId);
+  if (!run || run.status !== "running" || run.currentPhaseId !== phaseId) return null;
+  const phase = phaseById(run.workflow, phaseId);
+  if (!phase) return null;
+  if (isFanOutPhase(phase) && !phase.agents.some((agent) => agent.id === agentId)) return null;
+  if (isBarrierPhase(phase) && agentId !== "synthesize") return null;
+
+  const message = error.trim() || "Agent call failed without a diagnostic message.";
+  const retryKey = `${phaseId}/${agentId}`;
+  if (run.model && usedModel === run.model && !run.retriedAgentKeys.includes(retryKey)) {
+    run.retriedAgentKeys.push(retryKey);
+    persistRun(touchRun(run));
+    updateRunRegistry(run);
+    return { type: "retry", runId, phaseId, agentId, error: message };
+  }
+
+  const prompt = isFanOutPhase(phase)
+    ? phase.agents.find((agent) => agent.id === agentId)?.prompt ?? ""
+    : phase.prompt;
+  const failedAgent: AgentRunState = {
+    phaseId,
+    agentId,
+    prompt,
+    status: "failed",
+    output: message,
+    error: message,
+    completedAt: new Date().toISOString(),
+  };
+  saveAgentResult(runId, phaseId, failedAgent, run.agentId);
+  run.completedAgents = run.completedAgents.filter(
+    (agent) => !(agent.phaseId === phaseId && agent.agentId === agentId),
+  );
+  run.completedAgents.push(failedAgent);
+  run.status = "failed";
+  run.error = `Agent "${agentId}" failed in phase "${phaseId}": ${message}`;
+  persistRun(touchRun(run));
+  updateRunRegistry(run);
+  return { type: "failed", runId, phaseId, agentId, error: run.error };
 }
 
 function dispatchFanOutLocked(run: RunState, phase: FanOutPhase): InlineStep | null {

@@ -7095,14 +7095,14 @@ function validateWorkflow(value) {
   }
   if (obj.budgets && typeof obj.budgets === "object" && !Array.isArray(obj.budgets)) {
     const b = obj.budgets;
-    if (b.max_tokens !== undefined && (typeof b.max_tokens !== "number" || !Number.isFinite(b.max_tokens) || b.max_tokens <= 0)) {
-      errors.push({ path: "budgets.max_tokens", message: "max_tokens must be a positive number." });
+    if (b.max_tokens !== undefined) {
+      errors.push({ path: "budgets.max_tokens", message: "max_tokens is not supported in workflow version 1." });
     }
     if (b.max_concurrent !== undefined && (typeof b.max_concurrent !== "number" || !Number.isInteger(b.max_concurrent) || b.max_concurrent <= 0)) {
       errors.push({ path: "budgets.max_concurrent", message: "max_concurrent must be a positive integer." });
     }
-    if (b.max_duration_ms !== undefined && (typeof b.max_duration_ms !== "number" || !Number.isFinite(b.max_duration_ms) || b.max_duration_ms <= 0)) {
-      errors.push({ path: "budgets.max_duration_ms", message: "max_duration_ms must be a positive number." });
+    if (b.max_duration_ms !== undefined) {
+      errors.push({ path: "budgets.max_duration_ms", message: "max_duration_ms is not supported in workflow version 1." });
     }
   }
   if (errors.length > 0) {
@@ -7586,6 +7586,7 @@ async function createRun(workflow, inputs = {}, conversationId, workingDirectory
     completedAgents: [],
     startedAgentIds: [],
     startedPhaseIds: [],
+    retriedAgentKeys: [],
     outputs: {},
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -7700,6 +7701,7 @@ function tryLoadRunFromAgent(runId, runAgentId) {
       completedAgents: Array.isArray(data.completedAgents) ? data.completedAgents.filter((v) => isAgentRunStateShape(v)) : [],
       startedAgentIds: Array.isArray(data.startedAgentIds) ? data.startedAgentIds.filter((v) => typeof v === "string") : [],
       startedPhaseIds: Array.isArray(data.startedPhaseIds) ? data.startedPhaseIds.filter((v) => typeof v === "string") : [],
+      retriedAgentKeys: Array.isArray(data.retriedAgentKeys) ? data.retriedAgentKeys.filter((v) => typeof v === "string") : [],
       outputs,
       startedAt: typeof data.startedAt === "string" ? data.startedAt : new Date().toISOString(),
       updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : new Date().toISOString(),
@@ -7916,6 +7918,44 @@ function recordBarrierCompleteLocked(runId, phaseId, output) {
   updateRunRegistry(run);
   return run;
 }
+function recordAgentFailureLocked(runId, phaseId, agentId, usedModel, error) {
+  const run = loadRun(runId);
+  if (!run || run.status !== "running" || run.currentPhaseId !== phaseId)
+    return null;
+  const phase = phaseById(run.workflow, phaseId);
+  if (!phase)
+    return null;
+  if (isFanOutPhase(phase) && !phase.agents.some((agent) => agent.id === agentId))
+    return null;
+  if (isBarrierPhase(phase) && agentId !== "synthesize")
+    return null;
+  const message = error.trim() || "Agent call failed without a diagnostic message.";
+  const retryKey = `${phaseId}/${agentId}`;
+  if (run.model && usedModel === run.model && !run.retriedAgentKeys.includes(retryKey)) {
+    run.retriedAgentKeys.push(retryKey);
+    persistRun(touchRun(run));
+    updateRunRegistry(run);
+    return { type: "retry", runId, phaseId, agentId, error: message };
+  }
+  const prompt = isFanOutPhase(phase) ? phase.agents.find((agent) => agent.id === agentId)?.prompt ?? "" : phase.prompt;
+  const failedAgent = {
+    phaseId,
+    agentId,
+    prompt,
+    status: "failed",
+    output: message,
+    error: message,
+    completedAt: new Date().toISOString()
+  };
+  saveAgentResult(runId, phaseId, failedAgent, run.agentId);
+  run.completedAgents = run.completedAgents.filter((agent) => !(agent.phaseId === phaseId && agent.agentId === agentId));
+  run.completedAgents.push(failedAgent);
+  run.status = "failed";
+  run.error = `Agent "${agentId}" failed in phase "${phaseId}": ${message}`;
+  persistRun(touchRun(run));
+  updateRunRegistry(run);
+  return { type: "failed", runId, phaseId, agentId, error: run.error };
+}
 function dispatchFanOutLocked(run, phase) {
   const completedIds = new Set(run.completedAgents.map((a) => a.agentId));
   const pendingAgents = phase.agents.filter((a) => !completedIds.has(a.id) && !run.startedAgentIds.includes(a.id));
@@ -8113,9 +8153,7 @@ function buildAuthorPrompt(input) {
       }
     ],
     budgets: {
-      max_tokens: 500000,
-      max_concurrent: 4,
-      max_duration_ms: 3600000
+      max_concurrent: 4
     }
   }, "Optional longer descriptive content in Markdown.");
   return `You are a workflow architect. Design a Markdown file with YAML frontmatter for the following task.
@@ -8131,6 +8169,7 @@ ${example}
 Rules:
 - The file must start with YAML frontmatter between triple dashes (---).
 - The frontmatter must include: name, version, description, phases, and optionally budgets.
+- In workflow version 1, budgets supports only max_concurrent. Do not include max_tokens or max_duration_ms.
 - Use only "fan-out" and "barrier" phase types.
 - Every fan-out phase must have at least one agent.
 - Every barrier phase must have a non-empty "depends_on" array referencing earlier phase ids.
@@ -8424,8 +8463,7 @@ function activate(letta) {
         if (!run) {
           return { status: "error", content: `Run "${run_id}" not found.` };
         }
-        const step = await stepInlineRun(run_id);
-        return { status: "success", run, step };
+        return { status: "success", run };
       }
     }));
   }
@@ -8545,62 +8583,108 @@ ${buildFlowHelp()}` };
   }
   if (letta.capabilities?.events?.tools) {
     safeOn("tool_end", async (event, ctx) => {
-      if (!event || typeof event !== "object")
-        return;
-      if (typeof event.toolName !== "string" || event.toolName.toLowerCase() !== "agent" || event.status !== "success")
-        return;
-      const marker = parseFlowAgentMarker(getAgentPrompt(event));
-      if (!marker)
-        return;
-      const output = getAgentOutput(event);
-      if (!output.trim())
-        return;
-      const nextStep = await withRunMutexFor(marker.runId, async () => {
-        const meta = runMeta.get(marker.runId);
-        if (!meta || ctx.conversation?.id !== meta.conversationId)
-          return null;
-        const advance = () => {
-          const step = stepInlineRunLocked(marker.runId);
-          if (step?.type === "complete")
-            clearRunMetaLocked(marker.runId);
-          return step;
-        };
-        if (marker.agentId === "synthesize") {
-          const result = recordBarrierCompleteLocked(marker.runId, marker.phaseId, output);
-          if (!result)
-            return null;
-          if ("type" in result && result.type === "complete") {
-            clearRunMetaLocked(marker.runId);
-            return result;
+      let output = "";
+      try {
+        if (!event || typeof event !== "object")
+          return;
+        if (typeof event.toolName !== "string" || event.toolName.toLowerCase() !== "agent")
+          return;
+        output = getAgentOutput(event);
+        const marker = parseFlowAgentMarker(getAgentPrompt(event));
+        if (!marker)
+          return;
+        if (event.status === "error") {
+          const failure = await withRunMutexFor(marker.runId, () => {
+            const meta = runMeta.get(marker.runId);
+            if (!meta || ctx.conversation?.id !== meta.conversationId)
+              return null;
+            const decision = recordAgentFailureLocked(marker.runId, marker.phaseId, marker.agentId, getAgentModel(event), output);
+            if (decision?.type === "failed")
+              clearRunMetaLocked(marker.runId);
+            return decision;
+          });
+          if (!failure)
+            return;
+          if (failure.type === "retry") {
+            return {
+              result: {
+                status: "error",
+                output: `${failure.error}
+
+[FLOW RETRY]
+Retry this exact Agent call once with the model argument omitted so Letta uses Auto. Keep the prompt unchanged and set run_in_background to false.`
+              }
+            };
           }
-          return advance();
+          return {
+            result: {
+              status: "error",
+              output: `${failure.error}
+
+[FLOW FAILED]
+The workflow is terminally failed. Do not call more flow Agents for this run.`
+            }
+          };
         }
-        const run = recordAgentCompleteLocked(marker.runId, marker.phaseId, marker.agentId, output);
-        if (!run)
-          return null;
-        if (run.currentPhaseId !== marker.phaseId || run.status !== "running") {
-          return advance();
-        }
-        const phase = phaseById(run.workflow, marker.phaseId);
-        if (!phase || !isFanOutPhase(phase))
-          return null;
-        const completed = new Set(run.completedAgents.filter((agent) => agent.phaseId === marker.phaseId).map((agent) => agent.agentId));
-        const hasRunningAgent = phase.agents.some((agent) => run.startedAgentIds.includes(agent.id) && !completed.has(agent.id));
-        return hasRunningAgent ? null : advance();
-      });
-      if (!nextStep)
-        return;
-      const continuation = buildInTurnContinuation(marker.runId, nextStep);
-      if (!continuation)
-        return;
-      return {
-        result: {
-          status: "success",
-          output: `${output}
+        if (event.status !== "success" || !output.trim())
+          return;
+        const nextStep = await withRunMutexFor(marker.runId, async () => {
+          const meta = runMeta.get(marker.runId);
+          if (!meta || ctx.conversation?.id !== meta.conversationId)
+            return null;
+          const advance = () => {
+            const step = stepInlineRunLocked(marker.runId);
+            if (step?.type === "complete")
+              clearRunMetaLocked(marker.runId);
+            return step;
+          };
+          if (marker.agentId === "synthesize") {
+            const result = recordBarrierCompleteLocked(marker.runId, marker.phaseId, output);
+            if (!result)
+              return null;
+            if ("type" in result && result.type === "complete") {
+              clearRunMetaLocked(marker.runId);
+              return result;
+            }
+            return advance();
+          }
+          const run = recordAgentCompleteLocked(marker.runId, marker.phaseId, marker.agentId, output);
+          if (!run)
+            return null;
+          if (run.currentPhaseId !== marker.phaseId || run.status !== "running") {
+            return advance();
+          }
+          const phase = phaseById(run.workflow, marker.phaseId);
+          if (!phase || !isFanOutPhase(phase))
+            return null;
+          const completed = new Set(run.completedAgents.filter((agent) => agent.phaseId === marker.phaseId).map((agent) => agent.agentId));
+          const hasRunningAgent = phase.agents.some((agent) => run.startedAgentIds.includes(agent.id) && !completed.has(agent.id));
+          return hasRunningAgent ? null : advance();
+        });
+        if (!nextStep)
+          return;
+        const continuation = buildInTurnContinuation(marker.runId, nextStep);
+        if (!continuation)
+          return;
+        return {
+          result: {
+            status: "success",
+            output: `${output}
 
 ${continuation}`
-        }
-      };
+          }
+        };
+      } catch (err) {
+        return {
+          result: {
+            status: "error",
+            output: `${output ? `${output}
+
+` : ""}[FLOW ERROR]
+The flow event handler failed: ${err instanceof Error ? err.message : String(err)}`
+          }
+        };
+      }
     });
   }
   return () => {
@@ -8619,8 +8703,12 @@ function getAgentPrompt(event) {
   return;
 }
 function getAgentOutput(event) {
-  const raw = event.output ?? event.result ?? event.resultText;
+  const raw = event.output ?? event.result ?? event.resultText ?? event.reason;
   return typeof raw === "string" ? raw : "";
+}
+function getAgentModel(event) {
+  const args = event.args ?? event.arguments;
+  return args && typeof args.model === "string" ? args.model : undefined;
 }
 function normalizeCommandArgs(value) {
   if (value === undefined || value === null)
@@ -8709,7 +8797,6 @@ phases:
     prompt: "Merge the prior outputs into a report."
 budgets:
   max_concurrent: 3
-  max_duration_ms: 600000
 ---
 
 Phase types: fan-out (parallel agents) and barrier (single agent after dependencies).`;

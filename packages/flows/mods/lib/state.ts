@@ -155,6 +155,7 @@ export interface RunState {
   completedAgents: AgentRunState[];
   startedAgentIds: string[];
   startedPhaseIds: string[];
+  retriedAgentKeys: string[];
   outputs: Record<string, string | Record<string, string>>;
   startedAt: string;
   updatedAt: string;
@@ -476,6 +477,7 @@ export async function createRun(
     completedAgents: [],
     startedAgentIds: [],
     startedPhaseIds: [],
+    retriedAgentKeys: [],
     outputs: {},
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -616,6 +618,9 @@ function tryLoadRunFromAgent(runId: string, runAgentId: string): RunState | null
         : [],
       startedPhaseIds: Array.isArray(data.startedPhaseIds)
         ? (data.startedPhaseIds as unknown[]).filter((v): v is string => typeof v === "string")
+        : [],
+      retriedAgentKeys: Array.isArray(data.retriedAgentKeys)
+        ? (data.retriedAgentKeys as unknown[]).filter((v): v is string => typeof v === "string")
         : [],
       outputs,
       startedAt: typeof data.startedAt === "string" ? data.startedAt : new Date().toISOString(),

@@ -62,8 +62,10 @@ This is a prototype. v0.1 supports:
 - `fan-out` and `barrier` phase types
 - Inline execution mode with same-turn phase continuation
 - Parallel foreground `Agent` calls whose returned outputs are persisted by the parent mod
-- Subagents try the current conversation model first, with Auto as fallback
-- Workflow authoring, saving, loading, listing, and status queries
+- Subagents try the current conversation model first, with one bounded Auto retry on failure
+- Terminal Agent failures are persisted and surfaced in the initiating turn
+- `max_concurrent` as the only v0.1 workflow budget
+- Workflow authoring, saving, loading, listing, and read-only status queries
 
 Background execution, advanced phase types, and Letta-native integrations (Control Room, Threadkeeper, muscle-memory) are planned for later versions.
 

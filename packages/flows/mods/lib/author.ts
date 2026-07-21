@@ -30,9 +30,7 @@ export function buildAuthorPrompt(input: AuthorInput): string {
       },
     ],
     budgets: {
-      max_tokens: 500000,
       max_concurrent: 4,
-      max_duration_ms: 3600000,
     },
   }, "Optional longer descriptive content in Markdown.");
 
@@ -48,6 +46,7 @@ ${example}
 Rules:
 - The file must start with YAML frontmatter between triple dashes (---).
 - The frontmatter must include: name, version, description, phases, and optionally budgets.
+- In workflow version 1, budgets supports only max_concurrent. Do not include max_tokens or max_duration_ms.
 - Use only "fan-out" and "barrier" phase types.
 - Every fan-out phase must have at least one agent.
 - Every barrier phase must have a non-empty "depends_on" array referencing earlier phase ids.

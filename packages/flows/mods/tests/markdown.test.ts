@@ -10,7 +10,7 @@ const sampleWorkflow = {
     { id: "scan", type: "fan-out" as const, agents: [{ id: "a1", prompt: "p1" }] },
     { id: "synth", type: "barrier" as const, depends_on: ["scan"], prompt: "merge" },
   ],
-  budgets: { max_concurrent: 2, max_duration_ms: 1000 },
+  budgets: { max_concurrent: 2 },
 } satisfies WorkflowDefinition;
 
 describe("parseWorkflowMarkdown", () => {

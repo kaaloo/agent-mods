@@ -811,7 +811,7 @@ describe("sweep-7 fixes: H1, M2, F3, L-C", () => {
     const idx = src.indexOf("function recordBarrierCompleteLocked");
     expect(idx).toBeGreaterThan(0);
     const after = src.slice(idx);
-    const endIdx = after.indexOf("\nfunction ");
+    const endIdx = after.search(/\n(?:export )?function /);
     const block = endIdx > 0 ? after.slice(0, endIdx) : after;
     expect(block).toMatch(/complete\.error/);
     // The fix removed the "run.status = \"failed\"" assignment in this block;

@@ -41,7 +41,6 @@ phases:
     prompt: Merge the findings into a prioritized report.
 budgets:
   max_concurrent: 3
-  max_duration_ms: 600000
 ---
 
 Longer descriptive content about the workflow, intended for humans.
@@ -112,7 +111,9 @@ All state lives in the agent's MemFS:
 - Use the public mod API and Node built-ins.
 - Keep the DSL bounded and validate it before running.
 - In v0.1, only `fan-out` and `barrier` phases are supported.
-- Every subagent first tries the model from the conversation that started the flow. If that model cannot launch, retry once with Auto. Per-phase `model` overrides are rejected.
+- Every subagent first tries the model from the conversation that started the flow. A failed preferred-model call gets one bounded retry with Auto; a subsequent failure marks the run terminally failed. Per-phase `model` overrides are rejected.
+- `max_concurrent` is the only budget supported in workflow version 1. `max_tokens` and `max_duration_ms` are rejected rather than silently ignored.
+- `flow_status` is read-only and never steps or dispatches a run.
 - Flow Agent calls use `run_in_background: false`. Fan-out calls are issued together for parallel execution; the orchestrator must not poll with `TaskOutput`.
 - Subagents return reports through their Agent tool results. The parent mod persists them; subagents do not write into another agent's MemFS.
 - The final `tool_end` result for each phase carries the next-phase instruction, keeping continuation in the originating CLI turn.

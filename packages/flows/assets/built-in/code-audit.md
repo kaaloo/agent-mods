@@ -20,7 +20,6 @@ phases:
     prompt: Merge the findings from the race, null, and injection scans into a single prioritized report. Group by severity, deduplicate overlapping issues, and provide actionable next steps.
 budgets:
   max_concurrent: 3
-  max_duration_ms: 600000
 ---
 
 This workflow demonstrates the fan-out/barrier pattern. The first phase dispatches three parallel specialist scans. Once all three complete, the barrier phase synthesizes their findings into a single prioritized report.

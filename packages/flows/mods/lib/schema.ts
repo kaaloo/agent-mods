@@ -10,9 +10,7 @@ export interface WorkflowDefinition {
   description: string;
   phases: Phase[];
   budgets?: {
-    max_tokens?: number;
     max_concurrent?: number;
-    max_duration_ms?: number;
   };
 }
 
@@ -172,14 +170,14 @@ export function validateWorkflow(value: unknown): { workflow?: WorkflowDefinitio
 
   if (obj.budgets && typeof obj.budgets === "object" && !Array.isArray(obj.budgets)) {
     const b = obj.budgets as Record<string, unknown>;
-    if (b.max_tokens !== undefined && (typeof b.max_tokens !== "number" || !Number.isFinite(b.max_tokens) || b.max_tokens <= 0)) {
-      errors.push({ path: "budgets.max_tokens", message: "max_tokens must be a positive number." });
+    if (b.max_tokens !== undefined) {
+      errors.push({ path: "budgets.max_tokens", message: "max_tokens is not supported in workflow version 1." });
     }
     if (b.max_concurrent !== undefined && (typeof b.max_concurrent !== "number" || !Number.isInteger(b.max_concurrent) || b.max_concurrent <= 0)) {
       errors.push({ path: "budgets.max_concurrent", message: "max_concurrent must be a positive integer." });
     }
-    if (b.max_duration_ms !== undefined && (typeof b.max_duration_ms !== "number" || !Number.isFinite(b.max_duration_ms) || b.max_duration_ms <= 0)) {
-      errors.push({ path: "budgets.max_duration_ms", message: "max_duration_ms must be a positive number." });
+    if (b.max_duration_ms !== undefined) {
+      errors.push({ path: "budgets.max_duration_ms", message: "max_duration_ms is not supported in workflow version 1." });
     }
   }
 
