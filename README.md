@@ -7,6 +7,7 @@ Monorepo for trusted [Letta Code](https://github.com/letta-ai/letta-code) mods m
 | Package | Description |
 | --- | --- |
 | [`@kaaloo/flows`](packages/flows) | A Letta-native mod for authoring and running multi-agent flows. Describes a task as markdown with YAML frontmatter, fans it out across parallel subagents, and synthesizes the results. |
+| [`@kaaloo/kimi-platform`](packages/kimi-platform) | Provider mod for Kimi models via the Kimi Code API. Registers as `lc-kimi-code` with dynamic model discovery from `api.kimi.com/coding/v1/models`. |
 
 New packages land under `packages/*` with their own `package.json`, `README.md`, and (where applicable) `MOD.md`.
 
@@ -36,7 +37,8 @@ See each package's README for package-specific usage.
 ```
 .
 ├── packages/
-│   └── flows/          # @kaaloo/flows mod (TypeScript source, bundled JS, tests)
+│   ├── flows/          # @kaaloo/flows mod (TypeScript source, bundled JS, tests)
+│   └── kimi-platform/  # @kaaloo/kimi-platform provider mod (dynamic Kimi model discovery)
 ├── docs/               # Design notes and implementation plans
 ├── .github/
 │   ├── prompts/        # System prompts used by the CI agent
@@ -94,12 +96,18 @@ Both jobs share the agent defined by the `LETTA_REVIEW_AGENT` variable so the ag
 
 ## Per-package verification
 
-Each mod defines its own quality gate. For `@kaaloo/flows`:
+Each mod defines its own quality gate:
 
 ```bash
+# @kaaloo/flows
 cd packages/flows
 npm run check    # build + typecheck + tests
 npm run verify   # verify:bundle + typecheck + tests (fails if the bundled JS drifts from source)
+
+# @kaaloo/kimi-platform
+cd packages/kimi-platform
+npm run check    # build + typecheck
+npm run verify   # verify:bundle + typecheck
 ```
 
 ## License

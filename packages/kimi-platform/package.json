@@ -1,0 +1,48 @@
+{
+  "name": "@kaaloo/kimi-platform",
+  "version": "0.1.0",
+  "description": "Letta Code provider mod for Kimi models via the Moonshot AI Platform API (api.moonshot.ai/v1) with dynamic model discovery.",
+  "author": "Luis Arias",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "letta-package",
+    "letta-mod",
+    "letta-code",
+    "kimi",
+    "moonshot",
+    "provider"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kaaloo/agent-mods.git",
+    "directory": "packages/kimi-platform"
+  },
+  "files": [
+    "README.md",
+    "mods"
+  ],
+  "scripts": {
+    "build": "bun build mods/index.ts --target node --outfile mods/index.bundled.mjs",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run build && npm run typecheck",
+    "verify:bundle": "bun build mods/index.ts --target node --outfile /tmp/kimi-platform-bundle-drift-check.mjs && cmp -s /tmp/kimi-platform-bundle-drift-check.mjs mods/index.bundled.mjs && echo 'bundle matches source' || (echo 'BUNDLE DRIFT: mods/index.bundled.mjs does not match source — run npm run build and commit the bundle' && exit 1)",
+    "verify": "npm run verify:bundle && npm run typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.5.0"
+  },
+  "letta": {
+    "manifestVersion": 1,
+    "mods": [
+      "./mods/index.bundled.mjs"
+    ],
+    "capabilities": [
+      "providers"
+    ],
+    "engines": {
+      "lettaCodeCli": ">=0.28.4"
+    }
+  }
+}
