@@ -8268,6 +8268,7 @@ function loadTemplate(templateDir, name) {
 function activate(letta) {
   const disposers = [];
   const runMeta = new Map;
+  const flowAgentCalls = new Map;
   const TEMPLATE_DIR = path4.resolve(import.meta.dirname, "../assets/built-in");
   const metaMutexChain = { promise: Promise.resolve() };
   function withMetaMutex(fn) {
@@ -8286,6 +8287,24 @@ function activate(letta) {
   }
   function clearRunMetaLocked(runId) {
     runMeta.delete(runId);
+    for (const [toolCallId, route] of flowAgentCalls) {
+      if (route.runId === runId)
+        flowAgentCalls.delete(toolCallId);
+    }
+  }
+  async function findUnmarkedFlowAgent(conversationId, prompt) {
+    for (const [runId, meta] of runMeta) {
+      if (meta.conversationId !== conversationId)
+        continue;
+      const route = await withRunMutexFor(runId, () => {
+        const run = loadRun(runId);
+        return run ? routeForUnmarkedPrompt(run, prompt) : null;
+      });
+      if (route && !Array.from(flowAgentCalls.values()).some((candidate) => sameRoute(candidate, route))) {
+        return route;
+      }
+    }
+    return null;
   }
   function safeOn(event, handler) {
     try {
@@ -8582,6 +8601,19 @@ ${buildFlowHelp()}` };
     }));
   }
   if (letta.capabilities?.events?.tools) {
+    safeOn("tool_start", async (event, ctx) => {
+      if (!event || typeof event !== "object")
+        return;
+      if (typeof event.toolName !== "string" || event.toolName.toLowerCase() !== "agent")
+        return;
+      const toolCallId = getToolCallId(event);
+      const prompt = getAgentPrompt(event);
+      if (!toolCallId || !prompt)
+        return;
+      const route = parseFlowAgentMarker(prompt) ?? await findUnmarkedFlowAgent(ctx.conversation?.id, prompt);
+      if (route)
+        flowAgentCalls.set(toolCallId, route);
+    });
     safeOn("tool_end", async (event, ctx) => {
       let output = "";
       try {
@@ -8590,7 +8622,8 @@ ${buildFlowHelp()}` };
         if (typeof event.toolName !== "string" || event.toolName.toLowerCase() !== "agent")
           return;
         output = getAgentOutput(event);
-        const marker = parseFlowAgentMarker(getAgentPrompt(event));
+        const toolCallId = getToolCallId(event);
+        const marker = parseFlowAgentMarker(getAgentPrompt(event)) ?? (toolCallId ? flowAgentCalls.get(toolCallId) : undefined);
         if (!marker)
           return;
         if (event.status === "error") {
@@ -8599,6 +8632,8 @@ ${buildFlowHelp()}` };
             if (!meta || ctx.conversation?.id !== meta.conversationId)
               return null;
             const decision = recordAgentFailureLocked(marker.runId, marker.phaseId, marker.agentId, getAgentModel(event), output);
+            if (toolCallId)
+              flowAgentCalls.delete(toolCallId);
             if (decision?.type === "failed")
               clearRunMetaLocked(marker.runId);
             return decision;
@@ -8629,6 +8664,8 @@ The workflow is terminally failed. Do not call more flow Agents for this run.`
         if (event.status !== "success" || !output.trim())
           return;
         const nextStep = await withRunMutexFor(marker.runId, async () => {
+          if (toolCallId)
+            flowAgentCalls.delete(toolCallId);
           const meta = runMeta.get(marker.runId);
           if (!meta || ctx.conversation?.id !== meta.conversationId)
             return null;
@@ -8694,6 +8731,37 @@ The flow event handler failed: ${err instanceof Error ? err.message : String(err
       } catch {}
     }
   };
+}
+function sameRoute(left, right) {
+  return left.runId === right.runId && left.phaseId === right.phaseId && left.agentId === right.agentId;
+}
+function routeForUnmarkedPrompt(run, prompt) {
+  if (run.status !== "running" || !run.currentPhaseId)
+    return null;
+  const phase = phaseById(run.workflow, run.currentPhaseId);
+  if (!phase)
+    return null;
+  const actual = prompt.trim();
+  if (isFanOutPhase(phase)) {
+    const agent = phase.agents.find((candidate) => matchesDispatchedPrompt(actual, candidate.prompt));
+    return agent ? { runId: run.runId, phaseId: phase.id, agentId: agent.id } : null;
+  }
+  if (isBarrierPhase(phase) && matchesDispatchedPrompt(actual, phase.prompt)) {
+    return { runId: run.runId, phaseId: phase.id, agentId: "synthesize" };
+  }
+  return null;
+}
+function matchesDispatchedPrompt(actual, basePrompt) {
+  const expected = sanitizePromptField(basePrompt)?.trim();
+  if (!expected)
+    return false;
+  return actual === expected || actual.startsWith(`${expected}
+
+Working directory:`);
+}
+function getToolCallId(event) {
+  const value = event.toolCallId ?? event.tool_call_id;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 function getAgentPrompt(event) {
   const args = event.args ?? event.arguments;

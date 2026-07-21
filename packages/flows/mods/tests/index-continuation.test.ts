@@ -5,6 +5,7 @@ import path from "node:path";
 import activate from "../index.ts";
 import { createRun, getRunResultPath, loadRun } from "../lib/state.ts";
 import { WORKFLOW_VERSION, type WorkflowDefinition } from "../lib/schema.ts";
+import { sanitizePromptField } from "../lib/runner-inline.ts";
 
 let originalLettaHome: string | undefined;
 let originalLettaAgentId: string | undefined;
@@ -114,8 +115,9 @@ describe("same-turn flow continuation", () => {
     dispose();
   });
 
-  test("returns one Auto retry before terminally failing an Agent", async () => {
+  test("continues an active flow when Agent prompts omit routing markers", async () => {
     let flowCommand: any;
+    let toolStart: any;
     let toolEnd: any;
     const dispose = activate({
       capabilities: { commands: true, events: { tools: true } },
@@ -127,6 +129,120 @@ describe("same-turn flow continuation", () => {
       },
       events: {
         on(event: string, handler: any) {
+          if (event === "tool_start") toolStart = handler;
+          if (event === "tool_end") toolEnd = handler;
+          return () => {};
+        },
+      },
+    } as any);
+
+    const conversation = { id: "conversation-unmarked" };
+    const ownerAgentId = "agent-parent0001";
+    const commandResult = await flowCommand.run({
+      args: "run code-audit",
+      cwd: "/tmp/project",
+      conversation,
+      agent: { id: ownerAgentId },
+      model: { id: "openai/gpt-test" },
+    });
+    const runId = String(commandResult.content).match(/Run ID: (\d{13,}-[A-Za-z0-9]{8,})/)?.[1];
+    expect(runId).toBeTruthy();
+    if (!runId) return;
+
+    const eventContext = { conversation, agent: { id: ownerAgentId } };
+    const dispatchedPrompt = (prompt: string) => sanitizePromptField(prompt) ?? prompt;
+    const completeUnmarked = async (toolCallId: string, prompt: string, output: string) => {
+      const effectivePrompt = dispatchedPrompt(prompt);
+      await toolStart({ toolName: "Agent", toolCallId, args: { prompt: effectivePrompt } }, eventContext);
+      return toolEnd({ toolName: "Agent", toolCallId, status: "success", args: { prompt: effectivePrompt }, output }, eventContext);
+    };
+
+    const scan = loadRun(runId)?.workflow.phases[0];
+    expect(scan?.type).toBe("fan-out");
+    if (!scan || scan.type !== "fan-out") return;
+    for (const agent of scan.agents.slice(0, -1)) {
+      expect(await completeUnmarked(`scan-${agent.id}`, agent.prompt, `${agent.id} report`)).toBeUndefined();
+    }
+    const lastScan = scan.agents.at(-1);
+    expect(lastScan).toBeDefined();
+    if (!lastScan) return;
+    const scanCompletion = await completeUnmarked(`scan-${lastScan.id}`, lastScan.prompt, `${lastScan.id} report`);
+    expect(scanCompletion.result.output).toContain("phase_id=verify");
+
+    const verify = loadRun(runId)?.workflow.phases[1];
+    expect(verify?.type).toBe("barrier");
+    if (!verify || verify.type !== "barrier") return;
+    const verifyCompletion = await completeUnmarked("verify", verify.prompt, "verification ledger");
+    expect(verifyCompletion.result.output).toContain("phase_id=report");
+
+    const report = loadRun(runId)?.workflow.phases[2];
+    expect(report?.type).toBe("barrier");
+    if (!report || report.type !== "barrier") return;
+    const reportCompletion = await completeUnmarked("report", report.prompt, "final report");
+    expect(reportCompletion.result.output).toContain("[FLOW COMPLETE]");
+    expect(readFileSync(getRunResultPath(runId, ownerAgentId), "utf8")).toBe("final report");
+
+    dispose();
+  });
+
+  test("ignores an unmarked Agent call whose prompt does not match the active flow", async () => {
+    let flowCommand: any;
+    let toolStart: any;
+    let toolEnd: any;
+    const dispose = activate({
+      capabilities: { commands: true, events: { tools: true } },
+      commands: {
+        register(definition: any) {
+          flowCommand = definition;
+          return () => {};
+        },
+      },
+      events: {
+        on(event: string, handler: any) {
+          if (event === "tool_start") toolStart = handler;
+          if (event === "tool_end") toolEnd = handler;
+          return () => {};
+        },
+      },
+    } as any);
+
+    const conversation = { id: "conversation-unrelated" };
+    const ownerAgentId = "agent-parent0001";
+    await flowCommand.run({
+      args: "run code-audit",
+      cwd: "/tmp/project",
+      conversation,
+      agent: { id: ownerAgentId },
+      model: { id: "openai/gpt-test" },
+    });
+    const eventContext = { conversation, agent: { id: ownerAgentId } };
+    await toolStart({ toolName: "Agent", toolCallId: "unrelated", args: { prompt: "Do an unrelated task." } }, eventContext);
+    expect(await toolEnd({
+      toolName: "Agent",
+      toolCallId: "unrelated",
+      status: "success",
+      args: { prompt: "Do an unrelated task." },
+      output: "unrelated result",
+    }, eventContext)).toBeUndefined();
+
+    dispose();
+  });
+
+  test("retries and fails an unmarked Agent completion", async () => {
+    let flowCommand: any;
+    let toolStart: any;
+    let toolEnd: any;
+    const dispose = activate({
+      capabilities: { commands: true, events: { tools: true } },
+      commands: {
+        register(definition: any) {
+          flowCommand = definition;
+          return () => {};
+        },
+      },
+      events: {
+        on(event: string, handler: any) {
+          if (event === "tool_start") toolStart = handler;
           if (event === "tool_end") toolEnd = handler;
           return () => {};
         },
@@ -146,23 +262,34 @@ describe("same-turn flow continuation", () => {
     expect(runId).toBeTruthy();
     if (!runId) return;
 
-    const prompt = `scan\n[FLOW_AGENT run_id=${runId} phase_id=scan agent_id=concurrency]`;
+    const scan = loadRun(runId)?.workflow.phases[0];
+    expect(scan?.type).toBe("fan-out");
+    if (!scan || scan.type !== "fan-out") return;
+    const concurrency = scan.agents.find((agent) => agent.id === "concurrency");
+    expect(concurrency).toBeDefined();
+    if (!concurrency) return;
+    const prompt = sanitizePromptField(concurrency.prompt) ?? concurrency.prompt;
+    const eventContext = { conversation, agent: { id: ownerAgentId } };
+    await toolStart({ toolName: "Agent", toolCallId: "preferred", args: { prompt, model: "openai/gpt-test" } }, eventContext);
     const retry = await toolEnd({
       toolName: "Agent",
+      toolCallId: "preferred",
       status: "error",
       args: { prompt, model: "openai/gpt-test" },
       output: "preferred model unavailable",
-    }, { conversation, agent: { id: ownerAgentId } });
+    }, eventContext);
     expect(retry.result.status).toBe("error");
     expect(retry.result.output).toContain("[FLOW RETRY]");
     expect(loadRun(runId)?.status).toBe("running");
 
+    await toolStart({ toolName: "Agent", toolCallId: "auto", args: { prompt } }, eventContext);
     const failed = await toolEnd({
       toolName: "Agent",
+      toolCallId: "auto",
       status: "error",
       args: { prompt },
       output: "Auto launch failed",
-    }, { conversation, agent: { id: ownerAgentId } });
+    }, eventContext);
     expect(failed.result.status).toBe("error");
     expect(failed.result.output).toContain("[FLOW FAILED]");
     expect(loadRun(runId)?.status).toBe("failed");
