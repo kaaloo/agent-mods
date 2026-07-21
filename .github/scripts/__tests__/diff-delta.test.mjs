@@ -121,9 +121,8 @@ test('filterPatchToChangedLines passes deleted files through verbatim', () => {
 
 test('filterPatchToChangedLines keeps hunks whose only changes are deletions', () => {
   // A deletion-only modification: lines 5-7 in old, no new lines
-  // (just removals). The hunk has no `+` lines but `-` lines exist.
-  // The delta map records deleted lines; the hunk filter must
-  // keep the hunk so the model can fire LEFT-side findings.
+  // (just removals). The delta map marks the whole file in scope
+  // (no fine left-side filter), so the hunk survives intact.
   const deletionPatch = [
     'diff --git a/pkg/del.ts b/pkg/del.ts',
     'index 1111111..0000000 100644',
@@ -135,12 +134,12 @@ test('filterPatchToChangedLines keeps hunks whose only changes are deletions', (
     '-line7',
   ].join('\n');
   const changedLines = new Map([
-    ['pkg/del.ts', { added: new Set(), deleted: new Set([6, 7]) }],
+    ['pkg/del.ts', null], // whole-file in scope (deletions only)
   ]);
   const filtered = filterPatchToChangedLines(deletionPatch, changedLines);
   assert.ok(
     filtered.includes('-line6'),
-    'pure-deletion hunk should be retained (LEFT-side anchors)',
+    'pure-deletion hunk should be retained (whole-file scope)',
   );
 });
 
@@ -162,34 +161,11 @@ test('hunkIntersects: returns true when any right-side line is in added set', ()
   );
 });
 
-test('hunkIntersects: returns true when any left-side line is in deleted set', () => {
-  // Pure-deletion hunk: old lines 5-7, no new lines.
-  // deleted set {6} should make this hunk intersect.
-  const hunk = {
-    header: '@@ -5,3 +5,0 @@',
-    body: [
-      ' line5',
-      '-line6',
-      '-line7',
-    ],
-  };
-  assert.equal(
-    __test__.hunkIntersects(hunk, { added: new Set(), deleted: new Set([6]) }),
-    true,
-  );
-  assert.equal(
-    __test__.hunkIntersects(hunk, { added: new Set(), deleted: new Set([100]) }),
-    false,
-  );
-});
-
-test('hunkIntersects: ignores deletion-only lines for added-only set', () => {
-  // Header says oldStart=1, oldCount=3 (3 lines in old), newStart=1,
-  // newCount=2 (2 lines in new). Body:
-  //   ' line1'   → context, right advances 1→2
-  //   '-removed' → deletion, no right advance
-  //   ' line2'   → context, right advances 2→3
-  // Right lines: 1, 2. added={1} intersects.
+test('hunkIntersects: ignores deletion-only lines', () => {
+  // The hunk has both `-` and ` ` lines. The deleted set is empty
+  // (we don't fine-filter by left-side line; see
+  // fetchChangedLinesSince). Only the right-side added set
+  // matters for hunk-level filtering.
   const hunk = {
     header: '@@ -1,3 +1,2 @@',
     body: [' line1', '-removed', ' line2'],
@@ -202,7 +178,6 @@ test('hunkIntersects: ignores deletion-only lines for added-only set', () => {
     __test__.hunkIntersects(hunk, { added: new Set([2]), deleted: new Set() }),
     true,
   );
-  // Set {3} doesn't intersect; right line 3 doesn't exist in this hunk.
   assert.equal(
     __test__.hunkIntersects(hunk, { added: new Set([3]), deleted: new Set() }),
     false,
@@ -224,6 +199,31 @@ test('fetchChangedLinesSince returns typed failure for non-reachable SHA', async
   });
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'sha-not-reachable');
+});
+
+test('fetchChangedLinesSince: 300-file response indicates truncation', async () => {
+  // The Compare API caps the changed-file list at 300. Build a
+  // payload of exactly 300 files and assert the helper flags it
+  // as truncated so the caller falls back to a full review.
+  const fakeGhApi = (endpoint) => {
+    if (endpoint.includes('/compare/')) {
+      const files = Array.from({ length: 300 }, (_, i) => ({
+        filename: `pkg/file-${i}.ts`,
+        status: 'modified',
+        patch: '@@ -1,1 +1,2 @@\n unchanged\n+added',
+      }));
+      return buildComparePayload({ files });
+    }
+    return '{}';
+  };
+  const result = await fetchChangedLinesSince({
+    repository: 'o/r',
+    baseSha: BASE,
+    headSha: HEAD,
+    ghApi: fakeGhApi,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'compare-truncated');
 });
 
 test('fetchChangedLinesSince rejects malformed SHAs', async () => {

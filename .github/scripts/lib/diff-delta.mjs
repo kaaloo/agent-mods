@@ -70,6 +70,14 @@ export async function fetchChangedLinesSince({ repository, baseSha, headSha, ghA
     return { ok: false, reason: 'compare-failed' };
   }
 
+  // The Compare API caps the changed-file list at 300 files
+  // (regardless of pagination). If we hit that limit, the delta
+  // is incomplete and any filter would silently drop files. Fall
+  // back to a full review in that case so we don't under-report.
+  if (payload.files.length >= 300) {
+    return { ok: false, reason: 'compare-truncated' };
+  }
+
   const changedLines = new Map();
   const removedFiles = new Set();
   const renamedFiles = new Map();
@@ -83,16 +91,14 @@ export async function fetchChangedLinesSince({ repository, baseSha, headSha, ghA
       renamedFiles.set(f.filename, f.previous_filename);
     }
     // For added / modified / renamed files, walk the per-file patch
-    // and track which lines are actually touched. We collect
-    // `+`-prefixed lines on the right side and `-`-prefixed lines
-    // on the left side; context (` `-prefixed) lines are not
-    // counted as "changed" — they only anchor hunks.
-    //
-    // The file is "in scope" if it has any non-context lines at
-    // all. For files that only contain context (no diff body),
-    // we still mark them as fully in scope when the API signalled
-    // a status change (added/modified/removed/renamed) — a
-    // deletion-only push is still a change worth reviewing.
+    // and track which right-side lines were added. We deliberately
+    // do NOT use left-side line numbers as a fine-grained filter
+    // because the compare API's left-side coordinates (prior SHA's
+    // view of the file) can diverge from the PR diff's left-side
+    // coordinates (PR base ref's view) on rebased or fast-forwarded
+    // branches. Filter on added right-side lines only; when a file
+    // has any deletion, fall back to "whole file in scope" so we
+    // do not silently drop deletions due to coordinate drift.
     const patch = typeof f.patch === 'string' ? f.patch : '';
     if (!patch) {
       // If the API omitted the patch (binary, large diff), treat
@@ -103,11 +109,13 @@ export async function fetchChangedLinesSince({ repository, baseSha, headSha, ghA
     }
     const { added, deleted } = parseAddedAndDeletedLines(patch);
     if (added.size > 0) {
-      changedLines.set(f.filename, { added, deleted });
+      changedLines.set(f.filename, { added, deleted: new Set() });
     } else if (deleted.size > 0) {
-      // Pure-deletion hunk: keep the file in scope so LEFT-side
-      // anchor findings on the deleted lines can still fire.
-      changedLines.set(f.filename, { added, deleted });
+      // Has deletions but no additions. Mark the whole file in
+      // scope so the model sees the deletion hunks intact; we
+      // don't try to fine-filter by exact left-side line because
+      // the coordinates may not match the PR diff's left side.
+      changedLines.set(f.filename, null);
     } else if (f.status === 'added') {
       // Newly-added files always have content on the right side.
       // If we somehow didn't find any `+` lines, fall back to
@@ -257,20 +265,18 @@ function hunkIntersects(hunk, changedSet) {
   const header = parseHunkHeader(hunk.header);
   if (!header) return true; // conservative: keep malformed hunks
   const added = changedSet.added;
-  const deleted = changedSet.deleted;
   let rightLine = header.newStart;
-  let leftLine = header.oldStart;
   for (const bodyLine of hunk.body) {
     if (bodyLine.startsWith('+')) {
       if (added.has(rightLine)) return true;
       rightLine += 1;
     } else if (bodyLine.startsWith(' ')) {
-      if (added.has(rightLine) || deleted.has(leftLine)) return true;
+      if (added.has(rightLine)) return true;
       rightLine += 1;
-      leftLine += 1;
     } else if (bodyLine.startsWith('-')) {
-      if (deleted.has(leftLine)) return true;
-      leftLine += 1;
+      // Deletions are not fine-filtered here; the file-level
+      // pass-through already keeps deletion-containing hunks when
+      // the file has any deletion. See fetchChangedLinesSince.
     } else if (bodyLine.startsWith('\\')) {
       // "\ No newline at end of file" - skip
     }
