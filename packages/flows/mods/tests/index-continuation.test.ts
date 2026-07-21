@@ -72,28 +72,44 @@ describe("same-turn flow continuation", () => {
       output,
     }, eventContext);
 
-    expect(await resultFor("race", "race report")).toBeUndefined();
-    expect(await resultFor("null", "null report")).toBeUndefined();
-    const fanOutCompletion = await resultFor("inject", "inject report");
+    // Three of four scan agents complete without advancing the phase.
+    expect(await resultFor("concurrency", "concurrency report")).toBeUndefined();
+    expect(await resultFor("nullability", "nullability report")).toBeUndefined();
+    expect(await resultFor("security", "security report")).toBeUndefined();
+    // The fourth scan agent advances to the verify barrier.
+    const fanOutCompletion = await resultFor("reliability", "reliability report");
     expect(fanOutCompletion.result.status).toBe("success");
     expect(fanOutCompletion.result.output).toContain("[FLOW CONTINUATION]");
     expect(fanOutCompletion.result.output).toContain("agent_id=synthesize");
     expect(fanOutCompletion.result.output).not.toContain("sendMessageStream");
 
+    // Verify barrier completes and advances to the report barrier.
+    const verifyCompletion = await toolEnd({
+      toolName: "Agent",
+      status: "success",
+      args: {
+        prompt: `verify\n[FLOW_AGENT run_id=${runId} phase_id=verify agent_id=synthesize]`,
+      },
+      output: "structured verification ledger",
+    }, eventContext);
+    expect(verifyCompletion.result.status).toBe("success");
+    expect(verifyCompletion.result.output).toContain("[FLOW CONTINUATION]");
+
+    // Report barrier completes and the flow finishes.
     const barrierCompletion = await toolEnd({
       toolName: "Agent",
       status: "success",
       args: {
-        prompt: `synthesize\n[FLOW_AGENT run_id=${runId} phase_id=synthesize agent_id=synthesize]`,
+        prompt: `report\n[FLOW_AGENT run_id=${runId} phase_id=report agent_id=synthesize]`,
       },
-      output: "final synthesized report",
+      output: "final advisory report",
     }, eventContext);
     expect(barrierCompletion.result.status).toBe("success");
     expect(barrierCompletion.result.output).toContain("[FLOW COMPLETE]");
-    expect(barrierCompletion.result.output).toContain("final synthesized report");
+    expect(barrierCompletion.result.output).toContain("final advisory report");
 
     const resultPath = getRunResultPath(runId, ownerAgentId);
-    expect(readFileSync(resultPath, "utf8")).toBe("final synthesized report");
+    expect(readFileSync(resultPath, "utf8")).toBe("final advisory report");
 
     dispose();
   });
@@ -130,7 +146,7 @@ describe("same-turn flow continuation", () => {
     expect(runId).toBeTruthy();
     if (!runId) return;
 
-    const prompt = `scan\n[FLOW_AGENT run_id=${runId} phase_id=scan agent_id=race]`;
+    const prompt = `scan\n[FLOW_AGENT run_id=${runId} phase_id=scan agent_id=concurrency]`;
     const retry = await toolEnd({
       toolName: "Agent",
       status: "error",
