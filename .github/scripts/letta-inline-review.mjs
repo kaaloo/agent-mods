@@ -42,6 +42,25 @@ const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 const MAX_DIFF_CHARS = 100_000;
 const MAX_GH_OUTPUT_BYTES = 20 * 1024 * 1024;
 
+// Lockfile basenames. Lockfiles are generated and rarely reviewable
+// signal: the reviewable intent lives in package.json / pyproject.toml /
+// Cargo.toml etc., and the resolved dependency graph is rebuilt by the
+// package manager. Lockfiles can easily push a PR's diff past
+// MAX_DIFF_CHARS, so we strip them from the reviewer's input. Add new
+// basenames here rather than threading a config flag.
+const LOCKFILE_BASENAMES = new Set([
+  'package-lock.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  'bun.lock',
+  'bun.lockb',
+  'Cargo.lock',
+  'poetry.lock',
+  'Pipfile.lock',
+  'composer.lock',
+  'Gemfile.lock',
+]);
+
 function required(name) {
   const v = process.env[name];
   if (!v) throw new Error(`Missing required env var: ${name}`);
@@ -210,6 +229,67 @@ function assertPullRequestHead(pr, expectedHeadSha) {
   }
 }
 
+// Strip diff blocks for paths whose basename matches LOCKFILE_BASENAMES.
+// Returns the trimmed patch and a list of dropped paths so callers can
+// log them. Uses the same `diff --git ` boundary split as
+// lib/github-anchors.mjs so behavior stays consistent.
+function stripExcludedFiles(patch) {
+  if (!patch) return { patch: '', excluded: [] };
+  const excluded = [];
+  const blocks = patch.split(/^diff --git /m);
+  // blocks[0] is the preamble (usually empty for `gh api .../pulls/N`
+  // with the diff accept header). Always keep it.
+  const preamble = blocks[0] ?? '';
+  const kept = [preamble];
+  for (const block of blocks.slice(1)) {
+    const firstLine = block.split('\n', 1)[0] ?? '';
+    const newPath = extractNewPathFromDiffHeader(firstLine);
+    if (newPath && LOCKFILE_BASENAMES.has(basename(newPath))) {
+      excluded.push(newPath);
+      continue;
+    }
+    kept.push(`diff --git ${block}`);
+  }
+  return { patch: kept.join(''), excluded };
+}
+
+function extractNewPathFromDiffHeader(headerLine) {
+  // headerLine is "a/<path> b/<path>" possibly with quoted paths or
+  // tabs. Mirror the relevant subset of lib/github-anchors.mjs logic
+  // so we identify the same file the anchor parser would.
+  const quoted = headerLine.match(/^"((?:\\.|[^"])*)"\s+"((?:\\.|[^"])*)"$/);
+  if (quoted) {
+    return decodeGitQuotedPath(quoted[2]).replace(/^b\//, '');
+  }
+  if (headerLine.includes('\t')) {
+    const parts = headerLine.split('\t');
+    if (parts.length >= 2) {
+      return stripABPrefix(parts[1].trim());
+    }
+  }
+  const match = headerLine.match(/^a\/(.+?) b\/(.+)$/);
+  if (match) return match[2];
+  return null;
+}
+
+function stripABPrefix(p) {
+  return p.startsWith('b/') ? p.slice(2) : p;
+}
+
+function basename(path) {
+  const slash = path.lastIndexOf('/');
+  return slash === -1 ? path : path.slice(slash + 1);
+}
+
+function decodeGitQuotedPath(path) {
+  // Minimal decoder for the common escapes Git uses in quoted diff
+  // paths. Mirrors lib/github-anchors.mjs so behavior matches.
+  return path.replace(/\\(.)/g, (_, c) => {
+    const escapes = { a: '\x07', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\x0b' };
+    return escapes[c] ?? c;
+  });
+}
+
 async function main() {
   required('GITHUB_TOKEN');
   const apiKey = required('LETTA_API_KEY');
@@ -231,9 +311,17 @@ async function main() {
 
   const pr = fetchPullRequest(repository, pullNumber);
   assertPullRequestHead(pr, headSha);
-  const patch = fetchPullRequestDiff(repository, pullNumber);
+  const rawPatch = fetchPullRequestDiff(repository, pullNumber);
+  const { patch, excluded } = stripExcludedFiles(rawPatch);
+  if (excluded.length > 0) {
+    const savedBytes = rawPatch.length - patch.length;
+    appendStepSummary(
+      `Excluded ${excluded.length} lockfile(s) from the review diff (${savedBytes.toLocaleString()} bytes skipped):\n` +
+      excluded.map((p) => `- \`${p}\``).join('\n') + '\n\n',
+    );
+  }
   if (!patch.trim()) {
-    appendStepSummary('_No patch content in PR response. The PR may be too large to diff, or consist entirely of binary changes. Skipping inline review._\n');
+    appendStepSummary('_No reviewable patch content after excluding lockfiles. The PR may consist entirely of generated changes. Skipping inline review._\n');
     return;
   }
   if (patch.length > MAX_DIFF_CHARS) {
