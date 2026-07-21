@@ -2,10 +2,8 @@
 # Pre-commit secret scan: blocks staged diffs that contain credentials.
 # Powered by gitleaks (https://github.com/gitleaks/gitleaks).
 #
-# Scans the working-tree contents of every staged file (not just the
-# diff against HEAD), so the first commit on a fresh branch is also
-# covered. Use `npm run security:scan:secrets` for a full-tree
-# baseline scan (slower; covers untracked + history).
+# Scans the staged diff against HEAD. Use `npm run security:scan:secrets`
+# for a full-tree baseline scan that also covers git history.
 #
 # Bypass with `git commit --no-verify` only when you've reviewed the
 # diff yourself. Add real allowlist entries to .gitleaks.toml at the
@@ -25,18 +23,4 @@ else
   exit 1
 fi
 
-# Collect staged files. Deleted files (-D) are skipped; intent-to-add
-# files are excluded because their content isn't staged yet.
-STAGED=$(git diff --cached --name-only --diff-filter=ACMRT)
-
-if [ -z "$STAGED" ]; then
-  # Nothing staged (e.g. amend with no new changes, or merge-only).
-  # Nothing to scan; let the commit proceed.
-  exit 0
-fi
-
-# Scan the working-tree contents of staged files. This catches secrets
-# on the first commit of a branch (where `gitleaks protect --staged`
-# would scan 0 bytes because HEAD is empty) at the cost of rescanning
-# unmodified context. Acceptable for a small repo.
-exec $GITLEAKS detect --no-git --redact --no-banner --source $STAGED
+exec $GITLEAKS protect --staged --redact --no-banner

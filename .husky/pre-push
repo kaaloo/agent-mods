@@ -10,4 +10,17 @@
 # Bypass with `git push --no-verify` only when you've reviewed the
 # vulnerabilities yourself.
 
-exec node_modules/.bin/cve-lite packages/flows --fail-on high
+# Prefer the local cve-lite pinned in the root devDependencies. Fall
+# back to a system install (e.g. `npm install -g cve-lite-cli`) if
+# the local binary is missing.
+if [ -x node_modules/.bin/cve-lite ]; then
+  CVE_LITE=node_modules/.bin/cve-lite
+elif command -v cve-lite >/dev/null 2>&1; then
+  CVE_LITE=cve-lite
+else
+  echo "pre-push: cve-lite is not installed." >&2
+  echo "Run 'npm install' at the repo root, or install cve-lite globally (e.g. 'npm install -g cve-lite-cli')." >&2
+  exit 1
+fi
+
+exec $CVE_LITE packages/flows --fail-on high

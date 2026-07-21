@@ -6,7 +6,7 @@
   "license": "Apache-2.0",
   "scripts": {
     "prepare": "husky",
-    "security:scan:secrets": "gitleaks detect --no-git --redact --no-banner",
+    "security:scan:secrets": "gitleaks detect --redact --no-banner",
     "security:scan:secrets:staged": "gitleaks protect --staged --redact --no-banner",
     "security:scan:js": "cve-lite packages/flows --fail-on high"
   },
