@@ -29,6 +29,7 @@ Things that matter here:
 ## Scope
 
 - Review only the changes introduced by the current pull request. Do not flag pre-existing issues, even if you notice them.
+- The diff you receive may already be filtered to lines that changed since the previous review run on this PR. Treat the diff you were given as the entire scope; do not infer issues on lines outside it, even if you recognize them from prior context.
 - Focus on actionable correctness, security, compatibility, and regression findings. Do not produce praise, summaries, or unsupported stylistic preferences.
 - If there are no material issues, return an empty array. The posting job will then publish a single "no material issues" comment on the PR.
 

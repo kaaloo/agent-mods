@@ -34,6 +34,18 @@ import { dirname, resolve } from 'node:path';
 import Letta from '@letta-ai/letta-client';
 import { parsePatchAnchors } from './lib/github-anchors.mjs';
 import { isSeverity, renderFindingBody, renderReviewSummary } from './lib/severity.mjs';
+import {
+  loadLastReviewedSha,
+  recordLastReviewedSha,
+} from './lib/inline-review-state.mjs';
+import {
+  fetchChangedLinesSince,
+  filterPatchToChangedLines,
+} from './lib/diff-delta.mjs';
+import {
+  loadAckedAnchors,
+  dropAckedFindings,
+} from './lib/acked-comments.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROMPT_PATH = resolve(__dirname, '..', 'prompts', 'letta-inline-review.system.md');
@@ -229,6 +241,56 @@ function assertPullRequestHead(pr, expectedHeadSha) {
   }
 }
 
+async function postNoDeltaComment({ repository, pullNumber, headSha, priorSha }) {
+  const sinceLabel = priorSha ? ` since \`${priorSha.slice(0, 7)}\`` : '';
+  const body =
+    '**Letta Code** found no new inline findings.\n\n' +
+    'No source lines changed' + sinceLabel + ' on this push. ' +
+    'Skipped re-running the reviewer to avoid re-flagging previously acknowledged lines.\n\n' +
+    `<sub>Commit: \`${headSha.slice(0, 7)}\`</sub>`;
+  ghApi(`repos/${repository}/issues/${pullNumber}/comments`, {
+    method: 'POST',
+    body: { body },
+  });
+}
+
+async function recordMarker({ repository, pullNumber, headSha }) {
+  try {
+    await recordLastReviewedSha({
+      repository,
+      pullNumber,
+      headSha,
+      reviewedSha: headSha,
+      ghApi,
+    });
+  } catch (err) {
+    // Marker persistence is best-effort: a failure here would
+    // otherwise block the reviewer run. Log to the step summary
+    // and continue.
+    appendStepSummary(
+      `\n_Warning: could not record the inline-review state marker: ${err?.message ?? String(err)}._\n`,
+    );
+  }
+}
+
+// Build the list of GitHub usernames whose replies count as
+// acknowledgement of a line-anchored finding. Includes the PR
+// author (so any contributor's own replies silence re-fires) and
+// the repository owner. Cross-fork contributors from outside the
+// author/owner pair are intentionally excluded: the worst case is
+// a stale finding that the model can re-emit and a human can
+// close again, which is no worse than the pre-PR-#17 baseline.
+function collectAckers(pr) {
+  const ackers = new Set();
+  const author = pr?.user?.login;
+  if (author) ackers.add(author);
+  const headRepoOwner = pr?.head?.repo?.owner?.login;
+  if (headRepoOwner) ackers.add(headRepoOwner);
+  const baseRepoOwner = pr?.base?.repo?.owner?.login;
+  if (baseRepoOwner) ackers.add(baseRepoOwner);
+  return [...ackers];
+}
+
 // Strip diff blocks for paths whose basename matches LOCKFILE_BASENAMES.
 // Returns the trimmed patch and a list of dropped paths so callers can
 // log them. Uses the same `diff --git ` boundary split as
@@ -324,11 +386,82 @@ async function main() {
     appendStepSummary('_No reviewable patch content after excluding lockfiles. The PR may consist entirely of generated changes. Skipping inline review._\n');
     return;
   }
-  if (patch.length > MAX_DIFF_CHARS) {
-    throw new Error(`PR diff is ${patch.length} characters; maximum reviewable size is ${MAX_DIFF_CHARS}.`);
+
+  // Apply the delta filter: if a prior reviewed SHA is recorded on
+  // the PR and reachable from the current head, restrict the
+  // reviewer's input to hunks whose lines changed since then.
+  // This prevents re-firing findings on lines the author already
+  // acknowledged on a previous push. See issue #14.
+  const prior = await loadLastReviewedSha({ repository, pullNumber, ghApi });
+  let reviewablePatch = patch;
+  let deltaMode = 'full';
+  let changedLines = null;
+  let removedFiles = new Set();
+  if (prior) {
+    const delta = await fetchChangedLinesSince({
+      repository,
+      baseSha: prior.sha,
+      headSha,
+      ghApi,
+    });
+    if (delta.ok) {
+      changedLines = delta.changedLines;
+      removedFiles = delta.removedFiles;
+      // A push counts as "no changes" only when the compare API
+      // returns zero modified files AND zero removed files.
+      // File removals are real changes and must still surface to
+      // the reviewer even when nothing was added.
+      if (changedLines.size === 0 && removedFiles.size === 0) {
+        appendStepSummary(
+          `_No lines changed since last reviewed commit \`${prior.sha.slice(0, 7)}\`. ` +
+          `Posting a 'no new findings' note instead of re-running the reviewer._\n`,
+        );
+        await postNoDeltaComment({ repository, pullNumber, headSha, priorSha: prior.sha });
+        await recordMarker({ repository, pullNumber, headSha });
+        return;
+      }
+      reviewablePatch = filterPatchToChangedLines(patch, changedLines, { removedFiles });
+      deltaMode = 'delta';
+      appendStepSummary(
+        `Filtered diff to lines changed since last reviewed commit \`${prior.sha.slice(0, 7)}\` ` +
+        `(${changedLines.size} file${changedLines.size === 1 ? '' : 's'} with changes, ` +
+        `${removedFiles.size} deletion${removedFiles.size === 1 ? '' : 's'}).\n`,
+      );
+    } else if (delta.reason === 'sha-not-reachable') {
+      // Force-push orphaned the marker. Fall back to a full review,
+      // but apply the secondary line-aware filter so already-acked
+      // line anchors do not re-fire.
+      appendStepSummary(
+        `_Last reviewed commit \`${prior.sha.slice(0, 7)}\` is not reachable from the current head ` +
+        `(likely a force-push). Falling back to a full review and applying the line-aware prior-reply filter._\n`,
+      );
+      deltaMode = 'full-after-force-push';
+    } else {
+      appendStepSummary(
+        `_Could not compute delta against last reviewed commit \`${prior.sha.slice(0, 7)}\` ` +
+        `(reason: ${delta.reason}). Falling back to a full review._\n`,
+      );
+      deltaMode = 'full-fallback';
+    }
+  } else {
+    appendStepSummary('_No prior reviewed commit recorded; running a full review._\n');
+    deltaMode = 'first-push';
   }
 
-  const anchors = parsePatchAnchors(patch);
+  if (!reviewablePatch.trim()) {
+    // Delta filtered everything out (e.g. only deletions, which we
+    // suppress). Post a short note and update the marker so the
+    // next push can compute a fresh delta from this head.
+    appendStepSummary('_No reviewable hunks remain after the delta filter. Posting a no-op note._\n');
+    await postNoDeltaComment({ repository, pullNumber, headSha, priorSha: prior?.sha ?? headSha });
+    await recordMarker({ repository, pullNumber, headSha });
+    return;
+  }
+  if (reviewablePatch.length > MAX_DIFF_CHARS) {
+    throw new Error(`Filtered reviewable patch is ${reviewablePatch.length} characters; maximum reviewable size is ${MAX_DIFF_CHARS}.`);
+  }
+
+  const anchors = parsePatchAnchors(reviewablePatch);
   const userMessage = buildUserMessage({
     repository,
     pullNumber,
@@ -336,7 +469,7 @@ async function main() {
     author: pr.user?.login ?? 'unknown',
     baseRef,
     headRef,
-    diff: patch,
+    diff: reviewablePatch,
     prUrl: pr.html_url ?? prUrl,
   });
 
@@ -364,8 +497,29 @@ async function main() {
     throw new Error(`${parseError}\n\nRaw model output (first 500 chars):\n${(text ?? '').slice(0, 500)}`);
   }
 
-  const { valid, dropped } = validateAnchors(rawFindings, anchors);
+  const anchorValidation = validateAnchors(rawFindings, anchors);
+  let { valid } = anchorValidation;
+  const { dropped: anchorDropped } = anchorValidation;
+
+  // Drop findings anchored to lines the PR author or repo owner
+  // has already replied to on a prior review. Run on every push
+  // path, not just the fallbacks: when the delta filter retains a
+  // hunk whose only new line is line N, the surrounding context
+  // lines are still in the diff, and the model could legitimately
+  // re-fire on them. The acked-anchor set silences that.
+  const ackedDropped = [];
+  const ackers = collectAckers(pr);
+  if (ackers.length > 0) {
+    const { acked } = await loadAckedAnchors({ repository, pullNumber, ghApi, ackers });
+    if (acked.size > 0) {
+      const result = dropAckedFindings(valid, acked);
+      valid = result.kept;
+      ackedDropped.push(...result.dropped);
+    }
+  }
+
   const capped = capFindings(valid, maxFindings);
+  const dropped = [...anchorDropped, ...ackedDropped];
 
   appendStepSummary([
     `### Findings`,
@@ -408,6 +562,7 @@ async function main() {
       body: { body: `${reviewBody}\n\n<sub>Commit: \`${headSha.slice(0, 7)}\`</sub>` },
     });
     appendStepSummary('Posted no-issues comment.\n');
+    await recordMarker({ repository, pullNumber, headSha });
     return;
   }
 
@@ -421,6 +576,7 @@ async function main() {
     },
   });
   appendStepSummary(`Posted PR review with ${comments.length} inline comment${comments.length === 1 ? '' : 's'}.\n`);
+  await recordMarker({ repository, pullNumber, headSha });
 }
 
 main().catch((err) => {
