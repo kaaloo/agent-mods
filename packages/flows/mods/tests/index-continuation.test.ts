@@ -5,6 +5,7 @@ import path from "node:path";
 import activate from "../index.ts";
 import { createRun, getRunResultPath, loadRun } from "../lib/state.ts";
 import { WORKFLOW_VERSION, type WorkflowDefinition } from "../lib/schema.ts";
+import { sanitizePromptField } from "../lib/runner-inline.ts";
 
 let originalLettaHome: string | undefined;
 let originalLettaAgentId: string | undefined;
@@ -72,34 +73,51 @@ describe("same-turn flow continuation", () => {
       output,
     }, eventContext);
 
-    expect(await resultFor("race", "race report")).toBeUndefined();
-    expect(await resultFor("null", "null report")).toBeUndefined();
-    const fanOutCompletion = await resultFor("inject", "inject report");
+    // Three of four scan agents complete without advancing the phase.
+    expect(await resultFor("concurrency", "concurrency report")).toBeUndefined();
+    expect(await resultFor("nullability", "nullability report")).toBeUndefined();
+    expect(await resultFor("security", "security report")).toBeUndefined();
+    // The fourth scan agent advances to the verify barrier.
+    const fanOutCompletion = await resultFor("reliability", "reliability report");
     expect(fanOutCompletion.result.status).toBe("success");
     expect(fanOutCompletion.result.output).toContain("[FLOW CONTINUATION]");
     expect(fanOutCompletion.result.output).toContain("agent_id=synthesize");
     expect(fanOutCompletion.result.output).not.toContain("sendMessageStream");
 
+    // Verify barrier completes and advances to the report barrier.
+    const verifyCompletion = await toolEnd({
+      toolName: "Agent",
+      status: "success",
+      args: {
+        prompt: `verify\n[FLOW_AGENT run_id=${runId} phase_id=verify agent_id=synthesize]`,
+      },
+      output: "structured verification ledger",
+    }, eventContext);
+    expect(verifyCompletion.result.status).toBe("success");
+    expect(verifyCompletion.result.output).toContain("[FLOW CONTINUATION]");
+
+    // Report barrier completes and the flow finishes.
     const barrierCompletion = await toolEnd({
       toolName: "Agent",
       status: "success",
       args: {
-        prompt: `synthesize\n[FLOW_AGENT run_id=${runId} phase_id=synthesize agent_id=synthesize]`,
+        prompt: `report\n[FLOW_AGENT run_id=${runId} phase_id=report agent_id=synthesize]`,
       },
-      output: "final synthesized report",
+      output: "final advisory report",
     }, eventContext);
     expect(barrierCompletion.result.status).toBe("success");
     expect(barrierCompletion.result.output).toContain("[FLOW COMPLETE]");
-    expect(barrierCompletion.result.output).toContain("final synthesized report");
+    expect(barrierCompletion.result.output).toContain("final advisory report");
 
     const resultPath = getRunResultPath(runId, ownerAgentId);
-    expect(readFileSync(resultPath, "utf8")).toBe("final synthesized report");
+    expect(readFileSync(resultPath, "utf8")).toBe("final advisory report");
 
     dispose();
   });
 
-  test("returns one Auto retry before terminally failing an Agent", async () => {
+  test("continues an active flow when Agent prompts omit routing markers", async () => {
     let flowCommand: any;
+    let toolStart: any;
     let toolEnd: any;
     const dispose = activate({
       capabilities: { commands: true, events: { tools: true } },
@@ -111,6 +129,120 @@ describe("same-turn flow continuation", () => {
       },
       events: {
         on(event: string, handler: any) {
+          if (event === "tool_start") toolStart = handler;
+          if (event === "tool_end") toolEnd = handler;
+          return () => {};
+        },
+      },
+    } as any);
+
+    const conversation = { id: "conversation-unmarked" };
+    const ownerAgentId = "agent-parent0001";
+    const commandResult = await flowCommand.run({
+      args: "run code-audit",
+      cwd: "/tmp/project",
+      conversation,
+      agent: { id: ownerAgentId },
+      model: { id: "openai/gpt-test" },
+    });
+    const runId = String(commandResult.content).match(/Run ID: (\d{13,}-[A-Za-z0-9]{8,})/)?.[1];
+    expect(runId).toBeTruthy();
+    if (!runId) return;
+
+    const eventContext = { conversation, agent: { id: ownerAgentId } };
+    const dispatchedPrompt = (prompt: string) => sanitizePromptField(prompt) ?? prompt;
+    const completeUnmarked = async (toolCallId: string, prompt: string, output: string) => {
+      const effectivePrompt = dispatchedPrompt(prompt);
+      await toolStart({ toolName: "Agent", toolCallId, args: { prompt: effectivePrompt } }, eventContext);
+      return toolEnd({ toolName: "Agent", toolCallId, status: "success", args: { prompt: effectivePrompt }, output }, eventContext);
+    };
+
+    const scan = loadRun(runId)?.workflow.phases[0];
+    expect(scan?.type).toBe("fan-out");
+    if (!scan || scan.type !== "fan-out") return;
+    for (const agent of scan.agents.slice(0, -1)) {
+      expect(await completeUnmarked(`scan-${agent.id}`, agent.prompt, `${agent.id} report`)).toBeUndefined();
+    }
+    const lastScan = scan.agents.at(-1);
+    expect(lastScan).toBeDefined();
+    if (!lastScan) return;
+    const scanCompletion = await completeUnmarked(`scan-${lastScan.id}`, lastScan.prompt, `${lastScan.id} report`);
+    expect(scanCompletion.result.output).toContain("phase_id=verify");
+
+    const verify = loadRun(runId)?.workflow.phases[1];
+    expect(verify?.type).toBe("barrier");
+    if (!verify || verify.type !== "barrier") return;
+    const verifyCompletion = await completeUnmarked("verify", verify.prompt, "verification ledger");
+    expect(verifyCompletion.result.output).toContain("phase_id=report");
+
+    const report = loadRun(runId)?.workflow.phases[2];
+    expect(report?.type).toBe("barrier");
+    if (!report || report.type !== "barrier") return;
+    const reportCompletion = await completeUnmarked("report", report.prompt, "final report");
+    expect(reportCompletion.result.output).toContain("[FLOW COMPLETE]");
+    expect(readFileSync(getRunResultPath(runId, ownerAgentId), "utf8")).toBe("final report");
+
+    dispose();
+  });
+
+  test("ignores an unmarked Agent call whose prompt does not match the active flow", async () => {
+    let flowCommand: any;
+    let toolStart: any;
+    let toolEnd: any;
+    const dispose = activate({
+      capabilities: { commands: true, events: { tools: true } },
+      commands: {
+        register(definition: any) {
+          flowCommand = definition;
+          return () => {};
+        },
+      },
+      events: {
+        on(event: string, handler: any) {
+          if (event === "tool_start") toolStart = handler;
+          if (event === "tool_end") toolEnd = handler;
+          return () => {};
+        },
+      },
+    } as any);
+
+    const conversation = { id: "conversation-unrelated" };
+    const ownerAgentId = "agent-parent0001";
+    await flowCommand.run({
+      args: "run code-audit",
+      cwd: "/tmp/project",
+      conversation,
+      agent: { id: ownerAgentId },
+      model: { id: "openai/gpt-test" },
+    });
+    const eventContext = { conversation, agent: { id: ownerAgentId } };
+    await toolStart({ toolName: "Agent", toolCallId: "unrelated", args: { prompt: "Do an unrelated task." } }, eventContext);
+    expect(await toolEnd({
+      toolName: "Agent",
+      toolCallId: "unrelated",
+      status: "success",
+      args: { prompt: "Do an unrelated task." },
+      output: "unrelated result",
+    }, eventContext)).toBeUndefined();
+
+    dispose();
+  });
+
+  test("retries and fails an unmarked Agent completion", async () => {
+    let flowCommand: any;
+    let toolStart: any;
+    let toolEnd: any;
+    const dispose = activate({
+      capabilities: { commands: true, events: { tools: true } },
+      commands: {
+        register(definition: any) {
+          flowCommand = definition;
+          return () => {};
+        },
+      },
+      events: {
+        on(event: string, handler: any) {
+          if (event === "tool_start") toolStart = handler;
           if (event === "tool_end") toolEnd = handler;
           return () => {};
         },
@@ -130,23 +262,34 @@ describe("same-turn flow continuation", () => {
     expect(runId).toBeTruthy();
     if (!runId) return;
 
-    const prompt = `scan\n[FLOW_AGENT run_id=${runId} phase_id=scan agent_id=race]`;
+    const scan = loadRun(runId)?.workflow.phases[0];
+    expect(scan?.type).toBe("fan-out");
+    if (!scan || scan.type !== "fan-out") return;
+    const concurrency = scan.agents.find((agent) => agent.id === "concurrency");
+    expect(concurrency).toBeDefined();
+    if (!concurrency) return;
+    const prompt = sanitizePromptField(concurrency.prompt) ?? concurrency.prompt;
+    const eventContext = { conversation, agent: { id: ownerAgentId } };
+    await toolStart({ toolName: "Agent", toolCallId: "preferred", args: { prompt, model: "openai/gpt-test" } }, eventContext);
     const retry = await toolEnd({
       toolName: "Agent",
+      toolCallId: "preferred",
       status: "error",
       args: { prompt, model: "openai/gpt-test" },
       output: "preferred model unavailable",
-    }, { conversation, agent: { id: ownerAgentId } });
+    }, eventContext);
     expect(retry.result.status).toBe("error");
     expect(retry.result.output).toContain("[FLOW RETRY]");
     expect(loadRun(runId)?.status).toBe("running");
 
+    await toolStart({ toolName: "Agent", toolCallId: "auto", args: { prompt } }, eventContext);
     const failed = await toolEnd({
       toolName: "Agent",
+      toolCallId: "auto",
       status: "error",
       args: { prompt },
       output: "Auto launch failed",
-    }, { conversation, agent: { id: ownerAgentId } });
+    }, eventContext);
     expect(failed.result.status).toBe("error");
     expect(failed.result.output).toContain("[FLOW FAILED]");
     expect(loadRun(runId)?.status).toBe("failed");
