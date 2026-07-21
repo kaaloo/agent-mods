@@ -108,18 +108,23 @@ export async function fetchChangedLinesSince({ repository, baseSha, headSha, ghA
       continue;
     }
     const { added, deleted } = parseAddedAndDeletedLines(patch);
-    if (added.size > 0) {
+    if (added.size > 0 && deleted.size === 0) {
+      // Pure-addition file: filter hunks by exact added line.
       changedLines.set(f.filename, { added, deleted: new Set() });
-    } else if (deleted.size > 0) {
-      // Has deletions but no additions. Mark the whole file in
-      // scope so the model sees the deletion hunks intact; we
-      // don't try to fine-filter by exact left-side line because
-      // the coordinates may not match the PR diff's left side.
+    } else if (added.size === 0 && deleted.size > 0) {
+      // Pure-deletion file: mark whole file in scope. We don't
+      // fine-filter by left-side line because the compare API's
+      // left-side coordinates may not match the PR diff's.
+      changedLines.set(f.filename, null);
+    } else if (added.size > 0 && deleted.size > 0) {
+      // Mixed file: any deletion hunk would fail hunkIntersects
+      // since `hunkIntersects` only consults added lines. Mark
+      // the whole file in scope so deletion-only hunks survive
+      // alongside the additive ones.
       changedLines.set(f.filename, null);
     } else if (f.status === 'added') {
-      // Newly-added files always have content on the right side.
-      // If we somehow didn't find any `+` lines, fall back to
-      // marking the whole file in scope.
+      // Newly-added file with no detectable `+` lines (unusual;
+      // could happen with a binary or zero-content addition).
       changedLines.set(f.filename, null);
     }
   }

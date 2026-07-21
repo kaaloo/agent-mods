@@ -119,6 +119,37 @@ test('filterPatchToChangedLines passes deleted files through verbatim', () => {
   assert.ok(filtered.includes('pkg/b.ts'), 'deleted file should pass through');
 });
 
+test('filterPatchToChangedLines: mixed-edit files pass deletion-only hunks through', () => {
+  // File has BOTH additions and deletions in different hunks.
+  // The compare API marks the whole file in scope so the
+  // deletion-only hunk survives alongside the additive ones.
+  const mixedPatch = [
+    'diff --git a/pkg/mixed.ts b/pkg/mixed.ts',
+    'index 1111111..2222222 100644',
+    '--- a/pkg/mixed.ts',
+    '+++ b/pkg/mixed.ts',
+    '@@ -1,3 +1,3 @@',
+    ' line1',
+    '-line2',
+    '+line2b',
+    ' line3',
+    '@@ -10,3 +10,1 @@',
+    '-deletedA',
+    '-deletedB',
+    ' kept',
+  ].join('\n');
+  const changedLines = new Map([
+    // Whole file in scope because the file has deletions.
+    ['pkg/mixed.ts', null],
+  ]);
+  const filtered = filterPatchToChangedLines(mixedPatch, changedLines);
+  assert.ok(
+    filtered.includes('-deletedA'),
+    'deletion-only hunk should be retained in mixed-edit file',
+  );
+  assert.ok(filtered.includes('+line2b'), 'additive hunk should be retained');
+});
+
 test('filterPatchToChangedLines keeps hunks whose only changes are deletions', () => {
   // A deletion-only modification: lines 5-7 in old, no new lines
   // (just removals). The delta map marks the whole file in scope
