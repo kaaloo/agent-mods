@@ -108,14 +108,12 @@ describe("code-audit isPhaseComplete", () => {
     }
   });
 
-  test("verify is complete when scan agents are done AND verify phase is in completedPhaseIds", () => {
+  test("verify is complete when scan agents are done", () => {
     const scanPhase = workflow.phases[0] as { agents: Array<{ id: string }> };
     const allAgentIds = new Set(scanPhase.agents.map((a) => a.id));
 
-    // Without completedPhaseIds, verify should return false even if scan agents are done
-    // because its depends_on is scan (a fan-out), which checks agent completion, not phase completion.
-    // Actually for a fan-out dep, agents complete → dep is satisfied. Let's re-read.
-    // isPhaseComplete for barrier with fan-out dep checks agents. So it works:
+    // A barrier that depends on a fan-out phase requires every agent result,
+    // not the fan-out phase ID in completedPhaseIds.
     expect(isPhaseComplete(workflow, "verify", allAgentIds)).toBe(true);
   });
 
