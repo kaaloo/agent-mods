@@ -1,0 +1,18 @@
+{
+  "name": "kaaloo-agent-mods",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Root manifest for the kaaloo/agent-mods monorepo. Hosts the secret-scanning and dependency-scan pre-commit/pre-push hooks; per-package manifests live under packages/*.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "prepare": "husky",
+    "security:scan:secrets": "gitleaks detect --redact --no-banner",
+    "security:scan:secrets:staged": "gitleaks protect --staged --redact --no-banner",
+    "security:scan:js": "cve-lite packages/flows --fail-on high"
+  },
+  "devDependencies": {
+    "@nogoo9/gitleaks": "^8.30.1",
+    "cve-lite-cli": "1.19.2",
+    "husky": "^9.1.7"
+  }
+}

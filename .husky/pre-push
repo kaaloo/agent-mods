@@ -1,0 +1,26 @@
+#!/usr/bin/env sh
+# Pre-push JS dependency vulnerability scan. Scans the lockfile in
+# packages/flows via cve-lite (https://github.com/NodeSecure/cve-lite).
+#
+# Why pre-push instead of pre-commit: cve-lite analyzes the whole
+# lockfile, not staged filenames. Running it on every commit is
+# redundant and noisy; running it before push catches the same
+# vulnerabilities just before they leave the local machine.
+#
+# Bypass with `git push --no-verify` only when you've reviewed the
+# vulnerabilities yourself.
+
+# Prefer the local cve-lite pinned in the root devDependencies. Fall
+# back to a system install (e.g. `npm install -g cve-lite-cli`) if
+# the local binary is missing.
+if [ -x node_modules/.bin/cve-lite ]; then
+  CVE_LITE=node_modules/.bin/cve-lite
+elif command -v cve-lite >/dev/null 2>&1; then
+  CVE_LITE=cve-lite
+else
+  echo "pre-push: cve-lite is not installed." >&2
+  echo "Run 'npm install' at the repo root, or install cve-lite globally (e.g. 'npm install -g cve-lite-cli')." >&2
+  exit 1
+fi
+
+exec $CVE_LITE packages/flows --fail-on high

@@ -1,0 +1,26 @@
+#!/usr/bin/env sh
+# Pre-commit secret scan: blocks staged diffs that contain credentials.
+# Powered by gitleaks (https://github.com/gitleaks/gitleaks).
+#
+# Scans the staged diff against HEAD. Use `npm run security:scan:secrets`
+# for a full-tree baseline scan that also covers git history.
+#
+# Bypass with `git commit --no-verify` only when you've reviewed the
+# diff yourself. Add real allowlist entries to .gitleaks.toml at the
+# repo root.
+
+# Prefer the local gitleaks pinned by `@nogoo9/gitleaks` in the root
+# devDependencies. That keeps a single version in use across local
+# checkouts and CI. Fall back to a system gitleaks (e.g. Homebrew) if
+# the local binary is missing for any reason.
+if [ -x node_modules/.bin/gitleaks ]; then
+  GITLEAKS=node_modules/.bin/gitleaks
+elif command -v gitleaks >/dev/null 2>&1; then
+  GITLEAKS=gitleaks
+else
+  echo "pre-commit: gitleaks is not installed." >&2
+  echo "Run 'npm install' at the repo root, or install gitleaks globally (e.g. 'brew install gitleaks')." >&2
+  exit 1
+fi
+
+exec $GITLEAKS protect --staged --redact --no-banner

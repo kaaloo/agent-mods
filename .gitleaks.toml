@@ -1,0 +1,41 @@
+# gitleaks configuration for kaaloo/agent-mods.
+#
+# Run locally via `npm run security:scan:secrets` (full tree) or
+# `npm run security:scan:secrets:staged` (staged diff). The pre-commit
+# hook wires the staged variant; the full-tree variant is for periodic
+# baseline scans and the initial setup pass.
+#
+# Keep this file under source control. Allowlist entries belong here,
+# not in inline `gitleaks:allow` comments, so they're reviewable in PRs.
+#
+# Allowlist policy: only exclude paths where every line of content is
+# generated from source we control or gitignored. Lockfiles, docs, and
+# test fixtures are NOT allowlisted — they can legitimately contain
+# real credentials that we want caught (registry tokens in private
+# lockfiles, accidentally-pasted tokens in docs, fake-looking tokens
+# that turned out to be real). Add specific `gitleaks:allow` comments
+# for individual false positives instead.
+
+title = "kaaloo/agent-mods gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Generated and vendored content (gitignored or built from source)"
+paths = [
+  '''node_modules/''',
+  '''dist/''',
+  '''\.next/''',
+  '''\.vite/''',
+  '''\.letta/''',
+  '''packages/flows/mods/.*\.bundled\.mjs$''',
+]
+
+# Test fixtures: scan them, but allow specific patterns when an
+# intentional fake credential is present. Inline `gitleaks:allow`
+# comments are the right level of granularity here because the
+# alternative (allowlisting `__fixtures__/.*` wholesale) would also
+# hide any real secret accidentally added to a fixture.
+#
+# No path-level allowlist for test fixtures — review each one inline.

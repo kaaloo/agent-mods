@@ -1,0 +1,47 @@
+name: gitleaks
+
+# Server-side secret scanning as defense-in-depth on top of the
+# .husky/pre-commit hook. Catches secrets in:
+#   - pushed commits (defense against --no-verify bypass)
+#   - PR title and PR body (which a local hook can't see)
+#
+# We do NOT enable GitHub's built-in secret_scanning /
+# secret_scanning_push_protection here because:
+#   - The local pre-commit hook fires earlier in the workflow.
+#   - This workflow gives us the same coverage with explicit control
+#     over allowlists via .gitleaks.toml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+# Cancel in-flight scans on rapid pushes; serial scans against the
+# same PR would just thrash the runner.
+concurrency:
+  group: gitleaks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Scan for leaked secrets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so push-protection runs can scan commits
+          # already on the branch, not just the latest one.
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          # Point gitleaks at the repo's checked-in config so
+          # allowlist entries stay reviewable in PRs.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
