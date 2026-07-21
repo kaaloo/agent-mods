@@ -1,0 +1,49 @@
+# gitleaks configuration for kaaloo/agent-mods.
+#
+# Run locally via `npm run security:scan:secrets` (full tree) or
+# `npm run security:scan:secrets:staged` (staged diff). The pre-commit
+# hook wires the staged variant; the full-tree variant is for periodic
+# baseline scans and the initial setup pass.
+#
+# Keep this file under source control. Allowlist entries belong here,
+# not in inline `gitleaks:allow` comments, so they're reviewable in PRs.
+
+title = "kaaloo/agent-mods gitleaks config"
+
+# Paths that should never be scanned. These contain generated or
+# vendored content where false positives are common and a real leak
+# would be uninteresting (e.g. the flows mod bundle is built from
+# source we control).
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Generated and vendored content"
+paths = [
+  '''node_modules/''',
+  '''dist/''',
+  '''\.next/''',
+  '''\.vite/''',
+  '''\.letta/''',
+  '''package-lock\.json$''',
+  '''packages/flows/mods/index\.bundled\.mjs$''',
+  '''packages/flows/mods/.*\.bundled\.mjs$''',
+]
+
+# Allow test fixtures that intentionally embed fake credentials.
+# Add test-file patterns here rather than using inline allow comments,
+# so the allowlist is reviewable in PRs.
+[[allowlists]]
+description = "Test fixtures and example data"
+paths = [
+  '''__tests__/.*\.secret\..*''',
+  '''__fixtures__/.*''',
+]
+
+# Allow the docs/ folder to mention specific patterns by name (e.g.
+# examples of what gitleaks catches) without tripping the scanner.
+[[allowlists]]
+description = "Documentation references to credential formats"
+paths = [
+  '''docs/.*\.md$''',
+]

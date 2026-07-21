@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+# Pre-push JS dependency vulnerability scan. Scans the lockfile in
+# packages/flows via cve-lite (https://github.com/NodeSecure/cve-lite).
+#
+# Why pre-push instead of pre-commit: cve-lite analyzes the whole
+# lockfile, not staged filenames. Running it on every commit is
+# redundant and noisy; running it before push catches the same
+# vulnerabilities just before they leave the local machine.
+#
+# Bypass with `git push --no-verify` only when you've reviewed the
+# vulnerabilities yourself.
+
+exec node_modules/.bin/cve-lite packages/flows --fail-on high
