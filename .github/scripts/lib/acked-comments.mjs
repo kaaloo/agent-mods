@@ -51,11 +51,19 @@ export async function loadAckedAnchors({ repository, pullNumber, ghApi, ackers }
   );
   if (!Array.isArray(comments)) return { acked: new Set(), comments: 0 };
 
-  // Build a thread-id -> anchor map for root comments.
+  // Build a thread-id -> anchor map for root review comments
+  // authored by a bot. Only Letta Code (or equivalent bot)
+  // review comments are eligible to be "acked" by a human reply.
+  // A human-initiated review thread should not silence its own
+  // re-fire on the next push: the very purpose of the safety net
+  // is to suppress re-fires of OUR findings after the human
+  // responded, not to suppress findings from another reviewer
+  // whose own thread happens to share an anchor.
   const roots = new Map();
   for (const c of comments) {
     if (c?.in_reply_to_id) continue;
     if (typeof c?.path !== 'string' || typeof c?.line !== 'number') continue;
+    if (!isBotAuthor(c.user?.login ?? '')) continue;
     const key = anchorKey(c.path, c.line, normalizeSide(c.side));
     roots.set(c.id, { key, author: c.user?.login ?? '' });
   }
@@ -104,5 +112,13 @@ function normalizeSide(value) {
   return normalized === 'LEFT' || normalized === 'RIGHT' ? normalized : 'RIGHT';
 }
 
+// Recognize the bot identities we post review comments under.
+// GitHub identifies bot accounts with a "[bot]" suffix in the
+// login. We accept any such suffix to stay agnostic of which
+// Letta Code surface posts the review.
+function isBotAuthor(login) {
+  return /\[bot\]$/i.test(login);
+}
+
 // Exported for tests.
-export const __test__ = { anchorKey, normalizeSide };
+export const __test__ = { anchorKey, normalizeSide, isBotAuthor };

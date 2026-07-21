@@ -31,7 +31,7 @@ test('loadAckedAnchors returns empty set when there are no comments', async () =
 test('loadAckedAnchors treats a human reply as an acknowledgement', async () => {
   const fakeGhApi = () =>
     JSON.stringify([
-      makeRoot({ id: 1, path: 'a.ts', line: 10 }),
+      makeRoot({ id: 1, path: 'a.ts', line: 10, login: 'github-actions[bot]' }),
       makeReply({ id: 2, in_reply_to_id: 1, login: 'kaaloo' }),
     ]);
   const { acked } = await loadAckedAnchors({
@@ -47,7 +47,7 @@ test('loadAckedAnchors treats a human reply as an acknowledgement', async () => 
 test('loadAckedAnchors does not treat bot-only threads as acked', async () => {
   const fakeGhApi = () =>
     JSON.stringify([
-      makeRoot({ id: 1, path: 'a.ts', line: 10 }),
+      makeRoot({ id: 1, path: 'a.ts', line: 10, login: 'github-actions[bot]' }),
       makeReply({ id: 2, in_reply_to_id: 1, login: 'github-actions[bot]' }),
     ]);
   const { acked } = await loadAckedAnchors({
@@ -62,7 +62,7 @@ test('loadAckedAnchors does not treat bot-only threads as acked', async () => {
 test('loadAckedAnchors only counts replies from configured ackers', async () => {
   const fakeGhApi = () =>
     JSON.stringify([
-      makeRoot({ id: 1, path: 'a.ts', line: 10 }),
+      makeRoot({ id: 1, path: 'a.ts', line: 10, login: 'github-actions[bot]' }),
       makeReply({ id: 2, in_reply_to_id: 1, login: 'random-reviewer' }),
     ]);
   const { acked } = await loadAckedAnchors({
@@ -77,7 +77,7 @@ test('loadAckedAnchors only counts replies from configured ackers', async () => 
 test('loadAckedAnchors recognizes multiple configured ackers', async () => {
   const fakeGhApi = () =>
     JSON.stringify([
-      makeRoot({ id: 1, path: 'a.ts', line: 10 }),
+      makeRoot({ id: 1, path: 'a.ts', line: 10, login: 'github-actions[bot]' }),
       makeReply({ id: 2, in_reply_to_id: 1, login: 'pr-author' }),
     ]);
   const { acked } = await loadAckedAnchors({
@@ -89,18 +89,26 @@ test('loadAckedAnchors recognizes multiple configured ackers', async () => {
   assert.equal(acked.size, 1, 'PR author replies should also count');
 });
 
-test('loadAckedAnchors requires an ackers list', async () => {
+test('loadAckedAnchors ignores human-initiated review threads', async () => {
+  // A root review comment from a human reviewer (not a bot)
+  // should not be eligible for silencing even if another human
+  // replies to it. Only bot-initiated threads are eligible.
   const fakeGhApi = () =>
     JSON.stringify([
-      makeRoot({ id: 1, path: 'a.ts', line: 10 }),
+      makeRoot({ id: 1, path: 'a.ts', line: 10, login: 'gemini-code-assist[bot]' }),
       makeReply({ id: 2, in_reply_to_id: 1, login: 'kaaloo' }),
+      // Plus a human root that should NOT be tracked as acked.
+      makeRoot({ id: 3, path: 'a.ts', line: 20, login: 'human-reviewer' }),
+      makeReply({ id: 4, in_reply_to_id: 3, login: 'kaaloo' }),
     ]);
   const { acked } = await loadAckedAnchors({
     repository: 'o/r',
     pullNumber: 1,
     ghApi: fakeGhApi,
+    ackers: ['kaaloo'],
   });
-  assert.equal(acked.size, 0, 'without ackers, nothing should be marked acked');
+  assert.equal(acked.size, 1, 'only the bot-initiated thread should be acked');
+  assert.ok(acked.has('a.ts\x00RIGHT\x0010'));
 });
 
 test('loadAckedAnchors tolerates a non-array response', async () => {

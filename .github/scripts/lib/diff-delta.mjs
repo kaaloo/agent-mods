@@ -83,14 +83,16 @@ export async function fetchChangedLinesSince({ repository, baseSha, headSha, ghA
       renamedFiles.set(f.filename, f.previous_filename);
     }
     // For added / modified / renamed files, walk the per-file patch
-    // and collect only the right-side lines that are actually added
-    // (`+`-prefixed lines). We deliberately do NOT include context
-    // (` `-prefixed) lines: those are unchanged content whose only
-    // purpose is to anchor the hunk, and counting them as "changed"
-    // would let the reviewer re-fire findings on them.
+    // and track which lines are actually touched. We collect
+    // `+`-prefixed lines on the right side and `-`-prefixed lines
+    // on the left side; context (` `-prefixed) lines are not
+    // counted as "changed" — they only anchor hunks.
     //
-    // Renamed files inherit the same treatment — the right side is
-    // the new file, and we want only added lines.
+    // The file is "in scope" if it has any non-context lines at
+    // all. For files that only contain context (no diff body),
+    // we still mark them as fully in scope when the API signalled
+    // a status change (added/modified/removed/renamed) — a
+    // deletion-only push is still a change worth reviewing.
     const patch = typeof f.patch === 'string' ? f.patch : '';
     if (!patch) {
       // If the API omitted the patch (binary, large diff), treat
@@ -99,9 +101,13 @@ export async function fetchChangedLinesSince({ repository, baseSha, headSha, ghA
       changedLines.set(f.filename, null);
       continue;
     }
-    const addedLines = parseAddedRightLines(patch);
-    if (addedLines.size > 0) {
-      changedLines.set(f.filename, addedLines);
+    const { added, deleted } = parseAddedAndDeletedLines(patch);
+    if (added.size > 0) {
+      changedLines.set(f.filename, { added, deleted });
+    } else if (deleted.size > 0) {
+      // Pure-deletion hunk: keep the file in scope so LEFT-side
+      // anchor findings on the deleted lines can still fire.
+      changedLines.set(f.filename, { added, deleted });
     } else if (f.status === 'added') {
       // Newly-added files always have content on the right side.
       // If we somehow didn't find any `+` lines, fall back to
@@ -189,7 +195,7 @@ export function filterPatchToChangedLines(patch, changedLines, { removedFiles = 
   return kept.join('');
 }
 
-function filterBlocksKeepingChangedHunks(block, newPath, changed) {
+function filterBlocksKeepingChangedHunks(block, newPath, changedSet) {
   // The block has the form:
   //   a/<path> b/<path>
   //   <metadata lines...>
@@ -232,7 +238,7 @@ function filterBlocksKeepingChangedHunks(block, newPath, changed) {
 
   const kept = [];
   for (const hunk of hunks) {
-    if (hunkIntersects(hunk, changed)) {
+    if (hunkIntersects(hunk, changedSet)) {
       kept.push(hunk.header);
       kept.push(...hunk.body);
     }
@@ -243,20 +249,26 @@ function filterBlocksKeepingChangedHunks(block, newPath, changed) {
   return trailingNewline ? `${out}\n` : out;
 }
 
-function hunkIntersects(hunk, changed) {
+function hunkIntersects(hunk, changedSet) {
   const header = parseHunkHeader(hunk.header);
   if (!header) return true; // conservative: keep malformed hunks
+  const added = changedSet.added;
+  const deleted = changedSet.deleted;
   let rightLine = header.newStart;
+  let leftLine = header.oldStart;
   for (const bodyLine of hunk.body) {
-    if (bodyLine.startsWith('+') || bodyLine.startsWith(' ')) {
-      if (changed.has(rightLine)) return true;
+    if (bodyLine.startsWith('+')) {
+      if (added.has(rightLine)) return true;
       rightLine += 1;
+    } else if (bodyLine.startsWith(' ')) {
+      if (added.has(rightLine) || deleted.has(leftLine)) return true;
+      rightLine += 1;
+      leftLine += 1;
     } else if (bodyLine.startsWith('-')) {
-      // Deletion-only line; doesn't advance right-side.
+      if (deleted.has(leftLine)) return true;
+      leftLine += 1;
     } else if (bodyLine.startsWith('\\')) {
       // "\ No newline at end of file" - skip
-    } else {
-      // Blank or other; ignore.
     }
   }
   return false;
@@ -316,19 +328,21 @@ export const __test__ = {
   hunkIntersects,
   filterBlocksKeepingChangedHunks,
   extractNewPathFromHeader,
-  parseAddedRightLines,
+  parseAddedAndDeletedLines,
 };
 
 // Walk a per-file patch (unified diff) and return the set of
-// right-side line numbers that are actually added. Used by the
-// delta filter to mark only the genuinely-new lines; context
-// lines (which serve as hunk anchors only) are deliberately
-// excluded so the reviewer does not re-fire findings on
-// unchanged content.
-function parseAddedRightLines(patch) {
+// right-side line numbers that are actually added (`+`-prefixed)
+// AND the set of left-side line numbers that are actually deleted
+// (`-`-prefixed). Context lines (which serve as hunk anchors only)
+// are deliberately excluded so the reviewer does not re-fire
+// findings on unchanged content.
+function parseAddedAndDeletedLines(patch) {
   const added = new Set();
+  const deleted = new Set();
   const lines = patch.split('\n');
   let rightLine = 0;
+  let leftLine = 0;
   let inHunk = false;
   for (const line of lines) {
     if (line.startsWith('@@')) {
@@ -339,6 +353,7 @@ function parseAddedRightLines(patch) {
       }
       inHunk = true;
       rightLine = hunk.newStart;
+      leftLine = hunk.oldStart;
       continue;
     }
     if (!inHunk) continue;
@@ -347,13 +362,15 @@ function parseAddedRightLines(patch) {
       rightLine += 1;
     } else if (line.startsWith(' ')) {
       rightLine += 1;
+      leftLine += 1;
     } else if (line.startsWith('-')) {
-      // Deletion only; no right advance.
+      deleted.add(leftLine);
+      leftLine += 1;
     } else if (line.startsWith('\\')) {
       // "\ No newline at end of file" - skip
     } else {
       inHunk = false;
     }
   }
-  return added;
+  return { added, deleted };
 }
