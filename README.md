@@ -104,4 +104,4 @@ npm run verify   # verify:bundle + typecheck + tests (fails if the bundled JS dr
 
 ## License
 
-Apache-2.0. See `package.json` and individual package manifests.
+[MIT](LICENSE.md). See `package.json` and individual package manifests.

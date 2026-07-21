@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Root manifest for the kaaloo/agent-mods monorepo. Hosts the secret-scanning and dependency-scan pre-commit/pre-push hooks; per-package manifests live under packages/*.",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "scripts": {
     "prepare": "husky",
     "security:scan:secrets": "gitleaks detect --redact --no-banner",
