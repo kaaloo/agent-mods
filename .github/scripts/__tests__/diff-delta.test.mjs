@@ -93,14 +93,18 @@ test('filterPatchToChangedLines returns empty when no files changed', () => {
   assert.equal(filtered, '');
 });
 
-test('filterPatchToChangedLines excludes removedFiles from output', () => {
+test('filterPatchToChangedLines passes deleted files through verbatim', () => {
+  // pkg/a.ts is changed; pkg/b.ts is removed since the last review.
+  // Both blocks should appear in the output: pkg/a.ts via the
+  // changed-lines filter, pkg/b.ts via the deleted-files pass-through
+  // (LEFT-side anchors are still valid for deleted-file hunks).
   const changedLines = new Map([
-    ['pkg/a.ts', new Set([2])],
+    ['pkg/a.ts', new Set([2, 4])],
   ]);
   const removedFiles = new Set(['pkg/b.ts']);
   const filtered = filterPatchToChangedLines(SAMPLE_PR_PATCH, changedLines, { removedFiles });
-  assert.ok(!filtered.includes('pkg/b.ts'), 'removed file should be excluded');
-  assert.ok(filtered.includes('pkg/a.ts'));
+  assert.ok(filtered.includes('pkg/a.ts'), 'changed file should appear');
+  assert.ok(filtered.includes('pkg/b.ts'), 'deleted file should pass through');
 });
 
 test('hunkIntersects: returns true when any right-side line is in changed set', () => {
@@ -205,7 +209,9 @@ test('fetchChangedLinesSince builds a per-file map from compare payload', async 
     ghApi: fakeGhApi,
   });
   assert.equal(result.ok, true);
-  assert.deepEqual([...result.changedLines.get('pkg/a.ts')].sort(), [1, 2, 3, 4]);
+  // Only the added line (2) should be in the changed set, not the
+  // context lines (1, 3, 4).
+  assert.deepEqual([...result.changedLines.get('pkg/a.ts')].sort(), [2]);
   assert.equal(result.changedLines.get('pkg/binary.png'), null);
   assert.ok(!result.changedLines.has('pkg/removed.ts'));
   assert.ok(result.removedFiles.has('pkg/removed.ts'));
@@ -239,7 +245,8 @@ test('fetchChangedLinesSince handles rename status', async () => {
     ghApi: fakeGhApi,
   });
   assert.equal(result.ok, true);
-  assert.deepEqual([...result.changedLines.get('new/path.ts')].sort(), [1, 2, 3]);
+  // Only the added line (2) is "changed"; context lines (1, 3) are not.
+  assert.deepEqual([...result.changedLines.get('new/path.ts')].sort(), [2]);
   assert.equal(result.renamedFiles.get('new/path.ts'), 'old/path.ts');
 });
 
@@ -251,4 +258,53 @@ test('extractNewPathFromHeader: parses standard and tab-separated forms', () => 
     'file with space.ts',
   );
   assert.equal(__test__.extractNewPathFromHeader('malformed'), null);
+});
+
+test('parseAddedRightLines: collects only added lines, not context', () => {
+  const patch = [
+    '@@ -1,3 +1,4 @@',
+    ' line1',
+    '+added2',
+    '-removed2',
+    ' line3',
+    '+added4',
+  ].join('\n');
+  const added = __test__.parseAddedRightLines(patch);
+  assert.deepEqual([...added].sort(), [2, 4], 'context lines 1 and 3 should be excluded');
+});
+
+test('parseAddedRightLines: handles added files (all lines are added)', () => {
+  const patch = [
+    '@@ -0,0 +1,3 @@',
+    '+line1',
+    '+line2',
+    '+line3',
+  ].join('\n');
+  const added = __test__.parseAddedRightLines(patch);
+  assert.deepEqual([...added].sort(), [1, 2, 3]);
+});
+
+test('parseAddedRightLines: returns empty for pure-deletion hunk', () => {
+  const patch = [
+    '@@ -1,3 +1,1 @@',
+    '-line1',
+    '-line2',
+    '-line3',
+  ].join('\n');
+  const added = __test__.parseAddedRightLines(patch);
+  assert.equal(added.size, 0);
+});
+
+test('parseAddedRightLines: stops at hunk boundary', () => {
+  const patch = [
+    '@@ -1,2 +1,3 @@',
+    ' a',
+    '+b',
+    ' c',
+    '@@ -10,1 +11,2 @@',
+    '+d',
+    ' e',
+  ].join('\n');
+  const added = __test__.parseAddedRightLines(patch);
+  assert.deepEqual([...added].sort((a, b) => a - b), [2, 11]);
 });

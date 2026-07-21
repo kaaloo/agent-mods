@@ -273,6 +273,24 @@ async function recordMarker({ repository, pullNumber, headSha }) {
   }
 }
 
+// Build the list of GitHub usernames whose replies count as
+// acknowledgement of a line-anchored finding. Includes the PR
+// author (so any contributor's own replies silence re-fires) and
+// the repository owner. Cross-fork contributors from outside the
+// author/owner pair are intentionally excluded: the worst case is
+// a stale finding that the model can re-emit and a human can
+// close again, which is no worse than the pre-PR-#17 baseline.
+function collectAckers(pr) {
+  const ackers = new Set();
+  const author = pr?.user?.login;
+  if (author) ackers.add(author);
+  const headRepoOwner = pr?.head?.repo?.owner?.login;
+  if (headRepoOwner) ackers.add(headRepoOwner);
+  const baseRepoOwner = pr?.base?.repo?.owner?.login;
+  if (baseRepoOwner) ackers.add(baseRepoOwner);
+  return [...ackers];
+}
+
 // Strip diff blocks for paths whose basename matches LOCKFILE_BASENAMES.
 // Returns the trimmed patch and a list of dropped paths so callers can
 // log them. Uses the same `diff --git ` boundary split as
@@ -480,17 +498,20 @@ async function main() {
   const { dropped: anchorDropped } = anchorValidation;
 
   // Secondary safety net: drop findings anchored to lines the PR
-  // author (or repo owner) has already replied to. This catches
+  // author or repo owner has already replied to. This catches
   // already-acked line noise in the full-review paths (first push,
   // force-push orphan). The delta filter already handles the
   // common case; this layer is belt-and-suspenders.
   const ackedDropped = [];
   if (deltaMode !== 'delta') {
-    const { acked } = await loadAckedAnchors({ repository, pullNumber, ghApi });
-    if (acked.size > 0) {
-      const result = dropAckedFindings(valid, acked);
-      valid = result.kept;
-      ackedDropped.push(...result.dropped);
+    const ackers = collectAckers(pr);
+    if (ackers.length > 0) {
+      const { acked } = await loadAckedAnchors({ repository, pullNumber, ghApi, ackers });
+      if (acked.size > 0) {
+        const result = dropAckedFindings(valid, acked);
+        valid = result.kept;
+        ackedDropped.push(...result.dropped);
+      }
     }
   }
 

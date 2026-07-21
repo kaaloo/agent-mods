@@ -51,10 +51,14 @@ export async function fetchChangedLinesSince({ repository, baseSha, headSha, ghA
       ghApi(`repos/${repository}/compare/${baseSha.toLowerCase()}...${headSha.toLowerCase()}`),
     );
   } catch (err) {
-    // ghApi propagates stderr; we cannot easily distinguish 404 from
-    // other failures. The compare endpoint returns a "Not Found"
-    // body when the base is not reachable from head, so try to
-    // parse stderr too.
+    // The script's ghApi wrapper inherits stderr to the terminal,
+    // so the thrown error's `message` field only carries the
+    // generic execFileSync failure text — we cannot reliably
+    // distinguish a 404 ("Not Found", base not reachable from
+    // head) from any other gh-api failure. Pattern-match the
+    // message as a best-effort heuristic. Either way, the caller
+    // falls back to a full review with the acked-anchor safety net,
+    // so the user-visible behavior is the same.
     const message = err?.message ?? String(err);
     if (/Not Found/i.test(message) || /404/.test(message)) {
       return { ok: false, reason: 'sha-not-reachable' };
@@ -78,11 +82,15 @@ export async function fetchChangedLinesSince({ repository, baseSha, headSha, ghA
     if (f.status === 'renamed' && typeof f.previous_filename === 'string') {
       renamedFiles.set(f.filename, f.previous_filename);
     }
-    // For added / modified / renamed files, use the per-file patch
-    // to derive the right-side line numbers that changed. The
-    // Compare API's per-file `patch` field is a unified diff
-    // without a `diff --git` header; we wrap it with one so
-    // parsePatchAnchors can parse the hunk lines.
+    // For added / modified / renamed files, walk the per-file patch
+    // and collect only the right-side lines that are actually added
+    // (`+`-prefixed lines). We deliberately do NOT include context
+    // (` `-prefixed) lines: those are unchanged content whose only
+    // purpose is to anchor the hunk, and counting them as "changed"
+    // would let the reviewer re-fire findings on them.
+    //
+    // Renamed files inherit the same treatment — the right side is
+    // the new file, and we want only added lines.
     const patch = typeof f.patch === 'string' ? f.patch : '';
     if (!patch) {
       // If the API omitted the patch (binary, large diff), treat
@@ -91,15 +99,13 @@ export async function fetchChangedLinesSince({ repository, baseSha, headSha, ghA
       changedLines.set(f.filename, null);
       continue;
     }
-    const wrapped = `diff --git a/${f.filename} b/${f.filename}\n${patch}`;
-    const anchors = parsePatchAnchors(wrapped);
-    const rightSet = anchors.right.get(f.filename);
-    if (rightSet && rightSet.size > 0) {
-      changedLines.set(f.filename, rightSet);
+    const addedLines = parseAddedRightLines(patch);
+    if (addedLines.size > 0) {
+      changedLines.set(f.filename, addedLines);
     } else if (f.status === 'added') {
       // Newly-added files always have content on the right side.
-      // parsePatchAnchors should have populated the right map; if
-      // it didn't, fall back to marking the file fully changed.
+      // If we somehow didn't find any `+` lines, fall back to
+      // marking the whole file in scope.
       changedLines.set(f.filename, null);
     }
   }
@@ -120,10 +126,10 @@ export async function fetchChangedLinesSince({ repository, baseSha, headSha, ghA
  * detect that and post a "no new findings" comment instead of
  * re-running the model.
  *
- * Deleted files in the changedLines set are excluded entirely from
- * the filtered patch — there are no right-side lines to anchor
- * against, and we don't want the reviewer to re-flag deletions that
- * the author already acknowledged.
+ * Files in `removedFiles` (deletions since the last review) are
+ * passed through verbatim so LEFT-side anchor findings can still
+ * be emitted on the deletion hunks. The reviewer contract
+ * supports LEFT anchors for this case.
  *
  * The function preserves the diff preamble (everything before the
  * first `diff --git ` boundary), which is empty for the PR-diff
@@ -150,9 +156,12 @@ export function filterPatchToChangedLines(patch, changedLines, { removedFiles = 
     }
 
     if (removedFiles.has(newPath)) {
-      // File was removed in the delta; there is no right-side
-      // content. Skip the whole block — the reviewer should not
-      // re-flag it.
+      // File was removed in the delta. There is no right-side
+      // content, but the deletion IS a change worth reviewing —
+      // LEFT-side anchors are valid for deleted-file hunks per
+      // the reviewer contract. Mark the file as fully in scope
+      // so the block survives the hunk-level filter below.
+      kept.push(`diff --git ${block}`);
       continue;
     }
 
@@ -307,4 +316,44 @@ export const __test__ = {
   hunkIntersects,
   filterBlocksKeepingChangedHunks,
   extractNewPathFromHeader,
+  parseAddedRightLines,
 };
+
+// Walk a per-file patch (unified diff) and return the set of
+// right-side line numbers that are actually added. Used by the
+// delta filter to mark only the genuinely-new lines; context
+// lines (which serve as hunk anchors only) are deliberately
+// excluded so the reviewer does not re-fire findings on
+// unchanged content.
+function parseAddedRightLines(patch) {
+  const added = new Set();
+  const lines = patch.split('\n');
+  let rightLine = 0;
+  let inHunk = false;
+  for (const line of lines) {
+    if (line.startsWith('@@')) {
+      const hunk = parseHunkHeader(line);
+      if (!hunk) {
+        inHunk = false;
+        continue;
+      }
+      inHunk = true;
+      rightLine = hunk.newStart;
+      continue;
+    }
+    if (!inHunk) continue;
+    if (line.startsWith('+')) {
+      added.add(rightLine);
+      rightLine += 1;
+    } else if (line.startsWith(' ')) {
+      rightLine += 1;
+    } else if (line.startsWith('-')) {
+      // Deletion only; no right advance.
+    } else if (line.startsWith('\\')) {
+      // "\ No newline at end of file" - skip
+    } else {
+      inHunk = false;
+    }
+  }
+  return added;
+}

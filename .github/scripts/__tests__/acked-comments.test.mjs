@@ -22,6 +22,7 @@ test('loadAckedAnchors returns empty set when there are no comments', async () =
     repository: 'o/r',
     pullNumber: 1,
     ghApi: fakeGhApi,
+    ackers: ['kaaloo'],
   });
   assert.equal(result.acked.size, 0);
   assert.equal(result.comments, 0);
@@ -37,6 +38,7 @@ test('loadAckedAnchors treats a human reply as an acknowledgement', async () => 
     repository: 'o/r',
     pullNumber: 1,
     ghApi: fakeGhApi,
+    ackers: ['kaaloo'],
   });
   assert.equal(acked.size, 1);
   assert.ok(acked.has('a.ts\x00RIGHT\x0010'));
@@ -52,6 +54,7 @@ test('loadAckedAnchors does not treat bot-only threads as acked', async () => {
     repository: 'o/r',
     pullNumber: 1,
     ghApi: fakeGhApi,
+    ackers: ['kaaloo'],
   });
   assert.equal(acked.size, 0);
 });
@@ -71,12 +74,42 @@ test('loadAckedAnchors only counts replies from configured ackers', async () => 
   assert.equal(acked.size, 0);
 });
 
+test('loadAckedAnchors recognizes multiple configured ackers', async () => {
+  const fakeGhApi = () =>
+    JSON.stringify([
+      makeRoot({ id: 1, path: 'a.ts', line: 10 }),
+      makeReply({ id: 2, in_reply_to_id: 1, login: 'pr-author' }),
+    ]);
+  const { acked } = await loadAckedAnchors({
+    repository: 'o/r',
+    pullNumber: 1,
+    ghApi: fakeGhApi,
+    ackers: ['kaaloo', 'pr-author'],
+  });
+  assert.equal(acked.size, 1, 'PR author replies should also count');
+});
+
+test('loadAckedAnchors requires an ackers list', async () => {
+  const fakeGhApi = () =>
+    JSON.stringify([
+      makeRoot({ id: 1, path: 'a.ts', line: 10 }),
+      makeReply({ id: 2, in_reply_to_id: 1, login: 'kaaloo' }),
+    ]);
+  const { acked } = await loadAckedAnchors({
+    repository: 'o/r',
+    pullNumber: 1,
+    ghApi: fakeGhApi,
+  });
+  assert.equal(acked.size, 0, 'without ackers, nothing should be marked acked');
+});
+
 test('loadAckedAnchors tolerates a non-array response', async () => {
   const fakeGhApi = () => JSON.stringify({ unexpected: 'shape' });
   const { acked, comments } = await loadAckedAnchors({
     repository: 'o/r',
     pullNumber: 1,
     ghApi: fakeGhApi,
+    ackers: ['kaaloo'],
   });
   assert.equal(acked.size, 0);
   assert.equal(comments, 0);

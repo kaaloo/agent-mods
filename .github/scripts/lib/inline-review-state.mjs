@@ -40,6 +40,18 @@ const SHA_RE = /^[0-9a-f]{40}$/i;
  * marker plus the comment ID, or null if no marker exists.
  *
  * `ghApi` is injected so the helper stays easy to unit-test.
+ *
+ * Notes on trust
+ * --------------
+ * Any PR commenter can craft a comment whose body looks like a
+ * marker. We do not validate the comment author here because the
+ * marker only encodes an optimization: a forged marker pointing
+ * at the current head SHA would just trigger the "no lines
+ * changed" path, which is equivalent to a full review with the
+ * acked-anchor filter. The blast radius is bounded. If the
+ * repository ever needs hard guarantee, callers can filter
+ * `comments` by `c.user.login === expectedBot` before this
+ * helper runs.
  */
 export async function loadLastReviewedSha({ repository, pullNumber, ghApi }) {
   const comments = JSON.parse(
@@ -47,11 +59,16 @@ export async function loadLastReviewedSha({ repository, pullNumber, ghApi }) {
   );
   if (!Array.isArray(comments)) return null;
 
-  // Walk newest-first so we pick the latest marker if a previous run
-  // left a stale one without an exact-id match. The PATCH path
-  // updates the same comment in place, so this should not happen in
-  // practice; the walk defends against partial failures.
-  for (const c of comments) {
+  // GitHub returns issue comments in ascending order by default;
+  // sort by created_at descending so we pick the latest marker if
+  // a previous run left a stale one without an exact-id match.
+  const sorted = [...comments].sort((a, b) => {
+    const at = Date.parse(a?.created_at ?? '') || 0;
+    const bt = Date.parse(b?.created_at ?? '') || 0;
+    return bt - at;
+  });
+
+  for (const c of sorted) {
     if (typeof c?.body !== 'string') continue;
     const sha = parseLastReviewedSha(c.body);
     if (sha) return { sha, commentId: c.id };

@@ -11,9 +11,10 @@
 // --------------------
 // A finding is "acked" iff:
 //   - the corresponding review thread has at least one reply
-//     authored by a non-bot account (i.e. a human), AND
-//   - that human author is the PR author OR the repo owner
-//     (determined from the PR data).
+//     authored by one of the configured `ackers`, AND
+//   - `ackers` is supplied by the caller. By convention, callers
+//     pass the PR author plus the repo owner (the union of
+//     accounts whose replies should silence a re-fire).
 //
 // Bot replies alone do not count: the original Letta Code review
 // is itself a bot comment, and the reviewer's earlier line is not
@@ -24,21 +25,24 @@
 // marker; that puts the burden on humans to follow a convention.
 // The presence of any human reply in the thread is sufficient.
 
-const DEFAULT_ACKERS = ['kaaloo'];
-
 /**
  * Fetch the set of (path, line, side) anchors that have been
- * human-acknowledged on the PR.
+ * acknowledged on the PR by one of the configured ackers.
  *
  * @param {object} args
  * @param {string} args.repository
  * @param {number} args.pullNumber
  * @param {(endpoint: string, opts?: object) => string} args.ghApi
- * @param {string[]} [args.ackers] - GitHub usernames whose replies
- *   count as acknowledgement. Defaults to ['kaaloo'].
+ * @param {string[]} args.ackers - GitHub usernames whose replies
+ *   count as acknowledgement. Required; the caller decides who
+ *   counts as a human acker (PR author, repo owner, etc.).
  * @returns {Promise<{acked: Set<string>, comments: number}>}
  */
-export async function loadAckedAnchors({ repository, pullNumber, ghApi, ackers = DEFAULT_ACKERS }) {
+export async function loadAckedAnchors({ repository, pullNumber, ghApi, ackers }) {
+  if (!Array.isArray(ackers) || ackers.length === 0) {
+    return { acked: new Set(), comments: 0 };
+  }
+  const normalizedAckers = new Set(ackers.map((a) => String(a).toLowerCase()));
   // /pulls/{n}/comments returns the inline review comments and
   // their threaded replies. Each entry has `in_reply_to_id`
   // pointing to its parent (or null for the root comment).
@@ -61,7 +65,7 @@ export async function loadAckedAnchors({ repository, pullNumber, ghApi, ackers =
   for (const c of comments) {
     if (!c?.in_reply_to_id) continue;
     const login = c.user?.login ?? '';
-    if (!ackers.includes(login.toLowerCase())) continue;
+    if (!normalizedAckers.has(login.toLowerCase())) continue;
     const root = roots.get(c.in_reply_to_id);
     if (root) acked.add(root.key);
   }
@@ -101,4 +105,4 @@ function normalizeSide(value) {
 }
 
 // Exported for tests.
-export const __test__ = { anchorKey, normalizeSide, DEFAULT_ACKERS };
+export const __test__ = { anchorKey, normalizeSide };

@@ -45,6 +45,7 @@ test('parseLastReviewedSha handles missing input', () => {
 test('loadLastReviewedSha returns the latest marker comment id', async () => {
   const older = {
     id: 1,
+    created_at: '2026-07-20T10:00:00Z',
     body: [
       '<!-- letta-inline-review:state -->',
       `<!-- letta-inline-review:last-reviewed-sha=${'c'.repeat(40)} -->`,
@@ -52,19 +53,51 @@ test('loadLastReviewedSha returns the latest marker comment id', async () => {
   };
   const newer = {
     id: 2,
+    created_at: '2026-07-21T10:00:00Z',
     body: [
       '<!-- letta-inline-review:state -->',
       `<!-- letta-inline-review:last-reviewed-sha=${SHA} -->`,
     ].join('\n'),
   };
-  // Newer first to match GitHub's typical newest-first ordering.
-  const fakeGhApi = () => JSON.stringify([newer, older]);
+  // GitHub returns comments in ascending order by default. We
+  // must pick the newer one even though it comes last.
+  const fakeGhApi = () => JSON.stringify([older, newer]);
   const result = await loadLastReviewedSha({
     repository: 'o/r',
     pullNumber: 1,
     ghApi: fakeGhApi,
   });
   assert.deepEqual(result, { sha: SHA, commentId: 2 });
+});
+
+test('loadLastReviewedSha handles missing created_at defensively', async () => {
+  // Without timestamps, the comparator is ambiguous; the helper
+  // should still return a marker rather than failing. We just
+  // verify it returns *some* valid marker.
+  const noTimestamps = [
+    {
+      id: 1,
+      body: [
+        '<!-- letta-inline-review:state -->',
+        `<!-- letta-inline-review:last-reviewed-sha=${'c'.repeat(40)} -->`,
+      ].join('\n'),
+    },
+    {
+      id: 2,
+      body: [
+        '<!-- letta-inline-review:state -->',
+        `<!-- letta-inline-review:last-reviewed-sha=${SHA} -->`,
+      ].join('\n'),
+    },
+  ];
+  const fakeGhApi = () => JSON.stringify(noTimestamps);
+  const result = await loadLastReviewedSha({
+    repository: 'o/r',
+    pullNumber: 1,
+    ghApi: fakeGhApi,
+  });
+  assert.ok(result, 'should still return a marker');
+  assert.ok([1, 2].includes(result.commentId), 'one of the two markers is picked');
 });
 
 test('loadLastReviewedSha ignores non-marker comments', async () => {
