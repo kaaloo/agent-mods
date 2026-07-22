@@ -86,11 +86,7 @@ Hooks can be skipped with `git commit --no-verify` / `git push --no-verify`, but
 ## Continuous integration
 
 - `.github/workflows/gitleaks.yml` — secret scan on push and pull request.
-- `.github/workflows/letta-code.yml` — runs the persistent Letta Code agent on this repo. Provides:
-  - `letta-conversational` — responds when someone @-mentions the agent, applies the `letta-code` label, or replies in a thread the agent has joined.
-  - `letta-inline-review` — auto-reviews non-draft pull requests by asking the agent for line-anchored findings and posting them as a PR review. See [`.github/prompts/letta-inline-review.system.md`](.github/prompts/letta-inline-review.system.md) for the review contract.
-
-Both jobs share the agent defined by the `LETTA_REVIEW_AGENT` variable so the agent's long-term memory and the repository's learned conventions stay consistent across surfaces.
+- Code review is handled via Codex.
 
 ## Per-package verification
 
