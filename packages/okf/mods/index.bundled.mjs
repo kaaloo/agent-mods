@@ -6990,6 +6990,7 @@ var $visit = visit.visit;
 var $visitAsync = visit.visitAsync;
 
 // mods/lib/okf.ts
+import { readFileSync } from "node:fs";
 var FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---/;
 function extractFrontmatter(content) {
   const match = content.match(FRONTMATTER_RE);
@@ -7065,12 +7066,20 @@ function validateOkfFrontmatter(fm, isWrite) {
   }
   return issues;
 }
+function isValidISO8601(value) {
+  const d = new Date(value);
+  if (isNaN(d.getTime()))
+    return false;
+  return d.toISOString() === value || new Date(d.toISOString()).getTime() === d.getTime();
+}
 function validateProvenance(prov, issues) {
   if (typeof prov.by !== "string" || !prov.by) {
     issues.push({ field: "generated.by", severity: "error", message: "`generated.by` must be a non-empty string." });
   }
   if (typeof prov.at !== "string" || !prov.at) {
     issues.push({ field: "generated.at", severity: "error", message: "`generated.at` must be an ISO-8601 timestamp." });
+  } else if (!isValidISO8601(prov.at)) {
+    issues.push({ field: "generated.at", severity: "error", message: `"${prov.at}" is not a valid ISO-8601 timestamp.` });
   }
 }
 function validateVerification(v, issues) {
@@ -7079,6 +7088,8 @@ function validateVerification(v, issues) {
   }
   if (typeof v.at !== "string" || !v.at) {
     issues.push({ field: "verified[].at", severity: "error", message: "Each `verified` entry must have an ISO-8601 `at` timestamp." });
+  } else if (!isValidISO8601(v.at)) {
+    issues.push({ field: "verified[].at", severity: "error", message: `"${v.at}" is not a valid ISO-8601 timestamp.` });
   }
 }
 function validateStaleness(staleAfter, status, issues) {
@@ -7110,37 +7121,18 @@ function generateProvenance(agentId) {
     at: new Date().toISOString()
   };
 }
-function setFrontmatterField(content, field, value) {
-  const match = content.match(FRONTMATTER_RE);
-  if (!match)
-    return content;
-  const raw = match[1];
-  let fm;
+function reconstructEditResult(filePath, oldString, newString) {
+  let current;
   try {
-    fm = $parse(raw);
-    if (!fm || typeof fm !== "object")
-      return content;
+    current = readFileSync(filePath, "utf-8");
   } catch {
-    return content;
+    return null;
   }
-  const lines = raw.split(`
-`);
-  const fieldKey = `${field}:`;
-  for (let i = 0;i < lines.length; i++) {
-    if (lines[i].startsWith(fieldKey)) {
-      lines[i] = `${field}: ${JSON.stringify(value)}`;
-      const newFm2 = lines.join(`
-`);
-      return content.replace(FRONTMATTER_RE, `---
-${newFm2}
----`);
-    }
+  const parts = current.split(oldString);
+  if (parts.length !== 2) {
+    return null;
   }
-  const newFm = raw + `
-${field}: ${JSON.stringify(value)}`;
-  return content.replace(FRONTMATTER_RE, `---
-${newFm}
----`);
+  return parts[0] + newString + parts[1];
 }
 var MEMFS_WRITE_TOOLS = new Set(["memory", "Write", "Edit"]);
 function isMemfsWrite(toolName) {
@@ -7176,11 +7168,16 @@ function activate(letta) {
       check(event) {
         if (!isMemfsWrite(event.toolName))
           return;
-        const text = extractTextArg(event.args);
-        if (!text)
-          return;
         const filePath = extractFilePath(event.args);
         if (event.toolName !== "memory" && filePath && !isMemoryPath(filePath))
+          return;
+        let text;
+        if (event.toolName === "Edit" && typeof event.args.old_string === "string" && typeof event.args.new_string === "string" && filePath) {
+          text = reconstructEditResult(filePath, event.args.old_string, event.args.new_string);
+        } else {
+          text = extractTextArg(event.args);
+        }
+        if (!text)
           return;
         const extraction = extractFrontmatter(text);
         if (!extraction)
@@ -7198,6 +7195,15 @@ ${errors2.map((e) => `  - ${e.field}: ${e.message}`).join(`
 `)}`
           };
         }
+        const warnings = issues.filter((i) => i.severity === "warning");
+        if (warnings.length > 0) {
+          return {
+            decision: "allow",
+            reason: `OKF trust warnings:
+${warnings.map((w) => `  - ${w.field}: ${w.message}`).join(`
+`)}`
+          };
+        }
         return;
       }
     }));
@@ -7209,11 +7215,16 @@ ${errors2.map((e) => `  - ${e.field}: ${e.message}`).join(`
       if (!isMemfsWrite(event.toolName ?? ""))
         return;
       const args = event.args ?? {};
-      const text = extractTextArg(args);
-      if (!text)
-        return;
       const filePath = extractFilePath(args);
       if (event.toolName !== "memory" && filePath && !isMemoryPath(filePath))
+        return;
+      let text;
+      if (event.toolName === "Edit" && typeof args.old_string === "string" && typeof args.new_string === "string" && filePath) {
+        text = reconstructEditResult(filePath, args.old_string, args.new_string);
+      } else {
+        text = extractTextArg(args);
+      }
+      if (!text)
         return;
       const extraction = extractFrontmatter(text);
       if (!extraction)
@@ -7224,6 +7235,11 @@ ${errors2.map((e) => `  - ${e.field}: ${e.message}`).join(`
       if (fm.generated)
         return;
       const provenance = generateProvenance(event.agentId ?? undefined);
+      const output = String(event.output ?? "");
+      const warning = `
+
+[okf] Missing ` + "`generated`" + ` provenance. Auto-populated with { by: "${provenance.by}", at: "${provenance.at}" } on next write.`;
+      return { result: { status: "success", output: output + warning } };
     }));
   }
   return () => {

@@ -5,7 +5,7 @@ OKF trust-signal enforcement for Letta Code agent memory in MemFS. Validates pro
 ## Installation
 
 ```bash
-cd packages/okf-trust
+cd packages/okf
 npm install
 letta install .
 ```

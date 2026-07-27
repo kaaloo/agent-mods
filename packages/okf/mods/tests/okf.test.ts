@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import {
   extractFrontmatter,
   isOkfConcept,
@@ -7,6 +8,7 @@ import {
   setFrontmatterField,
   isMemfsWrite,
   isMemoryPath,
+  reconstructEditResult,
 } from "../lib/okf.ts";
 import type { OkfFrontmatter } from "../types.ts";
 
@@ -123,6 +125,26 @@ describe("validateOkfFrontmatter", () => {
     };
     const issues = validateOkfFrontmatter(fm, true);
     const error = issues.find((i) => i.field === "generated.at" && i.severity === "error");
+    expect(error).toBeDefined();
+  });
+
+  it("errors on non-ISO generated.at", () => {
+    const fm: OkfFrontmatter = {
+      type: "Metric",
+      generated: { by: "agent/test", at: "not-a-date" },
+    };
+    const issues = validateOkfFrontmatter(fm, true);
+    const error = issues.find((i) => i.field === "generated.at" && i.message.includes("not a valid ISO-8601"));
+    expect(error).toBeDefined();
+  });
+
+  it("errors on non-ISO verified.at", () => {
+    const fm: OkfFrontmatter = {
+      type: "Metric",
+      verified: [{ by: "human:alice", at: "yesterday afternoon" }],
+    };
+    const issues = validateOkfFrontmatter(fm, true);
+    const error = issues.find((i) => i.field === "verified[].at" && i.message.includes("not a valid ISO-8601"));
     expect(error).toBeDefined();
   });
 
@@ -252,5 +274,41 @@ describe("isMemoryPath", () => {
   it("rejects non-memory paths", () => {
     expect(isMemoryPath("/Users/luis/Code/something.md")).toBe(false);
     expect(isMemoryPath("/Users/luis/.letta/other/file.txt")).toBe(false);
+  });
+});
+
+describe("reconstructEditResult", () => {
+  const tmpDir = "/tmp/okf-test-" + Date.now();
+
+  // Write a test file before each test, clean up after
+  function setup(content: string): string {
+    mkdirSync(tmpDir, { recursive: true });
+    const path = `${tmpDir}/test.md`;
+    writeFileSync(path, content, "utf-8");
+    return path;
+  }
+
+  it("reconstructs a simple replacement", () => {
+    const path = setup("---\ntype: Metric\nstatus: stable\n---\n\nbody");
+    const result = reconstructEditResult(path, "status: stable", "status: deprecated");
+    expect(result).toContain("status: deprecated");
+    expect(result).toContain("type: Metric");
+    expect(result).toContain("body");
+  });
+
+  it("returns null when old_string is not unique", () => {
+    const path = setup("---\ntype: Metric\nstatus: stable\nstatus: stable\n---\n");
+    const result = reconstructEditResult(path, "status: stable", "status: deprecated");
+    expect(result).toBeNull();
+  });
+
+  it("returns null when file does not exist", () => {
+    const result = reconstructEditResult("/tmp/nonexistent-file.md", "old", "new");
+    expect(result).toBeNull();
+  });
+
+  // Clean up temp directory
+  it("cleanup", () => {
+    try { rmSync(tmpDir, { recursive: true }); } catch { /* ok */ }
   });
 });

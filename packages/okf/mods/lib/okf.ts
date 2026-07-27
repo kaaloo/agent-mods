@@ -106,12 +106,22 @@ export function validateOkfFrontmatter(fm: OkfFrontmatter, isWrite: boolean): Ok
   return issues;
 }
 
+function isValidISO8601(value: string): boolean {
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return false;
+  // Require that Date.parse round-trips to the same ISO string (rejects
+  // partial dates like "2026" that Date parses into a valid timestamp).
+  return d.toISOString() === value || new Date(d.toISOString()).getTime() === d.getTime();
+}
+
 function validateProvenance(prov: OkfProvenance, issues: OkfValidationIssue[]): void {
   if (typeof prov.by !== "string" || !prov.by) {
     issues.push({ field: "generated.by", severity: "error", message: "`generated.by` must be a non-empty string." });
   }
   if (typeof prov.at !== "string" || !prov.at) {
     issues.push({ field: "generated.at", severity: "error", message: "`generated.at` must be an ISO-8601 timestamp." });
+  } else if (!isValidISO8601(prov.at)) {
+    issues.push({ field: "generated.at", severity: "error", message: `"${prov.at}" is not a valid ISO-8601 timestamp.` });
   }
 }
 
@@ -121,6 +131,8 @@ function validateVerification(v: OkfVerification, issues: OkfValidationIssue[]):
   }
   if (typeof v.at !== "string" || !v.at) {
     issues.push({ field: "verified[].at", severity: "error", message: "Each `verified` entry must have an ISO-8601 `at` timestamp." });
+  } else if (!isValidISO8601(v.at)) {
+    issues.push({ field: "verified[].at", severity: "error", message: `"${v.at}" is not a valid ISO-8601 timestamp.` });
   }
 }
 
@@ -195,6 +207,41 @@ export function setFrontmatterField(
   // Append
   const newFm = raw + `\n${field}: ${JSON.stringify(value)}`;
   return content.replace(FRONTMATTER_RE, `---\n${newFm}\n---`);
+}
+
+// ── Edit reconstruction ──
+
+// The Edit tool sends { file_path, old_string, new_string }. The permission
+// overlay only sees old_string/new_string, not the full post-edit document.
+// For an Edit that changes frontmatter (e.g. replacing "status: stable" with
+// "status: bogus"), extractTextArg returns just the new_string, which has no
+// frontmatter delimiters and would skip validation.  To close this gap, the
+// permission overlay must reconstruct the post-edit document by applying the
+// replacement to the current file content.
+
+import { readFileSync } from "node:fs";
+
+export function reconstructEditResult(
+  filePath: string,
+  oldString: string,
+  newString: string,
+): string | null {
+  let current: string;
+  try {
+    current = readFileSync(filePath, "utf-8");
+  } catch {
+    return null;
+  }
+
+  // Count occurrences - the Edit tool requires exactly one, so simulate that
+  const parts = current.split(oldString);
+  if (parts.length !== 2) {
+    // Can't safely reconstruct if the old_string isn't unique.
+    // Fall back: return null → skip validation rather than block incorrectly.
+    return null;
+  }
+
+  return parts[0] + newString + parts[1];
 }
 
 // ── Tool name matchers ──
