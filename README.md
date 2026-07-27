@@ -7,7 +7,7 @@ Monorepo for trusted [Letta Code](https://github.com/letta-ai/letta-code) mods m
 | Package | Description |
 | --- | --- |
 | [`@kaaloo/flows`](packages/flows) | A Letta-native mod for authoring and running multi-agent flows. Describes a task as markdown with YAML frontmatter, fans it out across parallel subagents, and synthesizes the results. |
-| [`@kaaloo/okf`](packages/okf) | OKF trust-signal enforcement for agent memory in MemFS. Validates provenance, verification, freshness, lifecycle, and attestation on memory writes via permission overlays. |
+| [`@kaaloo/okf`](packages/okf) | OKF trust-signal enforcement for agent memory in MemFS. Validates provenance, verification, freshness, and lifecycle on memory writes via permission overlays. |
 
 New packages land under `packages/*` with their own `package.json`, `README.md`, and (where applicable) `MOD.md`.
 
