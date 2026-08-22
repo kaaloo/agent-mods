@@ -8,6 +8,7 @@ Monorepo for trusted [Letta Code](https://github.com/letta-ai/letta-code) mods m
 | --- | --- |
 | [`@kaaloo/flows`](packages/flows) | A Letta-native mod for authoring and running multi-agent flows. Describes a task as markdown with YAML frontmatter, fans it out across parallel subagents, and synthesizes the results. |
 | [`@kaaloo/okf`](packages/okf) | OKF trust-signal enforcement for agent memory in MemFS. Validates provenance, verification, freshness, and lifecycle on memory writes via permission overlays. |
+| [`@kaaloo/amazing-grace`](packages/amazing-grace) | Graceful model degradation. Steps an agent down a usage-plan model ladder on provider failures (quota, invalid key, images on text-only rungs) and back up after recovery, logging every switch to shared memory. |
 
 New packages land under `packages/*` with their own `package.json`, `README.md`, and (where applicable) `MOD.md`.
 
@@ -30,6 +31,18 @@ letta install .
 
 Then reload mods inside Letta Code with `/reload`.
 
+Alternatively, install from this repository over the git channel — this reads
+the repo-root `package.json#letta` manifest, which currently lists the
+amazing-grace mod (entries may point into `packages/*`; git sources themselves
+are `owner/repo` only):
+
+```bash
+letta install git:github.com/kaaloo/agent-mods
+
+# Or install into one agent's MemFS so the mod travels with that agent:
+letta install git:github.com/kaaloo/agent-mods --agent <agent-id>
+```
+
 See each package's README for package-specific usage.
 
 ## Repository layout
@@ -37,16 +50,17 @@ See each package's README for package-specific usage.
 ```
 .
 ├── packages/
-│   ├── flows/          # @kaaloo/flows mod (TypeScript source, bundled JS, tests)
-│   └── okf/            # @kaaloo/okf mod (TypeScript source, bundled JS, tests)
-├── docs/               # Design notes and implementation plans
+│   ├── flows/            # @kaaloo/flows mod (TypeScript source, bundled JS, tests)
+│   ├── okf/              # @kaaloo/okf mod (TypeScript source, bundled JS, tests)
+│   └── amazing-grace/    # @kaaloo/amazing-grace mod (TypeScript source, bundled JS, tests)
+├── docs/                 # Design notes and implementation plans
 ├── .github/
-│   ├── prompts/        # System prompts used by the CI agent
-│   ├── scripts/        # Helpers invoked from workflows
-│   └── workflows/      # GitHub Actions workflows
-├── .husky/             # Local git hooks (pre-commit, pre-push)
-├── .gitleaks.toml      # Allowlisted secrets for the secret scanner
-└── package.json        # Workspace root manifest (dev tooling only)
+│   ├── prompts/          # System prompts used by the CI agent
+│   ├── scripts/          # Helpers invoked from workflows
+│   └── workflows/        # GitHub Actions workflows
+├── .husky/               # Local git hooks (pre-commit, pre-push)
+├── .gitleaks.toml        # Allowlisted secrets for the secret scanner
+└── package.json          # Workspace root manifest (dev tooling + git-install letta manifest)
 ```
 
 ## Security tooling
