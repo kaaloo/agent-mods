@@ -31,17 +31,24 @@ letta install .
 
 Then reload mods inside Letta Code with `/reload`.
 
-Alternatively, install from this repository over the git channel — this reads
-the repo-root `package.json#letta` manifest, which currently lists the
-amazing-grace mod (entries may point into `packages/*`; git sources themselves
-are `owner/repo` only):
+Alternatively, install the whole collection from this repository over the git
+channel. Git sources are `owner/repo` only, so the repo-root
+`package.json#letta` manifest is what a git install loads: it lists every
+package's bundled mod (entries point into `packages/*`) and declares the union
+of their capabilities and the highest engine floor. Keep the root manifest in
+sync when adding or changing a package.
 
 ```bash
 letta install git:github.com/kaaloo/agent-mods
 
-# Or install into one agent's MemFS so the mod travels with that agent:
+# Or install into one agent's MemFS so the mods travel with that agent:
 letta install git:github.com/kaaloo/agent-mods --agent <agent-id>
 ```
+
+Pick one channel per environment. A mod installed both from its package
+directory and from the git channel registers twice (the two installs have
+different source paths), so its event handlers run twice. Use the git channel
+for agents/environments and the per-package channel for development.
 
 See each package's README for package-specific usage.
 

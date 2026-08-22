@@ -18,10 +18,15 @@
   "letta": {
     "manifestVersion": 1,
     "mods": [
+      "./packages/flows/mods/index.bundled.mjs",
+      "./packages/okf/mods/index.bundled.mjs",
       "./packages/amazing-grace/mods/index.bundled.mjs"
     ],
     "capabilities": [
       "commands",
+      "tools",
+      "permissions",
+      "events.lifecycle",
       "events.turns",
       "events.tools"
     ],

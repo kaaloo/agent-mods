@@ -115,8 +115,9 @@ manifest governs git installs, and its mod entries may point into
 `packages/*`. Channels:
 
 - `letta install git:github.com/kaaloo/agent-mods` — any environment with
-  GitHub credentials; installs what the root manifest lists (amazing-grace
-  only, by design).
+  GitHub credentials; installs the whole collection listed by the root
+  manifest (all packages' bundled mods; git sources are `owner/repo` only, so
+  the root manifest is the collection definition).
 - `letta install git:github.com/kaaloo/agent-mods --agent <id>` — installs
   into the agent's MemFS so it travels with the agent across machines.
 - `cd packages/amazing-grace && letta install .` — per-package local channel,
@@ -201,4 +202,4 @@ Remaining:
 | 2026-08-22 | Probes classify failures on cloud | llm events are local-backend-only |
 | 2026-08-22 | Image downgrades conversation-scoped, failures agent-scoped | Images are turn-local; failures are sticky |
 | 2026-08-22 | Recovery at conversation_open, no background timer | Probes need conversation context to fork |
-| 2026-08-22 | Root manifest lists only amazing-grace for git installs | Surgical: git channel ships what was asked for |
+| 2026-08-22 | Root manifest lists the full mod collection for git installs | Monorepo semantics: the git URL installs the repo's mods, not a single package (Luis revision of the initial amazing-grace-only manifest) |
