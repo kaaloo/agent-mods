@@ -1,0 +1,37 @@
+name: codex-auto-review
+
+# The Codex GitHub connector auto-reviews PRs server-side only when the PR
+# author has a ChatGPT/Codex connector relationship. PRs opened by GitHub
+# Apps (e.g. agent-created PRs via letta-integration) get no automatic
+# review. The `@codex review` comment trigger works regardless of author,
+# so this workflow posts it once for bot-authored PRs.
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, reopened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  request-review:
+    if: >
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.type == 'Bot' &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post @codex review once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" --paginate \
+            | jq -e '[.[] | select(.user.login == "github-actions[bot]" and (.body | contains("@codex review")))] | length > 0' >/dev/null; then
+            echo "@codex review already requested; skipping"
+            exit 0
+          fi
+          gh pr comment "$PR_NUMBER" --body "@codex review"
