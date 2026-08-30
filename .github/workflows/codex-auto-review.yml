@@ -3,8 +3,14 @@ name: codex-auto-review
 # The Codex GitHub connector auto-reviews PRs server-side only when the PR
 # author has a ChatGPT/Codex connector relationship. PRs opened by GitHub
 # Apps (e.g. agent-created PRs via letta-integration) get no automatic
-# review. The `@codex review` comment trigger works regardless of author,
-# so this workflow posts it once for bot-authored PRs.
+# review. The `@codex review` comment trigger requires the *commenter* to
+# have a connected Codex account, so we use a PAT (CODEX_REVIEW_TOKEN)
+# stored as a repo secret instead of the default GITHUB_TOKEN (which posts
+# as github-actions[bot] and gets rejected by the Codex connector).
+#
+# Required secret: CODEX_REVIEW_TOKEN — a fine-grained PAT with
+# "Issues: Read and write" on this repository, from an account that has
+# Codex connected to GitHub.
 
 on:
   pull_request:
@@ -12,8 +18,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
-  pull-requests: write
 
 jobs:
   request-review:
@@ -26,12 +30,18 @@ jobs:
     steps:
       - name: Post @codex review once
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.CODEX_REVIEW_TOKEN }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::CODEX_REVIEW_TOKEN secret is not configured."
+            echo "Create a fine-grained PAT with Issues:R+W on this repo and"
+            echo "add it as a repository secret named CODEX_REVIEW_TOKEN."
+            exit 1
+          fi
           if gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" --paginate \
-            | jq -e '[.[] | select(.user.login == "github-actions[bot]" and (.body | contains("@codex review")))] | length > 0' >/dev/null; then
+            | jq -e '[.[] | select(.body | contains("@codex review"))] | length > 0' >/dev/null; then
             echo "@codex review already requested; skipping"
             exit 0
           fi
