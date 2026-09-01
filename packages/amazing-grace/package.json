@@ -43,6 +43,7 @@
     "capabilities": [
       "commands",
       "events.lifecycle",
+      "events.llm",
       "events.turns",
       "events.tools"
     ],

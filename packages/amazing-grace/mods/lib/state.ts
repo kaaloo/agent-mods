@@ -110,6 +110,18 @@ export function pruneCooldowns(state: AgentGraceState, now: number): boolean {
   return changed;
 }
 
+// Handles whose cooldown has expired (or is unparseable) as of `now`.
+// Recovery probes should run for exactly these rungs, not for rungs still
+// inside their cooldown window.
+export function expiredCooldowns(state: AgentGraceState, now: number): string[] {
+  const out: string[] = [];
+  for (const [handle, until] of Object.entries(state.cooldowns)) {
+    const t = Date.parse(until);
+    if (Number.isNaN(t) || t <= now) out.push(handle);
+  }
+  return out;
+}
+
 export function markCooldown(state: AgentGraceState, handle: string, minutes: number, now: number): void {
   state.cooldowns[handle] = new Date(now + minutes * 60_000).toISOString();
 }

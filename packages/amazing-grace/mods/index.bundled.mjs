@@ -263,6 +263,15 @@ function pruneCooldowns(state, now) {
   }
   return changed;
 }
+function expiredCooldowns(state, now) {
+  const out = [];
+  for (const [handle, until] of Object.entries(state.cooldowns)) {
+    const t = Date.parse(until);
+    if (Number.isNaN(t) || t <= now)
+      out.push(handle);
+  }
+  return out;
+}
 function markCooldown(state, handle, minutes, now) {
   state.cooldowns[handle] = new Date(now + minutes * 60000).toISOString();
 }
@@ -512,8 +521,7 @@ function activate(letta) {
     state: { agentId: "?", updatedAt: nowIso(), paused: false, pinned: null, cooldowns: {}, dead: [], events: [] },
     source: "defaults",
     llmEventsAvailable: false,
-    actedThisTurn: false,
-    switchedThisTurn: false,
+    turnFlags: new Map,
     lastContinueAt: new Map,
     persistQueue: Promise.resolve(),
     mountWarned: false,
@@ -544,6 +552,14 @@ function activate(letta) {
     }
     await rt.initPromise;
     rt.initialized = true;
+  }
+  function flagsFor(conversationId) {
+    let flags = rt.turnFlags.get(conversationId);
+    if (!flags) {
+      flags = { acted: false, switched: false };
+      rt.turnFlags.set(conversationId, flags);
+    }
+    return flags;
   }
   function persist(eventSummary) {
     rt.persistQueue = rt.persistQueue.then(() => saveState(rt.mount, rt.agentId ?? "?", rt.state, rt.config, eventSummary)).then((result) => {
@@ -598,7 +614,7 @@ function activate(letta) {
       conversationId: ctx.conversation?.id ?? null
     });
     persist(`${kind} ${current ?? "?"} -> ${target.handle} (${opts.reason})`);
-    rt.switchedThisTurn = true;
+    flagsFor(ctx.conversation?.id ?? "unknown").switched = true;
     return { from: current, to: target.handle, changed: true };
   }
   function bench(ctx, handle, kind, detail) {
@@ -617,13 +633,28 @@ function activate(letta) {
       persist(`dead-mark ${handle} (${kind})`);
     } else if (kind === "quota") {
       markCooldown(rt.state, handle, rt.config.cooldownMinutes, Date.now());
+      persist(`cooldown ${handle} (${kind})`);
     }
     return evaluateAndSwitch(ctx, { reason: kind, detail: trim(detail, 200) });
   }
+  function recordProbe(ctx, handle, result, via) {
+    appendEvent(rt.state, {
+      ts: nowIso(),
+      kind: "probe",
+      from: handle,
+      to: null,
+      reason: result,
+      detail: via,
+      conversationId: ctx.conversation?.id ?? null
+    });
+    persist(`probe ${handle} -> ${result} (${via})`);
+  }
   async function recoverByProbe(ctx, handle) {
     const result = await probeRung(ctx.conversation, handle);
+    recordProbe(ctx, handle, result, "turn-end");
     if (result === "quota") {
       markCooldown(rt.state, handle, rt.config.cooldownMinutes, Date.now());
+      persist(`cooldown ${handle} (quota, probe)`);
       await evaluateAndSwitch(ctx, { reason: "quota", detail: "probe" });
     } else if (result === "auth" || result === "invalid-model") {
       markDead(rt.state, handle);
@@ -637,9 +668,9 @@ function activate(letta) {
   if (letta.capabilities?.events?.lifecycle) {
     disposers.push(letta.events.on("conversation_open", async (event, ctx) => {
       await initialize(ctx);
-      rt.actedThisTurn = false;
-      rt.switchedThisTurn = false;
-      rt.appliedFor.add(event.conversationId ?? "unknown");
+      const cid = event.conversationId ?? "unknown";
+      rt.turnFlags.set(cid, { acted: false, switched: false });
+      rt.appliedFor.add(cid);
       await recoverBenchedRungs(ctx);
       await evaluateAndSwitch(ctx, { reason: "conversation-open" });
     }));
@@ -647,11 +678,10 @@ function activate(letta) {
   if (letta.capabilities?.events?.turns) {
     disposers.push(letta.events.on("turn_start", async (event, ctx) => {
       await initialize(ctx);
-      rt.actedThisTurn = false;
-      rt.switchedThisTurn = false;
+      const cid = event.conversationId ?? "unknown";
+      rt.turnFlags.set(cid, { acted: false, switched: false });
       if (rt.state.paused)
         return;
-      const cid = event.conversationId ?? "unknown";
       if (!rt.appliedFor.has(cid)) {
         rt.appliedFor.add(cid);
         await evaluateAndSwitch(ctx, { reason: "turn-start" });
@@ -667,7 +697,9 @@ function activate(letta) {
       await initialize(ctx);
       if (event.stopReason !== "error" || rt.state.paused)
         return;
-      if (!rt.actedThisTurn) {
+      const conversationId = event.conversationId ?? "unknown";
+      const flags = rt.turnFlags.get(conversationId);
+      if (!flags?.acted) {
         const kind = classifyFailure(event.assistantMessage ?? "");
         if (kind === "image") {
           await evaluateAndSwitch(ctx, { needsMultimodal: true, conversationScope: true, reason: "image-content", detail: trim(event.assistantMessage ?? "", 200) });
@@ -680,8 +712,7 @@ function activate(letta) {
           }
         }
       }
-      if (rt.switchedThisTurn && rt.config.autoContinue) {
-        const conversationId = event.conversationId ?? "unknown";
+      if (rt.turnFlags.get(conversationId)?.switched && rt.config.autoContinue) {
         const last = rt.lastContinueAt.get(conversationId) ?? 0;
         if (Date.now() - last > CONTINUE_MIN_INTERVAL_MS) {
           rt.lastContinueAt.set(conversationId, Date.now());
@@ -724,7 +755,7 @@ function activate(letta) {
         await evaluateAndSwitch(ctx, { needsMultimodal: true, conversationScope: true, reason: "image-content", detail: trim(text, 200) });
         return;
       }
-      rt.actedThisTurn = true;
+      flagsFor(ctx.conversation?.id ?? "unknown").acted = true;
       await bench(ctx, event.model, kind, text);
     }));
   }
@@ -732,20 +763,21 @@ function activate(letta) {
     if (!rt.config.probeEnabled || rt.state.paused)
       return;
     const now = Date.now();
+    const expired = new Set(expiredCooldowns(rt.state, now));
     let changed = pruneCooldowns(rt.state, now);
     for (const rung of rt.config.ladder) {
-      const benched = rt.state.dead.includes(rung.handle) || rt.state.cooldowns[rung.handle] !== undefined;
-      if (!benched)
+      const isDead = rt.state.dead.includes(rung.handle);
+      if (!isDead && !expired.has(rung.handle))
         continue;
       const result = await probeRung(ctx.conversation, rung.handle);
+      appendEvent(rt.state, { ts: nowIso(), kind: "probe", from: rung.handle, to: null, reason: result, detail: "recovery", conversationId: ctx.conversation?.id ?? null });
+      changed = true;
       if (result === "ok") {
         if (revive(rt.state, rung.handle)) {
           appendEvent(rt.state, { ts: nowIso(), kind: "recover", from: rung.handle, to: null, reason: "probe-ok", conversationId: ctx.conversation?.id ?? null });
-          changed = true;
         }
       } else if (result === "quota") {
         markCooldown(rt.state, rung.handle, rt.config.cooldownMinutes, now);
-        changed = true;
       }
     }
     if (changed)
@@ -816,6 +848,7 @@ function activate(letta) {
             const results = [];
             for (const handle of handles) {
               const result = await probeRung(ctx.conversation, handle);
+              recordProbe(ctx, handle, result, "command");
               results.push(`${handle}: ${result}`);
             }
             return { type: "output", output: results.join(`

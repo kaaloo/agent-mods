@@ -27,6 +27,7 @@
       "tools",
       "permissions",
       "events.lifecycle",
+      "events.llm",
       "events.turns",
       "events.tools"
     ],

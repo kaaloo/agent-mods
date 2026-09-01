@@ -203,3 +203,4 @@ Remaining:
 | 2026-08-22 | Image downgrades conversation-scoped, failures agent-scoped | Images are turn-local; failures are sticky |
 | 2026-08-22 | Recovery at conversation_open, no background timer | Probes need conversation context to fork |
 | 2026-08-22 | Root manifest lists the full mod collection for git installs | Monorepo semantics: the git URL installs the repo's mods, not a single package (Luis revision of the initial amazing-grace-only manifest) |
+| 2026-09-01 | `events.llm` declared in both manifests; probes run only post-cooldown-expiry; turn flags keyed per conversation; cooldowns persisted when marked; probe outcomes logged as `probe` events | Codex review of PR #25 (2 P1, 3 P2) |

@@ -24,10 +24,16 @@ import type { GraceConfig, LadderRung } from "./lib/ladder.ts";
 import { ensureMount, loadContext, saveState } from "./lib/ledger.ts";
 import type { MountInfo } from "./lib/ledger.ts";
 import { probeRung } from "./lib/probe.ts";
-import { activeCooldowns, appendEvent, changeKind, markCooldown, markDead, pruneCooldowns, revive } from "./lib/state.ts";
+import type { ProbeResult } from "./lib/probe.ts";
+import { activeCooldowns, appendEvent, changeKind, expiredCooldowns, markCooldown, markDead, pruneCooldowns, revive } from "./lib/state.ts";
 import type { AgentGraceState, GraceEvent } from "./lib/state.ts";
 
 const CONTINUE_MIN_INTERVAL_MS = 120_000;
+
+interface TurnFlags {
+  acted: boolean;
+  switched: boolean;
+}
 
 interface Runtime {
   initialized: boolean;
@@ -38,8 +44,9 @@ interface Runtime {
   state: AgentGraceState;
   source: "shared" | "cache" | "defaults";
   llmEventsAvailable: boolean;
-  actedThisTurn: boolean;
-  switchedThisTurn: boolean;
+  /** Per-conversation turn bookkeeping; turn events from different
+   *  conversations can interleave, so these flags must not be shared. */
+  turnFlags: Map<string, TurnFlags>;
   lastContinueAt: Map<string, number>;
   persistQueue: Promise<void>;
   mountWarned: boolean;
@@ -71,8 +78,7 @@ export default function activate(letta: LettaModContext): () => void {
     state: { agentId: "?", updatedAt: nowIso(), paused: false, pinned: null, cooldowns: {}, dead: [], events: [] },
     source: "defaults",
     llmEventsAvailable: false,
-    actedThisTurn: false,
-    switchedThisTurn: false,
+    turnFlags: new Map(),
     lastContinueAt: new Map(),
     persistQueue: Promise.resolve(),
     mountWarned: false,
@@ -108,6 +114,15 @@ export default function activate(letta: LettaModContext): () => void {
     }
     await rt.initPromise;
     rt.initialized = true;
+  }
+
+  function flagsFor(conversationId: string): TurnFlags {
+    let flags = rt.turnFlags.get(conversationId);
+    if (!flags) {
+      flags = { acted: false, switched: false };
+      rt.turnFlags.set(conversationId, flags);
+    }
+    return flags;
   }
 
   function persist(eventSummary: string): void {
@@ -175,7 +190,7 @@ export default function activate(letta: LettaModContext): () => void {
       conversationId: ctx.conversation?.id ?? null,
     });
     persist(`${kind} ${current ?? "?"} -> ${target.handle} (${opts.reason})`);
-    rt.switchedThisTurn = true;
+    flagsFor(ctx.conversation?.id ?? "unknown").switched = true;
     return { from: current, to: target.handle, changed: true };
   }
 
@@ -195,14 +210,37 @@ export default function activate(letta: LettaModContext): () => void {
       persist(`dead-mark ${handle} (${kind})`);
     } else if (kind === "quota") {
       markCooldown(rt.state, handle, rt.config.cooldownMinutes, Date.now());
+      // Persist immediately: evaluateAndSwitch only persists after a
+      // successful switch, and there may be no healthy rung to switch to.
+      persist(`cooldown ${handle} (${kind})`);
     }
     return evaluateAndSwitch(ctx, { reason: kind, detail: trim(detail, 200) });
   }
 
+  function recordProbe(
+    ctx: ModEventHandlerContext | ModCommandContext,
+    handle: string,
+    result: ProbeResult,
+    via: string,
+  ): void {
+    appendEvent(rt.state, {
+      ts: nowIso(),
+      kind: "probe",
+      from: handle,
+      to: null,
+      reason: result,
+      detail: via,
+      conversationId: ctx.conversation?.id ?? null,
+    });
+    persist(`probe ${handle} -> ${result} (${via})`);
+  }
+
   async function recoverByProbe(ctx: ModEventHandlerContext, handle: string): Promise<void> {
     const result = await probeRung(ctx.conversation, handle);
+    recordProbe(ctx, handle, result, "turn-end");
     if (result === "quota") {
       markCooldown(rt.state, handle, rt.config.cooldownMinutes, Date.now());
+      persist(`cooldown ${handle} (quota, probe)`);
       await evaluateAndSwitch(ctx, { reason: "quota", detail: "probe" });
     } else if (result === "auth" || result === "invalid-model") {
       markDead(rt.state, handle);
@@ -221,9 +259,9 @@ export default function activate(letta: LettaModContext): () => void {
     disposers.push(
       letta.events.on<ModConversationOpenEvent>("conversation_open", async (event, ctx) => {
         await initialize(ctx);
-        rt.actedThisTurn = false;
-        rt.switchedThisTurn = false;
-        rt.appliedFor.add(event.conversationId ?? "unknown");
+        const cid = event.conversationId ?? "unknown";
+        rt.turnFlags.set(cid, { acted: false, switched: false });
+        rt.appliedFor.add(cid);
         await recoverBenchedRungs(ctx);
         await evaluateAndSwitch(ctx, { reason: "conversation-open" });
       }),
@@ -234,13 +272,12 @@ export default function activate(letta: LettaModContext): () => void {
     disposers.push(
       letta.events.on<ModTurnStartEvent>("turn_start", async (event, ctx) => {
         await initialize(ctx);
-        rt.actedThisTurn = false;
-        rt.switchedThisTurn = false;
+        const cid = event.conversationId ?? "unknown";
+        rt.turnFlags.set(cid, { acted: false, switched: false });
         if (rt.state.paused) return;
         // Surfaces without lifecycle events (headless runs, Desktop listeners)
         // may never fire conversation_open, so enforce the ladder on the first
         // turn of each conversation as well.
-        const cid = event.conversationId ?? "unknown";
         if (!rt.appliedFor.has(cid)) {
           rt.appliedFor.add(cid);
           await evaluateAndSwitch(ctx, { reason: "turn-start" });
@@ -258,8 +295,10 @@ export default function activate(letta: LettaModContext): () => void {
       letta.events.on<ModTurnEndEvent>("turn_end", async (event, ctx) => {
         await initialize(ctx);
         if (event.stopReason !== "error" || rt.state.paused) return;
+        const conversationId = event.conversationId ?? "unknown";
+        const flags = rt.turnFlags.get(conversationId);
 
-        if (!rt.actedThisTurn) {
+        if (!flags?.acted) {
           // First classify any provider text visible in the failed turn: image
           // rejections name the content type, which a text probe cannot detect.
           const kind = classifyFailure(event.assistantMessage ?? "");
@@ -277,8 +316,7 @@ export default function activate(letta: LettaModContext): () => void {
           // On the local backend llm_end is authoritative and already ran.
         }
 
-        if (rt.switchedThisTurn && rt.config.autoContinue) {
-          const conversationId = event.conversationId ?? "unknown";
+        if (rt.turnFlags.get(conversationId)?.switched && rt.config.autoContinue) {
           const last = rt.lastContinueAt.get(conversationId) ?? 0;
           if (Date.now() - last > CONTINUE_MIN_INTERVAL_MS) {
             rt.lastContinueAt.set(conversationId, Date.now());
@@ -324,7 +362,7 @@ export default function activate(letta: LettaModContext): () => void {
           await evaluateAndSwitch(ctx, { needsMultimodal: true, conversationScope: true, reason: "image-content", detail: trim(text, 200) });
           return;
         }
-        rt.actedThisTurn = true;
+        flagsFor(ctx.conversation?.id ?? "unknown").acted = true;
         await bench(ctx, event.model, kind, text);
       }),
     );
@@ -338,22 +376,28 @@ export default function activate(letta: LettaModContext): () => void {
   async function recoverBenchedRungs(ctx: ModEventHandlerContext): Promise<void> {
     if (!rt.config.probeEnabled || rt.state.paused) return;
     const now = Date.now();
+    // Probe dead rungs and rungs whose cooldown has just expired. Rungs still
+    // inside their cooldown window are skipped, so the window actually
+    // suppresses probe traffic and frequent conversation opens cannot extend
+    // a cooldown indefinitely; an expired rung gets its promised recovery
+    // probe before evaluateAndSwitch can select it again.
+    const expired = new Set(expiredCooldowns(rt.state, now));
     let changed = pruneCooldowns(rt.state, now);
     for (const rung of rt.config.ladder) {
-      const benched = rt.state.dead.includes(rung.handle) || rt.state.cooldowns[rung.handle] !== undefined;
-      if (!benched) continue;
+      const isDead = rt.state.dead.includes(rung.handle);
+      if (!isDead && !expired.has(rung.handle)) continue;
       const result = await probeRung(ctx.conversation, rung.handle);
+      appendEvent(rt.state, { ts: nowIso(), kind: "probe", from: rung.handle, to: null, reason: result, detail: "recovery", conversationId: ctx.conversation?.id ?? null });
+      changed = true;
       if (result === "ok") {
         if (revive(rt.state, rung.handle)) {
           appendEvent(rt.state, { ts: nowIso(), kind: "recover", from: rung.handle, to: null, reason: "probe-ok", conversationId: ctx.conversation?.id ?? null });
-          changed = true;
         }
       } else if (result === "quota") {
-        // Still limited: extend the cooldown from now.
+        // Still limited: start a fresh cooldown from now.
         markCooldown(rt.state, rung.handle, rt.config.cooldownMinutes, now);
-        changed = true;
       }
-      // auth/invalid-model keep the rung dead; unavailable changes nothing.
+      // auth/invalid-model keep the rung dead; unavailable/transient change nothing.
     }
     if (changed) persist("recovery poll");
   }
@@ -424,6 +468,7 @@ export default function activate(letta: LettaModContext): () => void {
               const results: string[] = [];
               for (const handle of handles) {
                 const result = await probeRung(ctx.conversation, handle);
+                recordProbe(ctx, handle, result, "command");
                 results.push(`${handle}: ${result}`);
               }
               return { type: "output", output: results.join("\n") };

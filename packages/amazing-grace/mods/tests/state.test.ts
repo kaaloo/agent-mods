@@ -4,6 +4,7 @@ import {
   appendEvent,
   changeKind,
   emptyState,
+  expiredCooldowns,
   markCooldown,
   markDead,
   parseState,
@@ -58,6 +59,14 @@ describe("cooldown bookkeeping", () => {
     expect(pruneCooldowns(state, NOW)).toBe(true);
     expect(state.cooldowns).toEqual({});
     expect(pruneCooldowns(state, NOW)).toBe(false);
+  });
+
+  it("reports expired cooldowns for recovery probing", () => {
+    const state = emptyState("agent-x");
+    markCooldown(state, "a/b", 60, NOW);
+    markCooldown(state, "c/d", 60, NOW - 61 * 60_000);
+    state.cooldowns.broken = "not-a-date";
+    expect(expiredCooldowns(state, NOW)).toEqual(["c/d", "broken"]);
   });
 });
 
