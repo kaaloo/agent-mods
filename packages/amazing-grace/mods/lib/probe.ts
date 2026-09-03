@@ -10,6 +10,11 @@ import type { ModConversationHandle } from "../types.ts";
 
 export type ProbeResult = FailureKind | "ok" | "unavailable";
 
+export interface ProbeOutcome {
+  result: ProbeResult;
+  detail?: string;
+}
+
 function chunkErrorText(chunk: unknown): string | null {
   if (typeof chunk !== "object" || chunk === null) return null;
   const record = chunk as Record<string, unknown>;
@@ -31,32 +36,39 @@ function chunkErrorText(chunk: unknown): string | null {
   return parts.length > 0 ? parts.join(" | ") : null;
 }
 
-export async function probeRung(conversation: ModConversationHandle, handle: string): Promise<ProbeResult> {
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+export async function probeRung(conversation: ModConversationHandle, handle: string): Promise<ProbeOutcome> {
   try {
     const forked = await conversation.fork({ hidden: true });
     const stream = await forked.sendMessageStream(
-      [{ role: "user", content: "Reply with exactly: pong" }],
+      [{ type: "message", role: "user", content: "Reply with exactly: pong" }],
       { overrideModel: handle, streamTokens: false, background: true },
       { maxRetries: 0 },
     );
     let sawCompletion = false;
     let sawText = false;
     for await (const chunk of stream) {
-      const type = (chunk as { type?: string })?.type;
-      if (type === "error") {
+      const record = chunk as Record<string, unknown>;
+      const type = record.message_type ?? record.type;
+      if (type === "error_message" || type === "error") {
         const text = chunkErrorText(chunk);
-        return classifyFailure(text);
+        return { result: classifyFailure(text), ...(text ? { detail: text } : {}) };
       }
       if (type === "assistant_message" || type === "message") {
-        const record = chunk as Record<string, unknown>;
         const content = record.content ?? record.message;
-        if (typeof content === "string" && content.length > 0) sawText = true;
+        if ((typeof content === "string" && content.length > 0) || (Array.isArray(content) && content.length > 0)) {
+          sawText = true;
+        }
       }
       if (type === "done" || type === "stop_reason" || type === "usage") sawCompletion = true;
     }
-    if (sawText || sawCompletion) return "ok";
-    return "unavailable";
-  } catch {
-    return "unavailable";
+    if (sawText || sawCompletion) return { result: "ok" };
+    return { result: "unavailable", detail: "stream ended without a completion event" };
+  } catch (error) {
+    return { result: "unavailable", detail: errorText(error) };
   }
 }

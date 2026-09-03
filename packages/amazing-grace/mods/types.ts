@@ -10,6 +10,7 @@ export interface ModUpdateLlmConfigOptions {
 
 export interface ModStreamChunk {
   type?: string;
+  message_type?: string;
   [key: string]: unknown;
 }
 
