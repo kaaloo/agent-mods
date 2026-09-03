@@ -19,7 +19,7 @@ import type {
 import { classifyFailure } from "./lib/classify.ts";
 import type { FailureKind } from "./lib/classify.ts";
 import { inputHasImages, toolResultLikelyImage } from "./lib/detect.ts";
-import { defaultConfig, findRung, targetRung } from "./lib/ladder.ts";
+import { defaultConfig, findRung, handlesMatch, targetRung } from "./lib/ladder.ts";
 import type { GraceConfig, LadderRung } from "./lib/ladder.ts";
 import { ensureMount, loadContext, saveState } from "./lib/ledger.ts";
 import type { MountInfo } from "./lib/ledger.ts";
@@ -166,7 +166,7 @@ export default function activate(letta: LettaModContext): () => void {
     if (!target) return null;
 
     const current = ctx.model?.id ?? null;
-    if (current === target.handle) return { from: current, to: target.handle, changed: false };
+    if (handlesMatch(current, target.handle)) return { from: current, to: target.handle, changed: false };
 
     const currentIndex = findRung(ladder, current);
     if (currentIndex === -1 && !rt.config.enforceLadder) return null;
@@ -236,8 +236,9 @@ export default function activate(letta: LettaModContext): () => void {
   }
 
   async function recoverByProbe(ctx: ModEventHandlerContext, handle: string): Promise<void> {
-    const result = await probeRung(ctx.conversation, handle);
-    recordProbe(ctx, handle, result, "turn-end");
+    const outcome = await probeRung(ctx.conversation, handle);
+    const { result } = outcome;
+    recordProbe(ctx, handle, result, outcome.detail ? `turn-end: ${trim(outcome.detail, 160)}` : "turn-end");
     if (result === "quota") {
       markCooldown(rt.state, handle, rt.config.cooldownMinutes, Date.now());
       persist(`cooldown ${handle} (quota, probe)`);
@@ -386,8 +387,9 @@ export default function activate(letta: LettaModContext): () => void {
     for (const rung of rt.config.ladder) {
       const isDead = rt.state.dead.includes(rung.handle);
       if (!isDead && !expired.has(rung.handle)) continue;
-      const result = await probeRung(ctx.conversation, rung.handle);
-      appendEvent(rt.state, { ts: nowIso(), kind: "probe", from: rung.handle, to: null, reason: result, detail: "recovery", conversationId: ctx.conversation?.id ?? null });
+      const outcome = await probeRung(ctx.conversation, rung.handle);
+      const { result } = outcome;
+      appendEvent(rt.state, { ts: nowIso(), kind: "probe", from: rung.handle, to: null, reason: result, detail: outcome.detail ? `recovery: ${trim(outcome.detail, 160)}` : "recovery", conversationId: ctx.conversation?.id ?? null });
       changed = true;
       if (result === "ok") {
         if (revive(rt.state, rung.handle)) {
@@ -467,9 +469,9 @@ export default function activate(letta: LettaModContext): () => void {
               const handles = arg && findRung(ladder, arg) >= 0 ? [arg] : ladder.map((r) => r.handle);
               const results: string[] = [];
               for (const handle of handles) {
-                const result = await probeRung(ctx.conversation, handle);
-                recordProbe(ctx, handle, result, "command");
-                results.push(`${handle}: ${result}`);
+                const outcome = await probeRung(ctx.conversation, handle);
+                recordProbe(ctx, handle, outcome.result, outcome.detail ? `command: ${trim(outcome.detail, 160)}` : "command");
+                results.push(`${handle}: ${outcome.result}${outcome.detail ? ` (${trim(outcome.detail, 160)})` : ""}`);
               }
               return { type: "output", output: results.join("\n") };
             }

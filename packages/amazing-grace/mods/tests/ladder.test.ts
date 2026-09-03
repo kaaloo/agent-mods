@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_LADDER, defaultConfig, findRung, parseConfig, targetRung } from "../lib/ladder.ts";
+import { DEFAULT_LADDER, defaultConfig, findRung, handlesMatch, parseConfig, targetRung } from "../lib/ladder.ts";
 
 const NOW = 1_700_000_000_000;
 
@@ -47,6 +47,13 @@ describe("findRung", () => {
     expect(findRung(ladder, "lc-kimi-code/k3")).toBe(4);
     expect(findRung(ladder, "letta/auto")).toBe(-1);
     expect(findRung(ladder, null)).toBe(-1);
+  });
+
+  it("matches the host auto id to the canonical letta/auto handle", () => {
+    const ladder = [{ handle: "letta/auto", multimodal: true }];
+    expect(findRung(ladder, "auto")).toBe(0);
+    expect(handlesMatch("auto", "letta/auto")).toBe(true);
+    expect(handlesMatch("lc-codex/auto", "letta/auto")).toBe(false);
   });
 });
 

@@ -143,7 +143,14 @@ function parseConfig(raw) {
 function findRung(ladder, handle) {
   if (!handle)
     return -1;
-  return ladder.findIndex((r) => r.handle === handle);
+  return ladder.findIndex((r) => handlesMatch(r.handle, handle));
+}
+function handlesMatch(left, right) {
+  if (!left || !right)
+    return false;
+  if (left === right)
+    return true;
+  return left === "auto" && right === "letta/auto" || left === "letta/auto" && right === "auto";
 }
 function targetRung(config, cooldowns, dead, now, needsMultimodal) {
   const ladder = config.ladder;
@@ -472,32 +479,38 @@ function chunkErrorText(chunk) {
   }
   return parts.length > 0 ? parts.join(" | ") : null;
 }
+function errorText(error) {
+  if (error instanceof Error)
+    return error.message;
+  return String(error);
+}
 async function probeRung(conversation, handle) {
   try {
     const forked = await conversation.fork({ hidden: true });
-    const stream = await forked.sendMessageStream([{ role: "user", content: "Reply with exactly: pong" }], { overrideModel: handle, streamTokens: false, background: true }, { maxRetries: 0 });
+    const stream = await forked.sendMessageStream([{ type: "message", role: "user", content: "Reply with exactly: pong" }], { overrideModel: handle, streamTokens: false, background: true }, { maxRetries: 0 });
     let sawCompletion = false;
     let sawText = false;
     for await (const chunk of stream) {
-      const type = chunk?.type;
-      if (type === "error") {
+      const record = chunk;
+      const type = record.message_type ?? record.type;
+      if (type === "error_message" || type === "error") {
         const text = chunkErrorText(chunk);
-        return classifyFailure(text);
+        return { result: classifyFailure(text), ...text ? { detail: text } : {} };
       }
       if (type === "assistant_message" || type === "message") {
-        const record = chunk;
         const content = record.content ?? record.message;
-        if (typeof content === "string" && content.length > 0)
+        if (typeof content === "string" && content.length > 0 || Array.isArray(content) && content.length > 0) {
           sawText = true;
+        }
       }
       if (type === "done" || type === "stop_reason" || type === "usage")
         sawCompletion = true;
     }
     if (sawText || sawCompletion)
-      return "ok";
-    return "unavailable";
-  } catch {
-    return "unavailable";
+      return { result: "ok" };
+    return { result: "unavailable", detail: "stream ended without a completion event" };
+  } catch (error) {
+    return { result: "unavailable", detail: errorText(error) };
   }
 }
 
@@ -591,7 +604,7 @@ function activate(letta) {
     if (!target)
       return null;
     const current = ctx.model?.id ?? null;
-    if (current === target.handle)
+    if (handlesMatch(current, target.handle))
       return { from: current, to: target.handle, changed: false };
     const currentIndex = findRung(ladder, current);
     if (currentIndex === -1 && !rt.config.enforceLadder)
@@ -650,8 +663,9 @@ function activate(letta) {
     persist(`probe ${handle} -> ${result} (${via})`);
   }
   async function recoverByProbe(ctx, handle) {
-    const result = await probeRung(ctx.conversation, handle);
-    recordProbe(ctx, handle, result, "turn-end");
+    const outcome = await probeRung(ctx.conversation, handle);
+    const { result } = outcome;
+    recordProbe(ctx, handle, result, outcome.detail ? `turn-end: ${trim(outcome.detail, 160)}` : "turn-end");
     if (result === "quota") {
       markCooldown(rt.state, handle, rt.config.cooldownMinutes, Date.now());
       persist(`cooldown ${handle} (quota, probe)`);
@@ -769,8 +783,9 @@ function activate(letta) {
       const isDead = rt.state.dead.includes(rung.handle);
       if (!isDead && !expired.has(rung.handle))
         continue;
-      const result = await probeRung(ctx.conversation, rung.handle);
-      appendEvent(rt.state, { ts: nowIso(), kind: "probe", from: rung.handle, to: null, reason: result, detail: "recovery", conversationId: ctx.conversation?.id ?? null });
+      const outcome = await probeRung(ctx.conversation, rung.handle);
+      const { result } = outcome;
+      appendEvent(rt.state, { ts: nowIso(), kind: "probe", from: rung.handle, to: null, reason: result, detail: outcome.detail ? `recovery: ${trim(outcome.detail, 160)}` : "recovery", conversationId: ctx.conversation?.id ?? null });
       changed = true;
       if (result === "ok") {
         if (revive(rt.state, rung.handle)) {
@@ -847,9 +862,9 @@ function activate(letta) {
             const handles = arg && findRung(ladder, arg) >= 0 ? [arg] : ladder.map((r) => r.handle);
             const results = [];
             for (const handle of handles) {
-              const result = await probeRung(ctx.conversation, handle);
-              recordProbe(ctx, handle, result, "command");
-              results.push(`${handle}: ${result}`);
+              const outcome = await probeRung(ctx.conversation, handle);
+              recordProbe(ctx, handle, outcome.result, outcome.detail ? `command: ${trim(outcome.detail, 160)}` : "command");
+              results.push(`${handle}: ${outcome.result}${outcome.detail ? ` (${trim(outcome.detail, 160)})` : ""}`);
             }
             return { type: "output", output: results.join(`
 `) };

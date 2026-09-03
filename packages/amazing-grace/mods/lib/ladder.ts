@@ -65,7 +65,13 @@ export function parseConfig(raw: unknown): GraceConfig {
 
 export function findRung(ladder: LadderRung[], handle: string | null | undefined): number {
   if (!handle) return -1;
-  return ladder.findIndex((r) => r.handle === handle);
+  return ladder.findIndex((r) => handlesMatch(r.handle, handle));
+}
+
+export function handlesMatch(left: string | null | undefined, right: string | null | undefined): boolean {
+  if (!left || !right) return false;
+  if (left === right) return true;
+  return (left === "auto" && right === "letta/auto") || (left === "letta/auto" && right === "auto");
 }
 
 /**
