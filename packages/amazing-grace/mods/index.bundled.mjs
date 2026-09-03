@@ -437,14 +437,6 @@ function readJsonFile(file) {
 function cacheFile(agentId) {
   return path.join(os.homedir(), ".letta", "mods", "state", "amazing-grace", `${agentId}.json`);
 }
-function statuslineRendersGrace(agentId) {
-  try {
-    const cached = readJsonFile(cacheFile(agentId));
-    return cached?.renderedByStatusline === true;
-  } catch {
-    return false;
-  }
-}
 async function loadContext(mountInfo, agentId) {
   if (mountInfo.available) {
     await pullMount(mountInfo.path);
@@ -921,8 +913,6 @@ function activate(letta) {
       order: -1,
       render: (ctx) => {
         if (!rt.initialized)
-          return "";
-        if (statuslineRendersGrace(rt.agentId ?? ""))
           return "";
         const current = ctx.model?.id ?? null;
         const index = findRung(rt.config.ladder, current);
