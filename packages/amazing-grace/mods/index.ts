@@ -504,7 +504,7 @@ export default function activate(letta: LettaModContext): () => void {
         const position = index >= 0 ? `${index + 1}/${rt.config.ladder.length}` : "off-ladder";
         const cooling = Object.keys(activeCooldowns(rt.state, Date.now())).length;
         const benched = rt.state.paused ? "paused" : cooling > 0 ? `${cooling} cooling` : rt.state.dead.length > 0 ? `${rt.state.dead.length} dead` : "healthy";
-        return ctx.row("grace", `${current ?? "?"} [${position}] ${benched}`, ctx.width);
+        return ctx.row("", `[${position}] ${benched}`, ctx.width);
       },
     });
     disposers.push(() => panel.close());

@@ -69,8 +69,9 @@ Squad-wide config lives at `squad-mods/amazing-grace/config.json`:
 | `probeEnabled` | boolean | `true` | Use forked pings to classify and recover |
 | `enforceLadder` | boolean | `true` | Move off-ladder models onto the ladder |
 
-The mod also mounts a one-line status panel showing the active rung and bench
-state on surfaces that support panels.
+The mod also mounts a compact status panel showing the ladder position and
+bench state on surfaces that support panels. The active model remains in the
+host's built-in statusline.
 
 ## Development
 
