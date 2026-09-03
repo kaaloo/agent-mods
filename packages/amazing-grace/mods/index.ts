@@ -21,7 +21,7 @@ import type { FailureKind } from "./lib/classify.ts";
 import { inputHasImages, toolResultLikelyImage } from "./lib/detect.ts";
 import { canonicalizeBenchState, canonicalRungHandle, defaultConfig, findRung, handlesMatch, targetRung } from "./lib/ladder.ts";
 import type { GraceConfig, LadderRung } from "./lib/ladder.ts";
-import { ensureMount, loadContext, saveState } from "./lib/ledger.ts";
+import { ensureMount, loadContext, saveState, statuslineRendersGrace } from "./lib/ledger.ts";
 import type { MountInfo } from "./lib/ledger.ts";
 import { probeRung } from "./lib/probe.ts";
 import type { ProbeResult } from "./lib/probe.ts";
@@ -492,10 +492,26 @@ export default function activate(letta: LettaModContext): () => void {
   }
 
   // ── Panel (optional surface) ──
-  // The order-0 statusline mod (statusline.tsx) renders the ladder position
-  // and health directly from the local cache at ~/.letta/mods/state/amazing-grace/.
-  // This keeps the indicator on the same line as agent · model and removes the
-  // second row entirely. No panel is registered here.
+  // When a statusline mod at order:0 renders the ladder indicator, it writes
+  // `renderedByStatusline: true` into the local cache. Hide this panel then.
+
+  if (letta.capabilities?.ui?.panels && letta.ui) {
+    const panel = letta.ui.openPanel({
+      id: "amazing-grace",
+      order: -1,
+      render: (ctx) => {
+        if (!rt.initialized) return "";
+        if (statuslineRendersGrace(rt.agentId ?? "")) return "";
+        const current = ctx.model?.id ?? null;
+        const index = findRung(rt.config.ladder, current);
+        const position = index >= 0 ? `${index + 1}/${rt.config.ladder.length}` : "off-ladder";
+        const cooling = Object.keys(activeCooldowns(rt.state, Date.now())).length;
+        const benched = rt.state.paused ? "paused" : cooling > 0 ? `${cooling} cooling` : rt.state.dead.length > 0 ? `${rt.state.dead.length} dead` : "healthy";
+        return ctx.row("", `ladder [${position}] ${benched}`, ctx.width);
+      },
+    });
+    disposers.push(() => panel.close());
+  }
 
   return () => {
     for (const dispose of disposers.reverse()) dispose();
