@@ -2,7 +2,7 @@
   "name": "kaaloo-agent-mods",
   "version": "0.0.0",
   "private": true,
-  "description": "Root manifest for the kaaloo/agent-mods monorepo. Hosts the secret-scanning and dependency-scan pre-commit/pre-push hooks; per-package manifests live under packages/*.",
+  "description": "Root manifest for the kaaloo/agent-mods monorepo. Hosts the secret-scanning and dependency-scan pre-commit/pre-push hooks; per-package manifests live under packages/*. The letta manifest below defines what a git-source install (letta install git:github.com/kaaloo/agent-mods) loads: mod entries may point into packages/* subdirectories.",
   "license": "MIT",
   "scripts": {
     "prepare": "husky",
@@ -14,5 +14,25 @@
     "@nogoo9/gitleaks": "^8.30.1",
     "cve-lite-cli": "1.19.2",
     "husky": "^9.1.7"
+  },
+  "letta": {
+    "manifestVersion": 1,
+    "mods": [
+      "./packages/flows/mods/index.bundled.mjs",
+      "./packages/okf/mods/index.bundled.mjs",
+      "./packages/amazing-grace/mods/index.bundled.mjs"
+    ],
+    "capabilities": [
+      "commands",
+      "tools",
+      "permissions",
+      "events.lifecycle",
+      "events.llm",
+      "events.turns",
+      "events.tools"
+    ],
+    "engines": {
+      "lettaCodeCli": ">=0.28.4"
+    }
   }
 }
