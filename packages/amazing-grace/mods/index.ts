@@ -19,7 +19,7 @@ import type {
 import { classifyFailure } from "./lib/classify.ts";
 import type { FailureKind } from "./lib/classify.ts";
 import { inputHasImages, toolResultLikelyImage } from "./lib/detect.ts";
-import { canonicalRungHandle, defaultConfig, findRung, handlesMatch, targetRung } from "./lib/ladder.ts";
+import { canonicalizeBenchState, canonicalRungHandle, defaultConfig, findRung, handlesMatch, targetRung } from "./lib/ladder.ts";
 import type { GraceConfig, LadderRung } from "./lib/ladder.ts";
 import { ensureMount, loadContext, saveState } from "./lib/ledger.ts";
 import type { MountInfo } from "./lib/ledger.ts";
@@ -110,6 +110,9 @@ export default function activate(letta: LettaModContext): () => void {
         rt.config = loaded.config;
         rt.state = loaded.state;
         rt.source = loaded.source;
+        if (canonicalizeBenchState(rt.state, rt.config.ladder)) {
+          persist("canonicalize persisted bench handles");
+        }
       })();
     }
     await rt.initPromise;
@@ -460,6 +463,9 @@ export default function activate(letta: LettaModContext): () => void {
               rt.config = loaded.config;
               rt.state = loaded.state;
               rt.source = loaded.source;
+              if (canonicalizeBenchState(rt.state, rt.config.ladder)) {
+                persist("canonicalize persisted bench handles");
+              }
               const outcome = await evaluateAndSwitch(ctx, { reason: "manual-sync" });
               return {
                 type: "output",

@@ -2,6 +2,8 @@
 // Shared squad config lives at squad-mods/amazing-grace/config.json; the
 // defaults below are the fallback when no shared config is reachable.
 
+import type { AgentGraceState } from "./state.ts";
+
 export interface LadderRung {
   handle: string;
   multimodal: boolean;
@@ -77,6 +79,27 @@ export function handlesMatch(left: string | null | undefined, right: string | nu
 export function canonicalRungHandle(ladder: LadderRung[], handle: string): string {
   const index = findRung(ladder, handle);
   return index >= 0 ? ladder[index].handle : handle;
+}
+
+export function canonicalizeBenchState(state: AgentGraceState, ladder: LadderRung[]): boolean {
+  let changed = false;
+  for (const [handle, until] of Object.entries(state.cooldowns)) {
+    const canonical = canonicalRungHandle(ladder, handle);
+    if (canonical === handle) continue;
+    const existing = state.cooldowns[canonical];
+    if (!existing || Date.parse(until) > Date.parse(existing)) {
+      state.cooldowns[canonical] = until;
+    }
+    delete state.cooldowns[handle];
+    changed = true;
+  }
+
+  const canonicalDead = [...new Set(state.dead.map((handle) => canonicalRungHandle(ladder, handle)))];
+  if (canonicalDead.length !== state.dead.length || canonicalDead.some((handle, index) => handle !== state.dead[index])) {
+    state.dead = canonicalDead;
+    changed = true;
+  }
+  return changed;
 }
 
 /**

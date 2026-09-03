@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { canonicalRungHandle, DEFAULT_LADDER, defaultConfig, findRung, handlesMatch, parseConfig, targetRung } from "../lib/ladder.ts";
+import { canonicalizeBenchState, canonicalRungHandle, DEFAULT_LADDER, defaultConfig, findRung, handlesMatch, parseConfig, targetRung } from "../lib/ladder.ts";
+import { emptyState } from "../lib/state.ts";
 
 const NOW = 1_700_000_000_000;
 
@@ -56,6 +57,21 @@ describe("findRung", () => {
     expect(handlesMatch("lc-codex/auto", "letta/auto")).toBe(false);
     expect(canonicalRungHandle(ladder, "auto")).toBe("letta/auto");
     expect(canonicalRungHandle(ladder, "custom/model")).toBe("custom/model");
+  });
+});
+
+describe("canonicalizeBenchState", () => {
+  it("migrates persisted alias keys and deduplicates dead rungs", () => {
+    const ladder = [{ handle: "letta/auto", multimodal: true }];
+    const state = emptyState("agent-x");
+    state.cooldowns.auto = new Date(NOW + 120_000).toISOString();
+    state.cooldowns["letta/auto"] = new Date(NOW + 60_000).toISOString();
+    state.dead = ["auto", "letta/auto", "custom/model"];
+
+    expect(canonicalizeBenchState(state, ladder)).toBe(true);
+    expect(state.cooldowns).toEqual({ "letta/auto": new Date(NOW + 120_000).toISOString() });
+    expect(state.dead).toEqual(["letta/auto", "custom/model"]);
+    expect(canonicalizeBenchState(state, ladder)).toBe(false);
   });
 });
 

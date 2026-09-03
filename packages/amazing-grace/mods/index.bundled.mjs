@@ -156,6 +156,26 @@ function canonicalRungHandle(ladder, handle) {
   const index = findRung(ladder, handle);
   return index >= 0 ? ladder[index].handle : handle;
 }
+function canonicalizeBenchState(state, ladder) {
+  let changed = false;
+  for (const [handle, until] of Object.entries(state.cooldowns)) {
+    const canonical = canonicalRungHandle(ladder, handle);
+    if (canonical === handle)
+      continue;
+    const existing = state.cooldowns[canonical];
+    if (!existing || Date.parse(until) > Date.parse(existing)) {
+      state.cooldowns[canonical] = until;
+    }
+    delete state.cooldowns[handle];
+    changed = true;
+  }
+  const canonicalDead = [...new Set(state.dead.map((handle) => canonicalRungHandle(ladder, handle)))];
+  if (canonicalDead.length !== state.dead.length || canonicalDead.some((handle, index) => handle !== state.dead[index])) {
+    state.dead = canonicalDead;
+    changed = true;
+  }
+  return changed;
+}
 function targetRung(config, cooldowns, dead, now, needsMultimodal) {
   const ladder = config.ladder;
   if (ladder.length === 0)
@@ -565,6 +585,9 @@ function activate(letta) {
         rt.config = loaded.config;
         rt.state = loaded.state;
         rt.source = loaded.source;
+        if (canonicalizeBenchState(rt.state, rt.config.ladder)) {
+          persist("canonicalize persisted bench handles");
+        }
       })();
     }
     await rt.initPromise;
@@ -856,6 +879,9 @@ function activate(letta) {
             rt.config = loaded.config;
             rt.state = loaded.state;
             rt.source = loaded.source;
+            if (canonicalizeBenchState(rt.state, rt.config.ladder)) {
+              persist("canonicalize persisted bench handles");
+            }
             const outcome = await evaluateAndSwitch(ctx, { reason: "manual-sync" });
             return {
               type: "output",
