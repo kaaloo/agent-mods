@@ -152,6 +152,10 @@ function handlesMatch(left, right) {
     return true;
   return left === "auto" && right === "letta/auto" || left === "letta/auto" && right === "auto";
 }
+function canonicalRungHandle(ladder, handle) {
+  const index = findRung(ladder, handle);
+  return index >= 0 ? ladder[index].handle : handle;
+}
 function targetRung(config, cooldowns, dead, now, needsMultimodal) {
   const ladder = config.ladder;
   if (ladder.length === 0)
@@ -631,6 +635,7 @@ function activate(letta) {
     return { from: current, to: target.handle, changed: true };
   }
   function bench(ctx, handle, kind, detail) {
+    handle = canonicalRungHandle(rt.config.ladder, handle);
     if (kind === "auth" || kind === "invalid-model") {
       markDead(rt.state, handle);
       const event = {
@@ -663,6 +668,7 @@ function activate(letta) {
     persist(`probe ${handle} -> ${result} (${via})`);
   }
   async function recoverByProbe(ctx, handle) {
+    handle = canonicalRungHandle(rt.config.ladder, handle);
     const outcome = await probeRung(ctx.conversation, handle);
     const { result } = outcome;
     recordProbe(ctx, handle, result, outcome.detail ? `turn-end: ${trim(outcome.detail, 160)}` : "turn-end");

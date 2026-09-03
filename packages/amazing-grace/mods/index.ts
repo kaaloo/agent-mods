@@ -19,7 +19,7 @@ import type {
 import { classifyFailure } from "./lib/classify.ts";
 import type { FailureKind } from "./lib/classify.ts";
 import { inputHasImages, toolResultLikelyImage } from "./lib/detect.ts";
-import { defaultConfig, findRung, handlesMatch, targetRung } from "./lib/ladder.ts";
+import { canonicalRungHandle, defaultConfig, findRung, handlesMatch, targetRung } from "./lib/ladder.ts";
 import type { GraceConfig, LadderRung } from "./lib/ladder.ts";
 import { ensureMount, loadContext, saveState } from "./lib/ledger.ts";
 import type { MountInfo } from "./lib/ledger.ts";
@@ -195,6 +195,7 @@ export default function activate(letta: LettaModContext): () => void {
   }
 
   function bench(ctx: ModEventHandlerContext, handle: string, kind: FailureKind, detail: string): Promise<SwitchOutcome | null> {
+    handle = canonicalRungHandle(rt.config.ladder, handle);
     if (kind === "auth" || kind === "invalid-model") {
       markDead(rt.state, handle);
       const event: GraceEvent = {
@@ -236,6 +237,7 @@ export default function activate(letta: LettaModContext): () => void {
   }
 
   async function recoverByProbe(ctx: ModEventHandlerContext, handle: string): Promise<void> {
+    handle = canonicalRungHandle(rt.config.ladder, handle);
     const outcome = await probeRung(ctx.conversation, handle);
     const { result } = outcome;
     recordProbe(ctx, handle, result, outcome.detail ? `turn-end: ${trim(outcome.detail, 160)}` : "turn-end");

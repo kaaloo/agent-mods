@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_LADDER, defaultConfig, findRung, handlesMatch, parseConfig, targetRung } from "../lib/ladder.ts";
+import { canonicalRungHandle, DEFAULT_LADDER, defaultConfig, findRung, handlesMatch, parseConfig, targetRung } from "../lib/ladder.ts";
 
 const NOW = 1_700_000_000_000;
 
@@ -54,6 +54,8 @@ describe("findRung", () => {
     expect(findRung(ladder, "auto")).toBe(0);
     expect(handlesMatch("auto", "letta/auto")).toBe(true);
     expect(handlesMatch("lc-codex/auto", "letta/auto")).toBe(false);
+    expect(canonicalRungHandle(ladder, "auto")).toBe("letta/auto");
+    expect(canonicalRungHandle(ladder, "custom/model")).toBe("custom/model");
   });
 });
 

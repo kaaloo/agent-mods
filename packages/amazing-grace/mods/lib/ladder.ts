@@ -74,6 +74,11 @@ export function handlesMatch(left: string | null | undefined, right: string | nu
   return (left === "auto" && right === "letta/auto") || (left === "letta/auto" && right === "auto");
 }
 
+export function canonicalRungHandle(ladder: LadderRung[], handle: string): string {
+  const index = findRung(ladder, handle);
+  return index >= 0 ? ladder[index].handle : handle;
+}
+
 /**
  * Pick the rung the agent should be on right now.
  *
