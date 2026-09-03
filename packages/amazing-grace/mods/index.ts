@@ -492,23 +492,10 @@ export default function activate(letta: LettaModContext): () => void {
   }
 
   // ── Panel (optional surface) ──
-
-  if (letta.capabilities?.ui?.panels && letta.ui) {
-    const panel = letta.ui.openPanel({
-      id: "amazing-grace",
-      order: -1,
-      render: (ctx) => {
-        if (!rt.initialized) return "";
-        const current = ctx.model?.id ?? null;
-        const index = findRung(rt.config.ladder, current);
-        const position = index >= 0 ? `${index + 1}/${rt.config.ladder.length}` : "off-ladder";
-        const cooling = Object.keys(activeCooldowns(rt.state, Date.now())).length;
-        const benched = rt.state.paused ? "paused" : cooling > 0 ? `${cooling} cooling` : rt.state.dead.length > 0 ? `${rt.state.dead.length} dead` : "healthy";
-        return ctx.row("", `rung [${position}] ${benched}`, ctx.width);
-      },
-    });
-    disposers.push(() => panel.close());
-  }
+  // The order-0 statusline mod (statusline.tsx) renders the ladder position
+  // and health directly from the local cache at ~/.letta/mods/state/amazing-grace/.
+  // This keeps the indicator on the same line as agent · model and removes the
+  // second row entirely. No panel is registered here.
 
   return () => {
     for (const dispose of disposers.reverse()) dispose();

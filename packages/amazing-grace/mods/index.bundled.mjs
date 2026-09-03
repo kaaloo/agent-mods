@@ -907,23 +907,6 @@ function activate(letta) {
       }
     }));
   }
-  if (letta.capabilities?.ui?.panels && letta.ui) {
-    const panel = letta.ui.openPanel({
-      id: "amazing-grace",
-      order: -1,
-      render: (ctx) => {
-        if (!rt.initialized)
-          return "";
-        const current = ctx.model?.id ?? null;
-        const index = findRung(rt.config.ladder, current);
-        const position = index >= 0 ? `${index + 1}/${rt.config.ladder.length}` : "off-ladder";
-        const cooling = Object.keys(activeCooldowns(rt.state, Date.now())).length;
-        const benched = rt.state.paused ? "paused" : cooling > 0 ? `${cooling} cooling` : rt.state.dead.length > 0 ? `${rt.state.dead.length} dead` : "healthy";
-        return ctx.row("", `rung [${position}] ${benched}`, ctx.width);
-      }
-    });
-    disposers.push(() => panel.close());
-  }
   return () => {
     for (const dispose of disposers.reverse())
       dispose();
