@@ -152,6 +152,16 @@ export function cacheFile(agentId: string): string {
   return path.join(os.homedir(), ".letta", "mods", "state", "amazing-grace", `${agentId}.json`);
 }
 
+/** Check whether the order-0 statusline mod is rendering the ladder indicator. */
+export function statuslineRendersGrace(agentId: string): boolean {
+  try {
+    const cached = readJsonFile(cacheFile(agentId)) as Record<string, unknown> | null;
+    return cached?.renderedByStatusline === true;
+  } catch {
+    return false;
+  }
+}
+
 export async function loadContext(mountInfo: MountInfo, agentId: string): Promise<LoadedContext> {
   if (mountInfo.available) {
     await pullMount(mountInfo.path);

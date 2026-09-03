@@ -69,9 +69,9 @@ Squad-wide config lives at `squad-mods/amazing-grace/config.json`:
 | `probeEnabled` | boolean | `true` | Use forked pings to classify and recover |
 | `enforceLadder` | boolean | `true` | Move off-ladder models onto the ladder |
 
-The mod also mounts a compact status panel showing the ladder rung and bench
-state on surfaces that support panels. The active model remains in the host's
-built-in statusline.
+Ladder position and health are rendered by the order-0 statusline mod
+(`~/.letta/mods/statusline.tsx`) from the local state cache, keeping the
+indicator on the same line as the host's `agent · model` row.
 
 ## Development
 

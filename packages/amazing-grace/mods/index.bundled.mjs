@@ -437,6 +437,14 @@ function readJsonFile(file) {
 function cacheFile(agentId) {
   return path.join(os.homedir(), ".letta", "mods", "state", "amazing-grace", `${agentId}.json`);
 }
+function statuslineRendersGrace(agentId) {
+  try {
+    const cached = readJsonFile(cacheFile(agentId));
+    return cached?.renderedByStatusline === true;
+  } catch {
+    return false;
+  }
+}
 async function loadContext(mountInfo, agentId) {
   if (mountInfo.available) {
     await pullMount(mountInfo.path);
@@ -914,12 +922,14 @@ function activate(letta) {
       render: (ctx) => {
         if (!rt.initialized)
           return "";
+        if (statuslineRendersGrace(rt.agentId ?? ""))
+          return "";
         const current = ctx.model?.id ?? null;
         const index = findRung(rt.config.ladder, current);
         const position = index >= 0 ? `${index + 1}/${rt.config.ladder.length}` : "off-ladder";
         const cooling = Object.keys(activeCooldowns(rt.state, Date.now())).length;
         const benched = rt.state.paused ? "paused" : cooling > 0 ? `${cooling} cooling` : rt.state.dead.length > 0 ? `${rt.state.dead.length} dead` : "healthy";
-        return ctx.row("", `rung [${position}] ${benched}`, ctx.width);
+        return ctx.row("", `ladder [${position}] ${benched}`, ctx.width);
       }
     });
     disposers.push(() => panel.close());
