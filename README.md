@@ -9,6 +9,7 @@ Monorepo for trusted [Letta Code](https://github.com/letta-ai/letta-code) mods m
 | [`@kaaloo/flows`](packages/flows) | A Letta-native mod for authoring and running multi-agent flows. Describes a task as markdown with YAML frontmatter, fans it out across parallel subagents, and synthesizes the results. |
 | [`@kaaloo/okf`](packages/okf) | OKF trust-signal enforcement for agent memory in MemFS. Validates provenance, verification, freshness, and lifecycle on memory writes via permission overlays. |
 | [`@kaaloo/amazing-grace`](packages/amazing-grace) | Graceful model degradation. Steps an agent down a usage-plan model ladder on provider failures (quota, invalid key, images on text-only rungs) and back up after recovery, logging every switch to shared memory. |
+| [`@kaaloo/context-bump`](packages/context-bump) | Automatic limit raising. Raises the context window and max output tokens for hosted-model conversations, applying shared-memory targets at both agent and conversation scope. |
 
 New packages land under `packages/*` with their own `package.json`, `README.md`, and (where applicable) `MOD.md`.
 
@@ -59,7 +60,8 @@ See each package's README for package-specific usage.
 ├── packages/
 │   ├── flows/            # @kaaloo/flows mod (TypeScript source, bundled JS, tests)
 │   ├── okf/              # @kaaloo/okf mod (TypeScript source, bundled JS, tests)
-│   └── amazing-grace/    # @kaaloo/amazing-grace mod (TypeScript source, bundled JS, tests)
+│   ├── amazing-grace/    # @kaaloo/amazing-grace mod (TypeScript source, bundled JS, tests)
+│   └── context-bump/     # @kaaloo/context-bump mod (TypeScript source, bundled JS, tests)
 ├── docs/                 # Design notes and implementation plans
 ├── .github/
 │   ├── prompts/          # System prompts used by the CI agent
@@ -125,6 +127,22 @@ For `@kaaloo/okf`:
 
 ```bash
 cd packages/okf
+npm run check    # build + typecheck + tests
+npm run verify   # verify:bundle + typecheck + tests (fails if the bundled JS drifts from source)
+```
+
+For `@kaaloo/amazing-grace`:
+
+```bash
+cd packages/amazing-grace
+npm run check    # build + typecheck + tests
+npm run verify   # verify:bundle + typecheck + tests (fails if the bundled JS drifts from source)
+```
+
+For `@kaaloo/context-bump`:
+
+```bash
+cd packages/context-bump
 npm run check    # build + typecheck + tests
 npm run verify   # verify:bundle + typecheck + tests (fails if the bundled JS drifts from source)
 ```
