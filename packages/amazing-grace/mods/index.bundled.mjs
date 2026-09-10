@@ -437,6 +437,14 @@ function readJsonFile(file) {
 function cacheFile(agentId) {
   return path.join(os.homedir(), ".letta", "mods", "state", "amazing-grace", `${agentId}.json`);
 }
+function statuslineRendersGrace(agentId) {
+  try {
+    const cached = readJsonFile(cacheFile(agentId));
+    return cached?.renderedByStatusline === true;
+  } catch {
+    return false;
+  }
+}
 async function loadContext(mountInfo, agentId) {
   if (mountInfo.available) {
     await pullMount(mountInfo.path);
@@ -471,7 +479,8 @@ async function saveState(mountInfo, agentId, state, config, eventSummary) {
   state.updatedAt = new Date().toISOString();
   const cache = cacheFile(agentId);
   mkdirSync(path.dirname(cache), { recursive: true });
-  writeFileSync(cache, JSON.stringify({ state, config, updatedAt: state.updatedAt }, null, 2));
+  const existing = readJsonFile(cache) ?? {};
+  writeFileSync(cache, JSON.stringify({ ...existing, state, config, updatedAt: state.updatedAt }, null, 2));
   if (!mountInfo.available)
     return { committed: false, pushed: false, error: "mount unavailable" };
   const file = ledgerFile(mountInfo.path, agentId);
@@ -913,6 +922,8 @@ function activate(letta) {
       order: -1,
       render: (ctx) => {
         if (!rt.initialized)
+          return "";
+        if (statuslineRendersGrace(rt.agentId ?? ""))
           return "";
         const current = ctx.model?.id ?? null;
         const index = findRung(rt.config.ladder, current);

@@ -1,9 +1,11 @@
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { configFile, ledgerFile, mountPath, readJsonFile } from "../lib/ledger.ts";
+import { defaultConfig } from "../lib/ladder.ts";
+import { emptyState } from "../lib/state.ts";
 
 const tempDirs: string[] = [];
 
@@ -123,5 +125,55 @@ describe("commitAndPush on a local origin", () => {
     const mount = initClone(dir, origin);
     const result = await commitAndPush(mount, ["README.md"], "nothing new");
     expect(result.committed).toBe(false);
+  });
+});
+
+describe("saveState cache coordination", () => {
+  const realHomedir = os.homedir;
+
+  afterEach(() => {
+    os.homedir = realHomedir;
+  });
+
+  async function withTempHome(fn: () => Promise<void>): Promise<void> {
+    const home = makeTempDir();
+    os.homedir = () => home;
+    try {
+      await fn();
+    } finally {
+      os.homedir = realHomedir;
+    }
+  }
+
+  it("preserves the renderedByStatusline marker across cache refreshes", async () => {
+    await withTempHome(async () => {
+      const { cacheFile, saveState, statuslineRendersGrace } = await import("../lib/ledger.ts");
+      const agentId = "agent-marker";
+      const cache = cacheFile(agentId);
+      mkdirSync(path.dirname(cache), { recursive: true });
+      // A statusline mod following the marker contract wrote this key.
+      writeFileSync(cache, JSON.stringify({ renderedByStatusline: true }));
+
+      const state = emptyState(agentId);
+      const mount = { path: "/nonexistent-mount", available: false, clonedByMod: false };
+      await saveState(mount, agentId, state, defaultConfig(), "test event");
+
+      const after = readJsonFile(cache) as Record<string, unknown>;
+      expect(after.renderedByStatusline).toBe(true);
+      expect(statuslineRendersGrace(agentId)).toBe(true);
+      // state and config were refreshed, not discarded.
+      expect((after.state as Record<string, unknown>).agentId).toBe(agentId);
+      expect(after.config).toBeDefined();
+    });
+  });
+
+  it("reports false when no statusline marker exists", async () => {
+    await withTempHome(async () => {
+      const { saveState, statuslineRendersGrace } = await import("../lib/ledger.ts");
+      const agentId = "agent-nomarker";
+      const mount = { path: "/nonexistent-mount", available: false, clonedByMod: false };
+      await saveState(mount, agentId, emptyState(agentId), defaultConfig(), "test event");
+      expect(statuslineRendersGrace(agentId)).toBe(false);
+    });
   });
 });

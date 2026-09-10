@@ -71,7 +71,10 @@ Squad-wide config lives at `squad-mods/amazing-grace/config.json`:
 
 Ladder position and health are rendered by the order-0 statusline mod
 (`~/.letta/mods/statusline.tsx`) from the local state cache, keeping the
-indicator on the same line as the host's `agent · model` row.
+indicator on the same line as the host's `agent · model` row. To suppress
+the mod's fallback panel, either write `renderedByStatusline: true` into
+the cache (legacy contract) or call `letta.ui.closePanel("amazing-grace")`;
+both survive `saveState` cache refreshes.
 
 ## Development
 

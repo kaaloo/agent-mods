@@ -21,7 +21,7 @@ import type { FailureKind } from "./lib/classify.ts";
 import { inputHasImages, toolResultLikelyImage } from "./lib/detect.ts";
 import { canonicalizeBenchState, canonicalRungHandle, defaultConfig, findRung, handlesMatch, targetRung } from "./lib/ladder.ts";
 import type { GraceConfig, LadderRung } from "./lib/ladder.ts";
-import { ensureMount, loadContext, saveState } from "./lib/ledger.ts";
+import { ensureMount, loadContext, saveState, statuslineRendersGrace } from "./lib/ledger.ts";
 import type { MountInfo } from "./lib/ledger.ts";
 import { probeRung } from "./lib/probe.ts";
 import type { ProbeResult } from "./lib/probe.ts";
@@ -492,8 +492,10 @@ export default function activate(letta: LettaModContext): () => void {
   }
 
   // ── Panel (optional surface) ──
-  // Renders the ladder position and health below the statusline. A statusline
-  // mod that renders the same info inline can close this panel with
+  // Renders the ladder position and health below the statusline. Suppressed
+  // in two ways: a statusline that renders the indicator inline writes
+  // `renderedByStatusline: true` into the local cache (legacy contract, kept
+  // for compatibility), and may also close the panel outright with
   // letta.ui.closePanel("amazing-grace").
 
   if (letta.capabilities?.ui?.panels && letta.ui) {
@@ -502,6 +504,7 @@ export default function activate(letta: LettaModContext): () => void {
       order: -1,
       render: (ctx) => {
         if (!rt.initialized) return "";
+        if (statuslineRendersGrace(rt.agentId ?? "")) return "";
         const current = ctx.model?.id ?? null;
         const index = findRung(rt.config.ladder, current);
         const position = index >= 0 ? `${index + 1}/${rt.config.ladder.length}` : "off-ladder";
