@@ -479,7 +479,8 @@ async function saveState(mountInfo, agentId, state, config, eventSummary) {
   state.updatedAt = new Date().toISOString();
   const cache = cacheFile(agentId);
   mkdirSync(path.dirname(cache), { recursive: true });
-  writeFileSync(cache, JSON.stringify({ state, config, updatedAt: state.updatedAt }, null, 2));
+  const existing = readJsonFile(cache) ?? {};
+  writeFileSync(cache, JSON.stringify({ ...existing, state, config, updatedAt: state.updatedAt }, null, 2));
   if (!mountInfo.available)
     return { committed: false, pushed: false, error: "mount unavailable" };
   const file = ledgerFile(mountInfo.path, agentId);

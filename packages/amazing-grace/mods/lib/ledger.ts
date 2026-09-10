@@ -152,7 +152,12 @@ export function cacheFile(agentId: string): string {
   return path.join(os.homedir(), ".letta", "mods", "state", "amazing-grace", `${agentId}.json`);
 }
 
-/** Check whether the order-0 statusline mod is rendering the ladder indicator. */
+/**
+ * Marker contract with statusline mods: when an order-0 statusline renders the
+ * ladder indicator inline, it writes `renderedByStatusline: true` into the
+ * local state cache and the fallback panel hides itself. saveState preserves
+ * the key across cache refreshes.
+ */
 export function statuslineRendersGrace(agentId: string): boolean {
   try {
     const cached = readJsonFile(cacheFile(agentId)) as Record<string, unknown> | null;
@@ -196,9 +201,13 @@ export async function loadContext(mountInfo: MountInfo, agentId: string): Promis
 export async function saveState(mountInfo: MountInfo, agentId: string, state: AgentGraceState, config: GraceConfig, eventSummary: string): Promise<PushResult> {
   state.updatedAt = new Date().toISOString();
   // Always refresh the local cache (state plus the config it was decided with).
+  // Merge over the existing cache so keys owned by other writers — notably the
+  // statusline marker `renderedByStatusline` — survive the refresh instead of
+  // being clobbered and briefly re-showing the fallback panel.
   const cache = cacheFile(agentId);
   mkdirSync(path.dirname(cache), { recursive: true });
-  writeFileSync(cache, JSON.stringify({ state, config, updatedAt: state.updatedAt }, null, 2));
+  const existing = (readJsonFile(cache) ?? {}) as Record<string, unknown>;
+  writeFileSync(cache, JSON.stringify({ ...existing, state, config, updatedAt: state.updatedAt }, null, 2));
   if (!mountInfo.available) return { committed: false, pushed: false, error: "mount unavailable" };
   const file = ledgerFile(mountInfo.path, agentId);
   mkdirSync(path.dirname(file), { recursive: true });

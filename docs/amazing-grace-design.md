@@ -204,3 +204,4 @@ Remaining:
 | 2026-08-22 | Recovery at conversation_open, no background timer | Probes need conversation context to fork |
 | 2026-08-22 | Root manifest lists the full mod collection for git installs | Monorepo semantics: the git URL installs the repo's mods, not a single package (Luis revision of the initial amazing-grace-only manifest) |
 | 2026-09-01 | `events.llm` declared in both manifests; probes run only post-cooldown-expiry; turn flags keyed per conversation; cooldowns persisted when marked; probe outcomes logged as `probe` events | Codex review of PR #25 (2 P1, 3 P2) |
+| 2026-09-10 | Panel suppression keeps the `renderedByStatusline` cache marker (backward compat) alongside `closePanel`; `saveState` merges into the cache instead of rewriting it, fixing the marker-clobber race that motivated removing the fallback | Codex review of PR #32 |

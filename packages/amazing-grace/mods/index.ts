@@ -492,8 +492,11 @@ export default function activate(letta: LettaModContext): () => void {
   }
 
   // ── Panel (optional surface) ──
-  // When a statusline mod at order:0 renders the ladder indicator, it writes
-  // `renderedByStatusline: true` into the local cache. Hide this panel then.
+  // Renders the ladder position and health below the statusline. Suppressed
+  // in two ways: a statusline that renders the indicator inline writes
+  // `renderedByStatusline: true` into the local cache (legacy contract, kept
+  // for compatibility), and may also close the panel outright with
+  // letta.ui.closePanel("amazing-grace").
 
   if (letta.capabilities?.ui?.panels && letta.ui) {
     const panel = letta.ui.openPanel({
