@@ -38,9 +38,36 @@ function repositoryUrl(baseUrl: string, agentId: string): string {
 
 async function git(cwd: string | null, args: string[], token?: string): Promise<{ ok: boolean; stderr: string }> {
   try {
-    const options: { cwd?: string; maxBuffer?: number } = { maxBuffer: 10 * 1024 * 1024 };
+    const options: { cwd?: string; maxBuffer?: number; timeout?: number; env?: NodeJS.ProcessEnv } = {
+      maxBuffer: 10 * 1024 * 1024,
+      // Never let a git operation hang the event handler: fail fast instead of
+      // blocking on a network or credential read.
+      timeout: 8000,
+      env: {
+        ...process.env,
+        // Belt-and-suspenders non-interactive, in case the -c flags below are
+        // not honored by a given git build.
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_ASKPASS: "/bin/false",
+        SSH_ASKPASS: "/bin/false",
+      },
+    };
     if (cwd) options.cwd = cwd;
-    const finalArgs = token ? ["-c", `http.extraHeader=Authorization: Bearer ${token}`, ...args] : args;
+    // Force non-interactive via -c (more reliable than env for the
+    // remote-helper path) and, when a token is available, authenticate every
+    // call directly instead of relying on the repo's credential helper. The
+    // helper is only configured on clones the mod created; pre-existing mounts
+    // use an insteadof rewrite to a local backend that may be down at TUI
+    // launch, which previously made git block on a keychain/TTY read and
+    // wedge the host UI.
+    const finalArgs = [
+      "-c",
+      "credential.interactive=false",
+      "-c",
+      "core.askpass=/bin/false",
+      ...(token ? ["-c", `http.extraHeader=Authorization: Bearer ${token}`] : []),
+      ...args,
+    ];
     await execFileAsync("git", finalArgs, options);
     return { ok: true, stderr: "" };
   } catch (error) {
@@ -93,8 +120,8 @@ async function configureCredentialHelper(mount: string, baseUrl: string, token: 
   await git(mount, ["config", "commit.gpgsign", "false"]);
 }
 
-export async function pullMount(mount: string): Promise<boolean> {
-  const result = await git(mount, ["pull", "--rebase", "--autostash", "origin", "main"]);
+export async function pullMount(mount: string, token?: string | null): Promise<boolean> {
+  const result = await git(mount, ["pull", "--rebase", "--autostash", "origin", "main"], token ?? undefined);
   return result.ok;
 }
 
@@ -112,9 +139,9 @@ export interface LoadedConfig {
   mount: string | null;
 }
 
-export async function loadConfig(mountInfo: MountInfo): Promise<LoadedConfig> {
+export async function loadConfig(mountInfo: MountInfo, token?: string | null): Promise<LoadedConfig> {
   if (mountInfo.available) {
-    await pullMount(mountInfo.path);
+    await pullMount(mountInfo.path, token);
   }
   const shared = mountInfo.available ? readJsonFile(configFile(mountInfo.path)) : null;
   if (mountInfo.available && shared !== null) {

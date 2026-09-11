@@ -84,10 +84,26 @@ function repositoryUrl(baseUrl, agentId) {
 }
 async function git(cwd, args, token) {
   try {
-    const options = { maxBuffer: 10 * 1024 * 1024 };
+    const options = {
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: 8000,
+      env: {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_ASKPASS: "/bin/false",
+        SSH_ASKPASS: "/bin/false"
+      }
+    };
     if (cwd)
       options.cwd = cwd;
-    const finalArgs = token ? ["-c", `http.extraHeader=Authorization: Bearer ${token}`, ...args] : args;
+    const finalArgs = [
+      "-c",
+      "credential.interactive=false",
+      "-c",
+      "core.askpass=/bin/false",
+      ...token ? ["-c", `http.extraHeader=Authorization: Bearer ${token}`] : [],
+      ...args
+    ];
     await execFileAsync("git", finalArgs, options);
     return { ok: true, stderr: "" };
   } catch (error) {
@@ -126,8 +142,8 @@ async function configureCredentialHelper(mount, baseUrl, token, agentId) {
   await git(mount, ["config", "user.name", "context-bump"]);
   await git(mount, ["config", "commit.gpgsign", "false"]);
 }
-async function pullMount(mount) {
-  const result = await git(mount, ["pull", "--rebase", "--autostash", "origin", "main"]);
+async function pullMount(mount, token) {
+  const result = await git(mount, ["pull", "--rebase", "--autostash", "origin", "main"], token ?? undefined);
   return result.ok;
 }
 function readJsonFile(file) {
@@ -137,9 +153,9 @@ function readJsonFile(file) {
     return null;
   }
 }
-async function loadConfig(mountInfo) {
+async function loadConfig(mountInfo, token) {
   if (mountInfo.available) {
-    await pullMount(mountInfo.path);
+    await pullMount(mountInfo.path, token);
   }
   const shared = mountInfo.available ? readJsonFile(configFile(mountInfo.path)) : null;
   if (mountInfo.available && shared !== null) {
@@ -167,14 +183,41 @@ function buildRaisePatch(current, target) {
   return Object.keys(patch).length > 0 ? patch : null;
 }
 
-// mods/index.ts
-function formatTokens(n) {
-  if (n >= 1e6)
-    return `${(n / 1e6).toFixed(1).replace(/\.0$/, "")}M`;
-  if (n >= 1000)
-    return `${Math.round(n / 1000)}k`;
-  return String(n);
+// mods/lib/state.ts
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import path2 from "node:path";
+var MOD = "context-bump";
+var MAX_ENTRIES = 25;
+function stateFile(agentId) {
+  return path2.join(homedir(), ".letta", "mods", "state", MOD, `${agentId}.json`);
 }
+function read(agentId) {
+  try {
+    const parsed = JSON.parse(readFileSync2(stateFile(agentId), "utf8"));
+    if (typeof parsed === "object" && parsed !== null && typeof parsed.conversations === "object" && parsed.conversations !== null) {
+      return { conversations: parsed.conversations };
+    }
+  } catch {}
+  return { conversations: {} };
+}
+function writeBumpState(agentId, conversationId, entry) {
+  try {
+    const state = read(agentId);
+    state.conversations[conversationId] = entry;
+    const ids = Object.keys(state.conversations);
+    if (ids.length > MAX_ENTRIES) {
+      ids.sort((a, b) => Date.parse(state.conversations[a].at) - Date.parse(state.conversations[b].at)).slice(0, ids.length - MAX_ENTRIES).forEach((id) => {
+        delete state.conversations[id];
+      });
+    }
+    const file = stateFile(agentId);
+    mkdirSync2(path2.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(state, null, 2));
+  } catch {}
+}
+
+// mods/index.ts
 function activate(letta) {
   const disposers = [];
   letta.diagnostics?.report({ message: "context-bump: mod activated", severity: "warning" });
@@ -205,7 +248,7 @@ function activate(letta) {
             severity: "warning"
           });
         }
-        const loaded = await loadConfig(rt.mount);
+        const loaded = await loadConfig(rt.mount, process.env.LETTA_API_KEY ?? null);
         rt.config = loaded.config;
         rt.source = loaded.source;
       })();
@@ -248,6 +291,13 @@ function activate(letta) {
       await letta.client?.conversations.update(conversationId, conversationPatch).catch(() => {});
       letta.diagnostics?.report({ message: `context-bump: raised conversation (${reason})`, severity: "warning" });
     }
+    const patchSettings = conversationPatch?.model_settings;
+    writeBumpState(agentId, conversationId, {
+      bumped: conversationPatch !== null,
+      contextWindow: typeof conversationPatch?.context_window_limit === "number" ? conversationPatch.context_window_limit : current.conversation.contextWindow,
+      maxOutputTokens: patchSettings?.max_output_tokens ?? current.conversation.maxOutputTokens,
+      at: new Date().toISOString()
+    });
     if (!rt.agentRaised) {
       const agentPatch = buildRaisePatch(current.agent, target);
       if (agentPatch) {
@@ -258,36 +308,20 @@ function activate(letta) {
     }
   }
   if (letta.capabilities?.events?.lifecycle) {
-    disposers.push(letta.events.on("conversation_open", async (event, ctx) => {
-      await initialize(ctx);
+    disposers.push(letta.events.on("conversation_open", (event, ctx) => {
       const cid = event.conversationId ?? ctx.conversation?.id ?? "unknown";
       rt.appliedFor.add(cid);
-      await raiseLimits(ctx, "conversation-open");
+      initialize(ctx).then(() => raiseLimits(ctx, "conversation-open")).catch(() => {});
     }));
   }
   if (letta.capabilities?.events?.turns) {
-    disposers.push(letta.events.on("turn_start", async (event, ctx) => {
-      await initialize(ctx);
+    disposers.push(letta.events.on("turn_start", (event, ctx) => {
       const cid = event.conversationId ?? ctx.conversation?.id ?? "unknown";
-      if (!rt.appliedFor.has(cid)) {
-        rt.appliedFor.add(cid);
-        await raiseLimits(ctx, "turn-start");
-      }
+      if (rt.appliedFor.has(cid))
+        return;
+      rt.appliedFor.add(cid);
+      initialize(ctx).then(() => raiseLimits(ctx, "turn-start")).catch(() => {});
     }));
-  }
-  if (letta.capabilities?.ui?.panels && letta.ui) {
-    const panel = letta.ui.openPanel({
-      id: "context-bump",
-      order: -1,
-      render: (ctx) => {
-        if (!rt.initialized)
-          return "";
-        const target = resolveTarget(rt.config, ctx.model?.id ?? null, rt.agentId);
-        const source = rt.source === "shared" ? "wiki" : "default";
-        return ctx.row("", `bump ctx ${formatTokens(target.contextWindow)} · out ${formatTokens(target.maxOutputTokens)} [${source}]`, ctx.width);
-      }
-    });
-    disposers.push(() => panel.close());
   }
   return () => {
     for (const dispose of disposers.reverse())

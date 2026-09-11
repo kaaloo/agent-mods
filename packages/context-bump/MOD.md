@@ -57,16 +57,33 @@ fields inherit from the next level down. Built-in defaults match the
 
 ## Verification
 
-- 8 unit tests cover config parsing/target resolution and raise-only patch
-  building.
+- 12 unit tests cover config parsing/target resolution, raise-only patch
+  building, and the state-cache writer.
 - The live API shape (`context_window_limit`, `model_settings.max_output_tokens`
   deep merge) was verified against the Letta API before implementation.
+
+## Statusline indicator
+
+The mod renders no panel of its own. After each raise evaluation it writes a
+small local state cache (`~/.letta/mods/state/context-bump/<agentId>.json`,
+per-conversation entries, capped at 25). An order-0 statusline mod reads it and
+shows a compact `↑` next to the context limit when the conversation was
+auto-raised, so the bump surfaces where the context bar already lives.
+
+## Robustness
+
+Event handlers never `await` git or network I/O — they fire the raise in the
+background so the host UI cannot block. All git calls run non-interactively
+(`GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS`/`SSH_ASKPASS=/bin/false`, 8s timeout)
+and authenticate with the agent token via `http.extraHeader`, so a mount sync
+can fail fast but never prompt or hang.
 
 ## Architecture
 
 ```
-mods/index.ts        runtime: events, panel, raise flow
+mods/index.ts        runtime: events, raise flow, state write
 mods/lib/config.ts   config parsing, defaults, target resolution
 mods/lib/limits.ts   raise-only patch building
 mods/lib/ledger.ts   squad-mods mount, git sync, config read
+mods/lib/state.ts    local state cache for the statusline indicator
 ```

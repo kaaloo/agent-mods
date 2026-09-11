@@ -16,6 +16,7 @@ import { ensureMount, loadConfig } from "./lib/ledger.ts";
 import type { MountInfo } from "./lib/ledger.ts";
 import { buildRaisePatch } from "./lib/limits.ts";
 import type { CurrentLimits } from "./lib/limits.ts";
+import { writeBumpState } from "./lib/state.ts";
 
 interface Runtime {
   initialized: boolean;
@@ -28,12 +29,6 @@ interface Runtime {
   appliedFor: Set<string>;
   agentRaised: boolean;
   mountWarned: boolean;
-}
-
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
-  return String(n);
 }
 
 export default function activate(letta: LettaModContext): () => void {
@@ -75,7 +70,7 @@ export default function activate(letta: LettaModContext): () => void {
             severity: "warning",
           });
         }
-        const loaded = await loadConfig(rt.mount);
+        const loaded = await loadConfig(rt.mount, process.env.LETTA_API_KEY ?? null);
         rt.config = loaded.config;
         rt.source = loaded.source;
       })();
@@ -127,6 +122,19 @@ export default function activate(letta: LettaModContext): () => void {
       letta.diagnostics?.report({ message: `context-bump: raised conversation (${reason})`, severity: "warning" });
     }
 
+    // Record the outcome for the statusline's override marker. Always write so
+    // the marker reflects the current truth (and clears when nothing was raised).
+    const patchSettings = conversationPatch?.model_settings as { max_output_tokens?: number } | undefined;
+    writeBumpState(agentId, conversationId, {
+      bumped: conversationPatch !== null,
+      contextWindow:
+        typeof conversationPatch?.context_window_limit === "number"
+          ? conversationPatch.context_window_limit
+          : current.conversation.contextWindow,
+      maxOutputTokens: patchSettings?.max_output_tokens ?? current.conversation.maxOutputTokens,
+      at: new Date().toISOString(),
+    });
+
     if (!rt.agentRaised) {
       const agentPatch = buildRaisePatch(current.agent, target);
       if (agentPatch) {
@@ -137,50 +145,41 @@ export default function activate(letta: LettaModContext): () => void {
     }
   }
 
+  // Run the bump in the background. The handlers are invoked during
+  // conversation open / turn start, and awaiting them would block the host UI
+  // on git (mount sync) and network I/O. Fire-and-forget keeps the UI
+  // responsive; errors are swallowed inside initialize/raiseLimits.
   if (letta.capabilities?.events?.lifecycle) {
     disposers.push(
-      letta.events.on<ModConversationOpenEvent>("conversation_open", async (event, ctx) => {
-        await initialize(ctx);
+      letta.events.on<ModConversationOpenEvent>("conversation_open", (event, ctx) => {
         const cid = event.conversationId ?? ctx.conversation?.id ?? "unknown";
         rt.appliedFor.add(cid);
-        await raiseLimits(ctx, "conversation-open");
+        void initialize(ctx)
+          .then(() => raiseLimits(ctx, "conversation-open"))
+          .catch(() => {});
       }),
     );
   }
 
   if (letta.capabilities?.events?.turns) {
     disposers.push(
-      letta.events.on<ModTurnStartEvent>("turn_start", async (event, ctx) => {
-        await initialize(ctx);
+      letta.events.on<ModTurnStartEvent>("turn_start", (event, ctx) => {
         const cid = event.conversationId ?? ctx.conversation?.id ?? "unknown";
         // Surfaces without lifecycle events (headless runs, Desktop listeners)
         // may never fire conversation_open, so enforce on the first turn of
         // each conversation as well.
-        if (!rt.appliedFor.has(cid)) {
-          rt.appliedFor.add(cid);
-          await raiseLimits(ctx, "turn-start");
-        }
+        if (rt.appliedFor.has(cid)) return;
+        rt.appliedFor.add(cid);
+        void initialize(ctx)
+          .then(() => raiseLimits(ctx, "turn-start"))
+          .catch(() => {});
       }),
     );
   }
 
-  if (letta.capabilities?.ui?.panels && letta.ui) {
-    const panel = letta.ui.openPanel({
-      id: "context-bump",
-      order: -1,
-      render: (ctx) => {
-        if (!rt.initialized) return "";
-        const target = resolveTarget(rt.config, ctx.model?.id ?? null, rt.agentId);
-        const source = rt.source === "shared" ? "wiki" : "default";
-        return ctx.row(
-          "",
-          `bump ctx ${formatTokens(target.contextWindow)} · out ${formatTokens(target.maxOutputTokens)} [${source}]`,
-          ctx.width,
-        );
-      },
-    });
-    disposers.push(() => panel.close());
-  }
+  // No panel row: the statusline already renders the live context bar, and the
+  // bump is surfaced there as a compact override marker read from the state
+  // cache written in raiseLimits.
 
   return () => {
     for (const dispose of disposers.reverse()) dispose();
