@@ -64,10 +64,26 @@ Squad-wide config lives at `squad-mods/amazing-grace/config.json`:
 | --- | --- | --- | --- |
 | `ladder[].handle` | string | - | Model handle, priority order (top first) |
 | `ladder[].multimodal` | boolean | `true` | Rung accepts image content |
+| `ladder[].contextWindow` | number | - | Optional rung context window limit, applied on switch (wins over model-profiles) |
+| `ladder[].reasoningEffort` | string | - | Optional rung reasoning tier (`none`...`max`), applied on switch (wins over model-profiles) |
 | `cooldownMinutes` | number | `60` | Minutes a quota-limited rung stays benched |
 | `autoContinue` | boolean | `true` | Auto-retry a failed turn once after a switch |
 | `probeEnabled` | boolean | `true` | Use forked pings to classify and recover |
 | `enforceLadder` | boolean | `true` | Move off-ladder models onto the ladder |
+
+### Model profiles
+
+On every rung switch, the mod applies the saved context window and reasoning
+effort for the target model, so a switch does not reset them to the model's
+catalog defaults. Sources, in priority order:
+
+1. Rung fields in squad config (`ladder[].contextWindow`, `ladder[].reasoningEffort`).
+2. The profile file written by `@letta-ai/model-profiles`
+   (`$MEMORY_DIR/mods/model-profiles.json`), read defensively: a missing or
+   malformed file changes nothing.
+
+`max_output_tokens` is not covered: the mod API's `updateLlmConfig` does not
+expose it, so a switch still lands on the model's catalog output default.
 
 Ladder position and health are rendered by the order-0 statusline mod
 (`~/.letta/mods/statusline.tsx`) from the local state cache, keeping the

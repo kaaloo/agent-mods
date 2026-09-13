@@ -7,6 +7,9 @@ import type { AgentGraceState } from "./state.ts";
 export interface LadderRung {
   handle: string;
   multimodal: boolean;
+  /** Optional rung overrides; win over the model-profiles file. */
+  contextWindow?: number;
+  reasoningEffort?: string;
 }
 
 export interface GraceConfig {
@@ -46,7 +49,16 @@ function parseLadder(raw: unknown): LadderRung[] | null {
     if (!isRecord(item)) return null;
     const handle = item.handle;
     if (typeof handle !== "string" || !handle.trim()) return null;
-    rungs.push({ handle: handle.trim(), multimodal: item.multimodal !== false });
+    const contextWindow = item.contextWindow;
+    const reasoningEffort = item.reasoningEffort;
+    rungs.push({
+      handle: handle.trim(),
+      multimodal: item.multimodal !== false,
+      ...(typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0
+        ? { contextWindow: Math.floor(contextWindow) }
+        : {}),
+      ...(typeof reasoningEffort === "string" && reasoningEffort.trim() ? { reasoningEffort: reasoningEffort.trim() } : {}),
+    });
   }
   return rungs;
 }

@@ -25,6 +25,8 @@ import { ensureMount, loadContext, saveState, statuslineRendersGrace } from "./l
 import type { MountInfo } from "./lib/ledger.ts";
 import { probeRung } from "./lib/probe.ts";
 import type { ProbeResult } from "./lib/probe.ts";
+import { readProfiles, rungSettings } from "./lib/profiles.ts";
+import type { ModelProfile } from "./lib/profiles.ts";
 import { activeCooldowns, appendEvent, changeKind, expiredCooldowns, markCooldown, markDead, pruneCooldowns, revive } from "./lib/state.ts";
 import type { AgentGraceState, GraceEvent } from "./lib/state.ts";
 
@@ -52,6 +54,8 @@ interface Runtime {
   mountWarned: boolean;
   /** Conversation ids already evaluated in this process lifetime. */
   appliedFor: Set<string>;
+  /** Per-handle settings from the model-profiles file, read at init. */
+  profiles: Record<string, ModelProfile>;
 }
 
 function nowIso(): string {
@@ -83,6 +87,7 @@ export default function activate(letta: LettaModContext): () => void {
     persistQueue: Promise.resolve(),
     mountWarned: false,
     appliedFor: new Set(),
+    profiles: {},
   };
 
   async function initialize(ctx: ModEventHandlerContext | ModCommandContext): Promise<void> {
@@ -110,6 +115,7 @@ export default function activate(letta: LettaModContext): () => void {
         rt.config = loaded.config;
         rt.state = loaded.state;
         rt.source = loaded.source;
+        rt.profiles = readProfiles(memoryDir);
         if (canonicalizeBenchState(rt.state, rt.config.ladder)) {
           persist("canonicalize persisted bench handles");
         }
@@ -175,8 +181,12 @@ export default function activate(letta: LettaModContext): () => void {
     if (currentIndex === -1 && !rt.config.enforceLadder) return null;
 
     const scope = opts.conversationScope ? "conversation" : "agent";
+    // Restore the rung's saved settings (squad config first, then the
+    // model-profiles file) so a switch does not reset the context window to
+    // the model's catalog default.
+    const settings = rungSettings(target, rt.profiles);
     try {
-      await ctx.conversation.updateLlmConfig?.({ model: target.handle, scope });
+      await ctx.conversation.updateLlmConfig?.({ model: target.handle, scope, ...settings });
     } catch {
       return null; // switch failed; the next decision point retries
     }
@@ -463,6 +473,11 @@ export default function activate(letta: LettaModContext): () => void {
               rt.config = loaded.config;
               rt.state = loaded.state;
               rt.source = loaded.source;
+              rt.profiles = readProfiles(
+                ((ctx as unknown as { memfs?: { memoryDir?: string | null } }).memfs?.memoryDir ?? null) ??
+                  process.env.MEMORY_DIR ??
+                  null,
+              );
               if (canonicalizeBenchState(rt.state, rt.config.ladder)) {
                 persist("canonicalize persisted bench handles");
               }
