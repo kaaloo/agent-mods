@@ -577,11 +577,11 @@ function profilesPath(memoryDir) {
 function readProfiles(memoryDir) {
   if (!memoryDir)
     return {};
-  const path2 = profilesPath(memoryDir);
-  if (!existsSync2(path2))
+  const path = profilesPath(memoryDir);
+  if (!existsSync2(path))
     return {};
   try {
-    const raw = JSON.parse(readFileSync2(path2, "utf8"));
+    const raw = JSON.parse(readFileSync2(path, "utf8"));
     if (typeof raw !== "object" || raw === null)
       return {};
     const profiles = raw.profiles;
@@ -636,7 +636,7 @@ function activate(letta) {
     persistQueue: Promise.resolve(),
     mountWarned: false,
     appliedFor: new Set,
-    profiles: {}
+    memoryDir: null
   };
   async function initialize(ctx) {
     if (rt.initialized)
@@ -646,6 +646,7 @@ function activate(letta) {
         const agentId = ctx.agent?.id ?? null;
         const memoryDir = ctx.memfs?.memoryDir ?? process.env.MEMORY_DIR ?? null;
         rt.agentId = agentId;
+        rt.memoryDir = memoryDir;
         rt.llmEventsAvailable = letta.capabilities?.events?.llm === true;
         rt.mount = await ensureMount(memoryDir, agentId, process.env.LETTA_BASE_URL ?? null, process.env.LETTA_API_KEY ?? null);
         if (!rt.mount.available && !rt.mountWarned) {
@@ -659,7 +660,6 @@ function activate(letta) {
         rt.config = loaded.config;
         rt.state = loaded.state;
         rt.source = loaded.source;
-        rt.profiles = readProfiles(memoryDir);
         if (canonicalizeBenchState(rt.state, rt.config.ladder)) {
           persist("canonicalize persisted bench handles");
         }
@@ -712,7 +712,7 @@ function activate(letta) {
     if (currentIndex === -1 && !rt.config.enforceLadder)
       return null;
     const scope = opts.conversationScope ? "conversation" : "agent";
-    const settings = rungSettings(target, rt.profiles);
+    const settings = rungSettings(target, readProfiles(rt.memoryDir));
     try {
       await ctx.conversation.updateLlmConfig?.({ model: target.handle, scope, ...settings });
     } catch {
@@ -955,7 +955,6 @@ function activate(letta) {
             rt.config = loaded.config;
             rt.state = loaded.state;
             rt.source = loaded.source;
-            rt.profiles = readProfiles(ctx.memfs?.memoryDir ?? null ?? process.env.MEMORY_DIR ?? null);
             if (canonicalizeBenchState(rt.state, rt.config.ladder)) {
               persist("canonicalize persisted bench handles");
             }
