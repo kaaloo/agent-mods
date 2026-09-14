@@ -554,6 +554,14 @@ async function probeRung(conversation, handle) {
   }
 }
 
+// mods/lib/provider-error.ts
+function providerErrorText(event) {
+  return [event.error?.message, event.error?.detail, event.detail].filter((value) => Boolean(value)).join(" ");
+}
+function canRetryProviderErrorWith(event, model) {
+  return Boolean(model && !(event.triedModels ?? []).some((attempted) => handlesMatch(attempted, model)));
+}
+
 // mods/lib/profiles.ts
 import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
 import { join } from "node:path";
@@ -577,11 +585,11 @@ function profilesPath(memoryDir) {
 function readProfiles(memoryDir) {
   if (!memoryDir)
     return {};
-  const path = profilesPath(memoryDir);
-  if (!existsSync2(path))
+  const path2 = profilesPath(memoryDir);
+  if (!existsSync2(path2))
     return {};
   try {
-    const raw = JSON.parse(readFileSync2(path, "utf8"));
+    const raw = JSON.parse(readFileSync2(path2, "utf8"));
     if (typeof raw !== "object" || raw === null)
       return {};
     const profiles = raw.profiles;
@@ -671,7 +679,7 @@ function activate(letta) {
   function flagsFor(conversationId) {
     let flags = rt.turnFlags.get(conversationId);
     if (!flags) {
-      flags = { acted: false, switched: false };
+      flags = { acted: false, switched: false, providerRetryRequested: false };
       rt.turnFlags.set(conversationId, flags);
     }
     return flags;
@@ -788,7 +796,7 @@ function activate(letta) {
     disposers.push(letta.events.on("conversation_open", async (event, ctx) => {
       await initialize(ctx);
       const cid = event.conversationId ?? "unknown";
-      rt.turnFlags.set(cid, { acted: false, switched: false });
+      rt.turnFlags.set(cid, { acted: false, switched: false, providerRetryRequested: false });
       rt.appliedFor.add(cid);
       await recoverBenchedRungs(ctx);
       await evaluateAndSwitch(ctx, { reason: "conversation-open" });
@@ -798,7 +806,7 @@ function activate(letta) {
     disposers.push(letta.events.on("turn_start", async (event, ctx) => {
       await initialize(ctx);
       const cid = event.conversationId ?? "unknown";
-      rt.turnFlags.set(cid, { acted: false, switched: false });
+      rt.turnFlags.set(cid, { acted: false, switched: false, providerRetryRequested: false });
       if (rt.state.paused)
         return;
       if (!rt.appliedFor.has(cid)) {
@@ -831,7 +839,8 @@ function activate(letta) {
           }
         }
       }
-      if (rt.turnFlags.get(conversationId)?.switched && rt.config.autoContinue) {
+      const finalFlags = rt.turnFlags.get(conversationId);
+      if (finalFlags?.switched && !finalFlags.providerRetryRequested && rt.config.autoContinue) {
         const last = rt.lastContinueAt.get(conversationId) ?? 0;
         if (Date.now() - last > CONTINUE_MIN_INTERVAL_MS) {
           rt.lastContinueAt.set(conversationId, Date.now());
@@ -861,7 +870,34 @@ function activate(letta) {
       }
     }));
   }
-  if (letta.capabilities?.events?.llm) {
+  let providerErrorEventsAvailable = false;
+  if (letta.capabilities?.events?.providerError) {
+    try {
+      disposers.push(letta.events.on("provider_error", async (event, ctx) => {
+        await initialize(ctx);
+        if (rt.state.paused)
+          return;
+        const text = providerErrorText(event);
+        const kind = classifyFailure(text);
+        if (kind === "transient")
+          return;
+        const flags = flagsFor(event.conversationId ?? "unknown");
+        flags.acted = true;
+        const outcome = kind === "image" ? await evaluateAndSwitch(ctx, {
+          needsMultimodal: true,
+          conversationScope: true,
+          reason: "image-content",
+          detail: trim(text, 200)
+        }) : await bench(ctx, event.model ?? event.modelHandle ?? "?", kind, text);
+        if (!outcome || !canRetryProviderErrorWith(event, outcome.to))
+          return;
+        flags.providerRetryRequested = true;
+        return { retry: { model: outcome.to }, action: "retry" };
+      }));
+      providerErrorEventsAvailable = true;
+    } catch {}
+  }
+  if (letta.capabilities?.events?.llm && !providerErrorEventsAvailable) {
     disposers.push(letta.events.on("llm_end", async (event, ctx) => {
       await initialize(ctx);
       if (!event.error || rt.state.paused)

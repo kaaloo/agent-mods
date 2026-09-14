@@ -10,13 +10,14 @@ up after recovery. Exception-driven: no token counting, no thresholds.
 The ladder (v1: `lc-zai-coding/glm-5.3` → `lc-qwen-code/qwen3.8-max` →
 `lc-codex/gpt-5.6-sol` → `lc-minimax/MiniMax-M3` → `lc-kimi-code/k3`) is
 served from the `squad-mods` shared memory repository, with identical built-in
-defaults as fallback. On failure the mod benches the rung (quota → 60-minute
-cooldown; auth/invalid-handle → dead until a probe succeeds) and switches the
-agent to the next healthy rung. Image content headed for the text-only GLM
-rung switches that conversation to the first multimodal rung before the
-request goes out. On the cloud backend, where provider-level events do not
-fire, failures are confirmed by a tiny forked probe before anything is
-benched. See [MOD.md](MOD.md) for the full mechanism and limitations.
+defaults as fallback. After Letta Code exhausts the current model's retries,
+the `provider_error` event lets the mod bench the rung (quota → 60-minute
+cooldown; auth/invalid-handle → dead until a probe succeeds), select the next
+healthy rung, and retry the same logical turn once without adding a duplicate
+user message. Older Letta Code builds fall back to the original `llm_end` plus
+`turn_end` continuation path. Image content headed for the text-only GLM rung
+still switches that conversation to the first multimodal rung before the
+request goes out. See [MOD.md](MOD.md) for the full mechanism and limitations.
 
 The mod logs every downgrade, upgrade, image switch, probe, and recovery to
 its per-agent ledger in `squad-mods` (`amazing-grace/ledger/<agent-id>.json`)

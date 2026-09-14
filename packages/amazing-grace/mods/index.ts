@@ -12,6 +12,8 @@ import type {
   ModConversationOpenEvent,
   ModEventHandlerContext,
   ModLlmEndEvent,
+  ModProviderErrorEvent,
+  ModProviderErrorResult,
   ModToolEndEvent,
   ModTurnEndEvent,
   ModTurnStartEvent,
@@ -25,6 +27,7 @@ import { ensureMount, loadContext, saveState, statuslineRendersGrace } from "./l
 import type { MountInfo } from "./lib/ledger.ts";
 import { probeRung } from "./lib/probe.ts";
 import type { ProbeResult } from "./lib/probe.ts";
+import { canRetryProviderErrorWith, providerErrorText } from "./lib/provider-error.ts";
 import { readProfiles, rungSettings } from "./lib/profiles.ts";
 import { activeCooldowns, appendEvent, changeKind, expiredCooldowns, markCooldown, markDead, pruneCooldowns, revive } from "./lib/state.ts";
 import type { AgentGraceState, GraceEvent } from "./lib/state.ts";
@@ -34,6 +37,7 @@ const CONTINUE_MIN_INTERVAL_MS = 120_000;
 interface TurnFlags {
   acted: boolean;
   switched: boolean;
+  providerRetryRequested: boolean;
 }
 
 interface Runtime {
@@ -127,7 +131,7 @@ export default function activate(letta: LettaModContext): () => void {
   function flagsFor(conversationId: string): TurnFlags {
     let flags = rt.turnFlags.get(conversationId);
     if (!flags) {
-      flags = { acted: false, switched: false };
+      flags = { acted: false, switched: false, providerRetryRequested: false };
       rt.turnFlags.set(conversationId, flags);
     }
     return flags;
@@ -277,7 +281,7 @@ export default function activate(letta: LettaModContext): () => void {
       letta.events.on<ModConversationOpenEvent>("conversation_open", async (event, ctx) => {
         await initialize(ctx);
         const cid = event.conversationId ?? "unknown";
-        rt.turnFlags.set(cid, { acted: false, switched: false });
+        rt.turnFlags.set(cid, { acted: false, switched: false, providerRetryRequested: false });
         rt.appliedFor.add(cid);
         await recoverBenchedRungs(ctx);
         await evaluateAndSwitch(ctx, { reason: "conversation-open" });
@@ -290,7 +294,7 @@ export default function activate(letta: LettaModContext): () => void {
       letta.events.on<ModTurnStartEvent>("turn_start", async (event, ctx) => {
         await initialize(ctx);
         const cid = event.conversationId ?? "unknown";
-        rt.turnFlags.set(cid, { acted: false, switched: false });
+        rt.turnFlags.set(cid, { acted: false, switched: false, providerRetryRequested: false });
         if (rt.state.paused) return;
         // Surfaces without lifecycle events (headless runs, Desktop listeners)
         // may never fire conversation_open, so enforce the ladder on the first
@@ -333,7 +337,8 @@ export default function activate(letta: LettaModContext): () => void {
           // On the local backend llm_end is authoritative and already ran.
         }
 
-        if (rt.turnFlags.get(conversationId)?.switched && rt.config.autoContinue) {
+        const finalFlags = rt.turnFlags.get(conversationId);
+        if (finalFlags?.switched && !finalFlags.providerRetryRequested && rt.config.autoContinue) {
           const last = rt.lastContinueAt.get(conversationId) ?? 0;
           if (Date.now() - last > CONTINUE_MIN_INTERVAL_MS) {
             rt.lastContinueAt.set(conversationId, Date.now());
@@ -367,7 +372,39 @@ export default function activate(letta: LettaModContext): () => void {
     );
   }
 
-  if (letta.capabilities?.events?.llm) {
+  let providerErrorEventsAvailable = false;
+  if (letta.capabilities?.events?.providerError) {
+    try {
+      disposers.push(
+        letta.events.on<ModProviderErrorEvent>("provider_error", async (event, ctx): Promise<ModProviderErrorResult | undefined> => {
+          await initialize(ctx);
+          if (rt.state.paused) return;
+          const text = providerErrorText(event);
+          const kind = classifyFailure(text);
+          if (kind === "transient") return;
+
+          const flags = flagsFor(event.conversationId ?? "unknown");
+          flags.acted = true;
+          const outcome = kind === "image"
+            ? await evaluateAndSwitch(ctx, {
+                needsMultimodal: true,
+                conversationScope: true,
+                reason: "image-content",
+                detail: trim(text, 200),
+              })
+            : await bench(ctx, event.model ?? event.modelHandle ?? "?", kind, text);
+          if (!outcome || !canRetryProviderErrorWith(event, outcome.to)) return;
+          flags.providerRetryRequested = true;
+          return { retry: { model: outcome.to }, action: "retry" };
+        }),
+      );
+      providerErrorEventsAvailable = true;
+    } catch {
+      // Compatibility with Letta Code versions predating provider_error.
+    }
+  }
+
+  if (letta.capabilities?.events?.llm && !providerErrorEventsAvailable) {
     disposers.push(
       letta.events.on<ModLlmEndEvent>("llm_end", async (event, ctx) => {
         await initialize(ctx);
