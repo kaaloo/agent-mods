@@ -118,7 +118,14 @@ function parseLadder(raw) {
     const handle = item.handle;
     if (typeof handle !== "string" || !handle.trim())
       return null;
-    rungs.push({ handle: handle.trim(), multimodal: item.multimodal !== false });
+    const contextWindow = item.contextWindow;
+    const reasoningEffort = item.reasoningEffort;
+    rungs.push({
+      handle: handle.trim(),
+      multimodal: item.multimodal !== false,
+      ...typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0 ? { contextWindow: Math.floor(contextWindow) } : {},
+      ...typeof reasoningEffort === "string" && reasoningEffort.trim() ? { reasoningEffort: reasoningEffort.trim() } : {}
+    });
   }
   return rungs;
 }
@@ -547,6 +554,63 @@ async function probeRung(conversation, handle) {
   }
 }
 
+// mods/lib/profiles.ts
+import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
+import { join } from "node:path";
+var REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+function isReasoningEffort(value) {
+  return typeof value === "string" && REASONING_EFFORTS.includes(value);
+}
+function isProfile(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const contextWindow = value.contextWindow;
+  return typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0;
+}
+function profilesPath(memoryDir) {
+  const inMods = join(memoryDir, "mods", "model-profiles.json");
+  const inRoot = join(memoryDir, "model-profiles.json");
+  if (existsSync2(inRoot) && !existsSync2(inMods))
+    return inRoot;
+  return inMods;
+}
+function readProfiles(memoryDir) {
+  if (!memoryDir)
+    return {};
+  const path = profilesPath(memoryDir);
+  if (!existsSync2(path))
+    return {};
+  try {
+    const raw = JSON.parse(readFileSync2(path, "utf8"));
+    if (typeof raw !== "object" || raw === null)
+      return {};
+    const profiles = raw.profiles;
+    if (typeof profiles !== "object" || profiles === null || Array.isArray(profiles))
+      return {};
+    const result = {};
+    for (const [handle, value] of Object.entries(profiles)) {
+      if (!isProfile(value))
+        continue;
+      result[handle] = {
+        contextWindow: Math.floor(value.contextWindow),
+        ...isReasoningEffort(value.reasoningEffort) ? { reasoningEffort: value.reasoningEffort } : {}
+      };
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+function rungSettings(rung, profiles) {
+  const profile = profiles[rung.handle];
+  const contextWindow = typeof rung.contextWindow === "number" && Number.isFinite(rung.contextWindow) && rung.contextWindow > 0 ? Math.floor(rung.contextWindow) : profile?.contextWindow;
+  const reasoningEffort = isReasoningEffort(rung.reasoningEffort) ? rung.reasoningEffort : profile?.reasoningEffort;
+  return {
+    ...contextWindow !== undefined ? { contextWindow } : {},
+    ...reasoningEffort !== undefined ? { reasoningEffort } : {}
+  };
+}
+
 // mods/index.ts
 var CONTINUE_MIN_INTERVAL_MS = 120000;
 function nowIso() {
@@ -571,7 +635,8 @@ function activate(letta) {
     lastContinueAt: new Map,
     persistQueue: Promise.resolve(),
     mountWarned: false,
-    appliedFor: new Set
+    appliedFor: new Set,
+    memoryDir: null
   };
   async function initialize(ctx) {
     if (rt.initialized)
@@ -581,6 +646,7 @@ function activate(letta) {
         const agentId = ctx.agent?.id ?? null;
         const memoryDir = ctx.memfs?.memoryDir ?? process.env.MEMORY_DIR ?? null;
         rt.agentId = agentId;
+        rt.memoryDir = memoryDir;
         rt.llmEventsAvailable = letta.capabilities?.events?.llm === true;
         rt.mount = await ensureMount(memoryDir, agentId, process.env.LETTA_BASE_URL ?? null, process.env.LETTA_API_KEY ?? null);
         if (!rt.mount.available && !rt.mountWarned) {
@@ -646,8 +712,9 @@ function activate(letta) {
     if (currentIndex === -1 && !rt.config.enforceLadder)
       return null;
     const scope = opts.conversationScope ? "conversation" : "agent";
+    const settings = rungSettings(target, readProfiles(rt.memoryDir));
     try {
-      await ctx.conversation.updateLlmConfig?.({ model: target.handle, scope });
+      await ctx.conversation.updateLlmConfig?.({ model: target.handle, scope, ...settings });
     } catch {
       return null;
     }

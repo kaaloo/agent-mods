@@ -37,6 +37,12 @@ unavailable.
   multimodal rung at or below the current position before the request goes
   out. Image switches are conversation-scoped; failure switches are
   agent-scoped (`updateLlmConfig`).
+- **Switches restore per-model settings.** Every switch applies the target
+  rung's saved context window and reasoning effort in the same
+  `updateLlmConfig` call: rung fields in squad config first, then the
+  `@letta-ai/model-profiles` file (`$MEMORY_DIR/mods/model-profiles.json`,
+  read defensively). `max_output_tokens` is not exposed by the mod API and
+  is not covered.
 - **Recovery.** Benched rungs are re-probed at the next `conversation_open`
   after cooldown expiry; a healthy probe revives the rung and the agent climbs
   back up. A still-limited result extends the cooldown.

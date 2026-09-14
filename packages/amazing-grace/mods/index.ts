@@ -25,6 +25,7 @@ import { ensureMount, loadContext, saveState, statuslineRendersGrace } from "./l
 import type { MountInfo } from "./lib/ledger.ts";
 import { probeRung } from "./lib/probe.ts";
 import type { ProbeResult } from "./lib/probe.ts";
+import { readProfiles, rungSettings } from "./lib/profiles.ts";
 import { activeCooldowns, appendEvent, changeKind, expiredCooldowns, markCooldown, markDead, pruneCooldowns, revive } from "./lib/state.ts";
 import type { AgentGraceState, GraceEvent } from "./lib/state.ts";
 
@@ -52,6 +53,8 @@ interface Runtime {
   mountWarned: boolean;
   /** Conversation ids already evaluated in this process lifetime. */
   appliedFor: Set<string>;
+  /** Memory dir resolved at init; command contexts may omit memfs. */
+  memoryDir: string | null;
 }
 
 function nowIso(): string {
@@ -83,6 +86,7 @@ export default function activate(letta: LettaModContext): () => void {
     persistQueue: Promise.resolve(),
     mountWarned: false,
     appliedFor: new Set(),
+    memoryDir: null,
   };
 
   async function initialize(ctx: ModEventHandlerContext | ModCommandContext): Promise<void> {
@@ -92,6 +96,7 @@ export default function activate(letta: LettaModContext): () => void {
         const agentId = ctx.agent?.id ?? null;
         const memoryDir = (ctx as ModEventHandlerContext).memfs?.memoryDir ?? process.env.MEMORY_DIR ?? null;
         rt.agentId = agentId;
+        rt.memoryDir = memoryDir;
         rt.llmEventsAvailable = letta.capabilities?.events?.llm === true;
         rt.mount = await ensureMount(
           memoryDir,
@@ -175,8 +180,14 @@ export default function activate(letta: LettaModContext): () => void {
     if (currentIndex === -1 && !rt.config.enforceLadder) return null;
 
     const scope = opts.conversationScope ? "conversation" : "agent";
+    // Restore the rung's saved settings (squad config first, then the
+    // model-profiles file) so a switch does not reset the context window to
+    // the model's catalog default. Re-read per switch: the profiles file can
+    // change after init, and command contexts may omit memfs, so the memory
+    // dir resolved at init is the reliable source.
+    const settings = rungSettings(target, readProfiles(rt.memoryDir));
     try {
-      await ctx.conversation.updateLlmConfig?.({ model: target.handle, scope });
+      await ctx.conversation.updateLlmConfig?.({ model: target.handle, scope, ...settings });
     } catch {
       return null; // switch failed; the next decision point retries
     }

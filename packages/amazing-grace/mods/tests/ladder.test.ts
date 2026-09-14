@@ -35,6 +35,26 @@ describe("parseConfig", () => {
     expect(config.ladder).toEqual(DEFAULT_LADDER);
   });
 
+  it("accepts optional rung contextWindow and reasoningEffort fields", () => {
+    const config = parseConfig({
+      ladder: [
+        { handle: "a/b", contextWindow: 1048576, reasoningEffort: "high" },
+        { handle: "c/d", multimodal: false },
+      ],
+    });
+    expect(config.ladder).toEqual([
+      { handle: "a/b", multimodal: true, contextWindow: 1048576, reasoningEffort: "high" },
+      { handle: "c/d", multimodal: false },
+    ]);
+  });
+
+  it("drops invalid rung contextWindow and reasoningEffort fields", () => {
+    const config = parseConfig({
+      ladder: [{ handle: "a/b", contextWindow: 0, reasoningEffort: "" }],
+    });
+    expect(config.ladder).toEqual([{ handle: "a/b", multimodal: true }]);
+  });
+
   it("rejects non-positive cooldown values", () => {
     expect(parseConfig({ cooldownMinutes: 0 }).cooldownMinutes).toBe(60);
     expect(parseConfig({ cooldownMinutes: -5 }).cooldownMinutes).toBe(60);
