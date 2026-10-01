@@ -6,7 +6,6 @@ Monorepo for trusted [Letta Code](https://github.com/letta-ai/letta-code) mods m
 
 | Package | Description |
 | --- | --- |
-| [`@kaaloo/flows`](packages/flows) | A Letta-native mod for authoring and running multi-agent flows. Describes a task as markdown with YAML frontmatter, fans it out across parallel subagents, and synthesizes the results. |
 | [`@kaaloo/okf`](packages/okf) | OKF trust-signal enforcement for agent memory in MemFS. Validates provenance, verification, freshness, and lifecycle on memory writes via permission overlays. |
 | [`@kaaloo/amazing-grace`](packages/amazing-grace) | Graceful model degradation. Steps an agent down a usage-plan model ladder on provider failures (quota, invalid key, images on text-only rungs) and back up after recovery, logging every switch to shared memory. |
 
@@ -23,8 +22,8 @@ cd agent-mods
 # Install the workspace root (currently only used for dev tooling: gitleaks, cve-lite, husky)
 npm install
 
-# Install and enable the flows mod
-cd packages/flows
+# Install and enable a mod (example: okf)
+cd packages/okf
 npm install
 letta install .
 ```
@@ -57,7 +56,6 @@ See each package's README for package-specific usage.
 ```
 .
 ├── packages/
-│   ├── flows/            # @kaaloo/flows mod (TypeScript source, bundled JS, tests)
 │   ├── okf/              # @kaaloo/okf mod (TypeScript source, bundled JS, tests)
 │   └── amazing-grace/    # @kaaloo/amazing-grace mod (TypeScript source, bundled JS, tests)
 ├── docs/                 # Design notes and implementation plans
@@ -92,13 +90,13 @@ npm run security:scan:secrets:staged
 
 ### Dependency scanning — cve-lite
 
-- **Local** — `.husky/pre-push` runs `cve-lite packages/flows --fail-on high` before every push. It is wired to `pre-push` (not `pre-commit`) because cve-lite analyzes the whole lockfile rather than staged filenames. Note that this is a **local-only** check; there is currently no server-side cve-lite job in CI, so `git push --no-verify` will skip it.
-- **Configuration** — lockfile pinning and `cve-lite-cli` version are declared in the root `package.json` and `packages/flows/package-lock.json`. The `packages/flows` path is hardcoded today; adding a new package means updating `.husky/pre-push` and the root `security:scan:js` script to cover it.
+- **Local** — `.husky/pre-push` scans each package under `packages/` with `cve-lite --fail-on high` before every push. It is wired to `pre-push` (not `pre-commit`) because cve-lite analyzes the whole lockfile rather than staged filenames. Note that this is a **local-only** check; there is currently no server-side cve-lite job in CI, so `git push --no-verify` will skip it.
+- **Configuration** — lockfile pinning and `cve-lite-cli` version are declared in the root `package.json` and each package's `package-lock.json`. The package paths are listed in `.husky/pre-push` and the root `security:scan:js` script; adding a new package means updating both.
 
 Useful scripts at the workspace root:
 
 ```bash
-# Scan the flows workspace for high-severity CVEs
+# Scan all package workspaces for high-severity CVEs
 npm run security:scan:js
 ```
 
@@ -113,15 +111,7 @@ Hooks can be skipped with `git commit --no-verify` / `git push --no-verify`, but
 
 ## Per-package verification
 
-Each mod defines its own quality gate. For `@kaaloo/flows`:
-
-```bash
-cd packages/flows
-npm run check    # build + typecheck + tests
-npm run verify   # verify:bundle + typecheck + tests (fails if the bundled JS drifts from source)
-```
-
-For `@kaaloo/okf`:
+Each mod defines its own quality gate. For `@kaaloo/okf`:
 
 ```bash
 cd packages/okf

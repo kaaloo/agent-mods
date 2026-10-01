@@ -8,7 +8,7 @@
     "prepare": "husky",
     "security:scan:secrets": "gitleaks detect --redact --no-banner",
     "security:scan:secrets:staged": "gitleaks protect --staged --redact --no-banner",
-    "security:scan:js": "cve-lite packages/flows --fail-on high"
+    "security:scan:js": "cve-lite packages/okf --fail-on high && cve-lite packages/amazing-grace --fail-on high"
   },
   "devDependencies": {
     "@nogoo9/gitleaks": "^8.30.1",
@@ -18,7 +18,6 @@
   "letta": {
     "manifestVersion": 1,
     "mods": [
-      "./packages/flows/mods/index.bundled.mjs",
       "./packages/okf/mods/index.bundled.mjs",
       "./packages/amazing-grace/mods/index.bundled.mjs"
     ],

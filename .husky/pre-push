@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
-# Pre-push JS dependency vulnerability scan. Scans the lockfile in
-# packages/flows via cve-lite (https://github.com/NodeSecure/cve-lite).
+# Pre-push JS dependency vulnerability scan. Scans the lockfile of each
+# package under packages/ via cve-lite (https://github.com/NodeSecure/cve-lite).
 #
 # Why pre-push instead of pre-commit: cve-lite analyzes the whole
 # lockfile, not staged filenames. Running it on every commit is
@@ -23,4 +23,7 @@ else
   exit 1
 fi
 
-exec $CVE_LITE packages/flows --fail-on high
+for pkg in packages/okf packages/amazing-grace; do
+  echo "pre-push: scanning $pkg"
+  $CVE_LITE "$pkg" --fail-on high || exit 1
+done
