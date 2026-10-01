@@ -23,7 +23,6 @@
     ],
     "capabilities": [
       "commands",
-      "tools",
       "permissions",
       "events.lifecycle",
       "events.llm",

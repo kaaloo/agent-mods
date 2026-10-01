@@ -49,6 +49,17 @@ directory and from the git channel registers twice (the two installs have
 different source paths), so its event handlers run twice. Use the git channel
 for agents/environments and the per-package channel for development.
 
+### Removing Previously Installed Mods
+
+Installing an updated revision does not uninstall mods that were already
+installed. Environments that installed this repository through the git channel
+before the `@kaaloo/flows` package was removed still have the old flows mod
+active (its `/flow` command, `flow_*` tools, and event handlers keep running).
+To clean up an existing install, remove the obsolete entry with
+`letta mods remove` or delete the old installed mod directory under
+`~/.letta/mods/`, then restart the Letta Code session so the change takes
+effect.
+
 See each package's README for package-specific usage.
 
 ## Repository layout
