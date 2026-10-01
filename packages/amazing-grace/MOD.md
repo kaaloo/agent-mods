@@ -26,10 +26,15 @@ unavailable.
 - **Failure benches a rung.** Auth errors and unknown handles mark a rung dead
   (until a recovery probe succeeds); quota and rate-limit errors bench it for
   `cooldownMinutes` (default 60).
-- **Switching is probe-verified on cloud.** `llm_start`/`llm_end` only fire on
-  the local backend, so on the Letta Cloud backend a failed turn triggers a
-  probe (forked hidden conversation, ~100-token ping with `overrideModel`) and
-  only probe-confirmed failures bench a rung. Transient blips never downgrade.
+- **Provider recovery is retry-aware.** On Letta Code builds with the
+  `provider_error` event, Grace waits until built-in same-model retries are
+  exhausted, benches a classified failing rung, and returns one declarative
+  request-scoped replacement model. Letta Code retries the same logical turn
+  with fresh request IDs, without adding a second user message or firing a
+  second turn lifecycle. Transient blips never downgrade.
+- **Legacy switching is probe-verified on cloud.** Older Letta Code builds fall
+  back to `llm_end`; where provider-level events do not fire, a failed turn
+  triggers a forked probe before anything is benched.
 - **Images downgrade proactively.** GLM-family rungs are text-only (verified:
   Z.ai rejects image parts with a 400). The mod scans turn input at
   `turn_start` and Read-style tool results at `tool_end`; when image content
@@ -46,7 +51,8 @@ unavailable.
 - **Recovery.** Benched rungs are re-probed at the next `conversation_open`
   after cooldown expiry; a healthy probe revives the rung and the agent climbs
   back up. A still-limited result extends the cooldown.
-- **Auto-continue.** After a failure-driven switch, the mod returns
+- **Legacy auto-continue.** On builds without `provider_error`, after a
+  failure-driven switch the mod returns
   `{ continue }` from `turn_end` to re-drive the failed request on the new
   model, at most once per 2 minutes per conversation. Disable via config.
 - **Ladder enforcement.** Off-ladder models (e.g. `letta/auto`) are switched
@@ -82,7 +88,7 @@ rung health on demand.
 
 ## Verification
 
-- 46 unit tests (ladder evaluation, classification, detection, state,
+- 71 unit tests (ladder evaluation, classification, detection, state,
   ledger git round-trips including concurrent-push rebase).
 - Live probe behavior verified 2026-08-22 against the Letta API:
   `override_model` ping, GLM image 400 shape, qwen3.8-max multimodal,

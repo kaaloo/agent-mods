@@ -114,6 +114,39 @@ export interface ModLlmEndEvent {
   error?: ModLlmEndError;
 }
 
+export interface ModProviderErrorEvent {
+  agentId: string | null;
+  conversationId: string | null;
+  phase: "pre_stream" | "post_stream" | "local_provider";
+  model: string | null;
+  provider: string | null;
+  runId: string | null;
+  stopReason: string | null;
+  error?: {
+    message: string;
+    detail: string | null;
+    errorType: string | null;
+    status: number | null;
+    retryable: boolean;
+  };
+  attempt: number;
+  maxAttempts: number;
+  failoverAttempt: number;
+  maxFailoverAttempts: number;
+  retryAfterMs: number | null;
+  triedModels?: string[];
+  status?: number | null;
+  detail?: string | null;
+  providerType?: string | null;
+  providerName?: string | null;
+  modelHandle?: string | null;
+}
+
+export interface ModProviderErrorResult {
+  retry?: { model: string; delayMs?: number };
+  action?: "retry" | "continue";
+}
+
 export interface ModCommandContext {
   rawInput: string;
   command: string;
@@ -158,6 +191,7 @@ export interface LettaCapabilities {
     turns: boolean;
     compact: boolean;
     llm: boolean;
+    providerError?: boolean;
   };
   permissions: boolean;
   providers: boolean;
