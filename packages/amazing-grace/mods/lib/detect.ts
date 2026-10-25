@@ -7,39 +7,48 @@
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp|bmp|tiff?|heic|avif)$/i;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function contentHasImagePart(content: unknown): boolean {
-  if (typeof content === "string") return false;
-  if (!Array.isArray(content)) return false;
-  for (const part of content) {
-    if (!isRecord(part)) continue;
-    const type = part.type;
-    if (type === "image" || type === "image_url" || type === "input_image") return true;
-    if (isRecord(part.source) && part.source.type === "base64") return true;
-    if (isRecord(part.image_url) || isRecord(part.image)) return true;
-  }
-  return false;
+	if (typeof content === "string") return false;
+	if (!Array.isArray(content)) return false;
+	for (const part of content) {
+		if (!isRecord(part)) continue;
+		const type = part.type;
+		if (type === "image" || type === "image_url" || type === "input_image")
+			return true;
+		if (isRecord(part.source) && part.source.type === "base64") return true;
+		if (isRecord(part.image_url) || isRecord(part.image)) return true;
+	}
+	return false;
 }
 
 export function messageHasImage(message: unknown): boolean {
-  if (!isRecord(message)) return false;
-  if (contentHasImagePart(message.content)) return true;
-  // Approvals carry tool results whose content can include image parts.
-  if (Array.isArray(message.approvals)) {
-    for (const approval of message.approvals) {
-      if (!isRecord(approval)) continue;
-      if (isRecord(approval.tool_return) && contentHasImagePart(approval.tool_return.content)) return true;
-    }
-  }
-  if (isRecord(message.tool_return) && contentHasImagePart(message.tool_return.content)) return true;
-  return false;
+	if (!isRecord(message)) return false;
+	if (contentHasImagePart(message.content)) return true;
+	// Approvals carry tool results whose content can include image parts.
+	if (Array.isArray(message.approvals)) {
+		for (const approval of message.approvals) {
+			if (!isRecord(approval)) continue;
+			if (
+				isRecord(approval.tool_return) &&
+				contentHasImagePart(approval.tool_return.content)
+			)
+				return true;
+		}
+	}
+	if (
+		isRecord(message.tool_return) &&
+		contentHasImagePart(message.tool_return.content)
+	)
+		return true;
+	return false;
 }
 
 export function inputHasImages(input: unknown[] | null | undefined): boolean {
-  if (!Array.isArray(input)) return false;
-  return input.some((item) => messageHasImage(item));
+	if (!Array.isArray(input)) return false;
+	return input.some((item) => messageHasImage(item));
 }
 
 /**
@@ -50,15 +59,23 @@ export function inputHasImages(input: unknown[] | null | undefined): boolean {
  * from the tool name plus an image-extension path argument. Narrow by design:
  * unknown tools are never treated as image-bearing.
  */
-const IMAGE_RESULT_TOOLS = new Set(["read", "read_file", "readfile", "open_files"]);
+const IMAGE_RESULT_TOOLS = new Set([
+	"read",
+	"read_file",
+	"readfile",
+	"open_files",
+]);
 
-export function toolResultLikelyImage(toolName: string | null | undefined, args: Record<string, unknown> | null | undefined): boolean {
-  if (!toolName || !args) return false;
-  const normalized = toolName.toLowerCase().replace(/^multi_tool_use\./, "");
-  if (!IMAGE_RESULT_TOOLS.has(normalized)) return false;
-  for (const key of ["file_path", "path", "file", "filename"]) {
-    const value = args[key];
-    if (typeof value === "string" && IMAGE_EXTENSIONS.test(value)) return true;
-  }
-  return false;
+export function toolResultLikelyImage(
+	toolName: string | null | undefined,
+	args: Record<string, unknown> | null | undefined,
+): boolean {
+	if (!toolName || !args) return false;
+	const normalized = toolName.toLowerCase().replace(/^multi_tool_use\./, "");
+	if (!IMAGE_RESULT_TOOLS.has(normalized)) return false;
+	for (const key of ["file_path", "path", "file", "filename"]) {
+		const value = args[key];
+		if (typeof value === "string" && IMAGE_EXTENSIONS.test(value)) return true;
+	}
+	return false;
 }
