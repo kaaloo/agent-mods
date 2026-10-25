@@ -119,8 +119,8 @@ Hooks must not be bypassed without explicit approval from Luis. Prefer adding a 
 
 - `.github/workflows/gitleaks.yml` — full-history secret scan on push and pull request.
 - `.github/workflows/osv-scanner.yml` — PR differential vulnerability scan plus scheduled and main-branch reports to Code Scanning.
-- `.github/workflows/ci.yml` — installs the root tooling and each package, runs Biome, then verifies the bundle, typechecks, and tests both packages.
-- `.github/workflows/release-please.yml` — maintains release PRs for both publishable packages. `bump-minor-pre-major: true` keeps releases on `0.x.0` until an explicit `Release-As: 1.0.0` decision.
+- `.github/workflows/ci.yml` — installs the root tooling and each package, runs Biome, then verifies the bundle, typechecks, and tests both packages. Smoke tests import each committed bundle and exercise activation, OKF permission decisions, and Amazing Grace registration.
+- `.github/workflows/release-please.yml` — maintains release PRs for both publishable packages with a dedicated Actions token (`RELEASE_PLEASE_TOKEN`), so those PRs also trigger the required checks. `versioning: always-bump-minor` keeps every pre-1.0 release on `0.x.0`, including fixes. To approve 1.0, change the strategy to `default` in the same commit that contains `Release-As: 1.0.0`; that override is evaluated by the default strategy.
 - `.github/dependabot.yml` — covers all three npm manifests and GitHub Actions with a seven-day cooldown. Each `.npmrc` also sets `min-release-age=7`; Dependabot security updates are not delayed by its cooldown.
 - Biome checks source and configuration only; generated `*.bundled.mjs` files are covered by `verify:bundle`, not rewritten by the formatter.
 - Code review is handled via Codex.
