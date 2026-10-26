@@ -127,12 +127,14 @@ Hooks must not be bypassed without explicit approval from Luis. Prefer adding a 
 
 ### Release automation credentials
 
-`release-please.yml` authenticates as a GitHub App, which is what makes its commits signed and its pull requests start the required checks. The App needs repository permissions `Contents: read and write`, `Issues: read and write`, and `Pull requests: read and write`, and it must be installed on this repository. Two repository secrets hold its credentials:
+`release-please.yml` authenticates as a GitHub App, which is what makes its commits signed and its pull requests start the required checks. The App needs repository permissions `Contents: read and write`, `Issues: read and write`, and `Pull requests: read and write`, and it must be installed on this repository. The token is requested with exactly those three permissions rather than inheriting every permission the installation holds, so the workflow's access stays visible in the workflow file. Two repository secrets hold its credentials:
 
 - `RELEASE_PLEASE_APP_CLIENT_ID` — the App's client ID.
 - `RELEASE_PLEASE_APP_PRIVATE_KEY` — the App's private key.
 
 Do not replace these with a personal access token. A PAT authenticates the commit as its owner, and GitHub only signs bot commits when the request carries no custom author or committer, so a PAT-authenticated release commit is left unsigned and is rejected by the `required_signatures` rule.
+
+`release-please-config.json` sets `"always-update": true`. By default release-please rewrites the release branch only when the generated release notes change, which is a problem here: the notes are stable for a given set of commits and a given day, so a release branch created under different credentials would keep its existing unsigned commit and never be repaired. Forcing the update makes every run rebuild the branch from `main` and push a fresh signed commit. Combined with the `force: true` branch update release-please applies by default, the branch is reset onto the current `main` rather than stacked on the previous commit.
 
 ## Per-package verification
 
