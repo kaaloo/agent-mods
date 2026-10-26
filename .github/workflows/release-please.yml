@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: release-please-main
+  # Let the latest queued run repair the release PR after an earlier run;
+  # cancelling a run between the API update and signing could strand it unsigned.
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -18,7 +24,19 @@ jobs:
           # the resulting pull_request checks run without manual approval.
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           fetch-depth: 0
+      - name: Check that this run still targets current main
+        id: current-main
+        run: |
+          set -euo pipefail
+          git fetch origin "+refs/heads/main:refs/remotes/origin/main"
+          if [[ "$(git rev-parse origin/main)" == "$GITHUB_SHA" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping stale run: main is $(git rev-parse origin/main), this run targets $GITHUB_SHA"
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Maintain the release PR
+        if: steps.current-main.outputs.current == 'true'
         id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         with:

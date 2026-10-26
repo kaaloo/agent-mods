@@ -134,6 +134,8 @@ Two existing repository secrets cover the different parts of release automation:
 
 The PAT alone is not enough: its API-generated commits have no signature and are rejected by `required_signatures`. After release-please updates the branch, the workflow checks that the branch head is exactly one commit on top of the `main` commit that triggered the run, amends that commit with the SSH signature, verifies it locally, and pushes it with `--force-with-lease`. It never rewrites `main` or an unexpected release-branch history, and it removes the private key when the step exits.
 
+Release runs are serialized without cancelling a run already in progress. Before invoking release-please, each run fetches `main` and skips every mutating step if its triggering commit is no longer current. This prevents a delayed run from replacing a newer signed release head with an unsigned API commit; the latest queued run handles the current `main` instead.
+
 `release-please-config.json` sets `"always-update": true`. By default release-please leaves an existing release branch unchanged when the generated notes have not changed. Forcing the update rebuilds the branch from the current `main` on every run, giving the signing step a fresh commit with the expected parent. Combined with the `force: true` branch update release-please applies by default, the branch is reset onto `main` rather than stacked on the previous release commit.
 
 ## Per-package verification
