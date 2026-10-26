@@ -120,21 +120,21 @@ Hooks must not be bypassed without explicit approval from Luis. Prefer adding a 
 - `.github/workflows/gitleaks.yml` — full-history secret scan on push and pull request.
 - `.github/workflows/osv-scanner.yml` — PR differential vulnerability scan plus scheduled and main-branch reports to Code Scanning.
 - `.github/workflows/ci.yml` — installs the root tooling and each package, runs Biome, then verifies the bundle, typechecks, and tests both packages. Smoke tests import each committed bundle and exercise activation, OKF permission decisions, and Amazing Grace registration.
-- `.github/workflows/release-please.yml` — maintains release PRs for both publishable packages with a dedicated GitHub App installation token, so the release commits are signed by GitHub and those PRs trigger the required checks. `versioning: always-bump-minor` keeps every pre-1.0 release on `0.x.0`, including fixes. To approve 1.0, change the strategy to `default` in the same commit that contains `Release-As: 1.0.0`; that override is evaluated by the default strategy.
+- `.github/workflows/release-please.yml` — maintains release PRs for both publishable packages with a dedicated Actions token (`RELEASE_PLEASE_TOKEN`), then SSH-signs the generated commit with `GIT_SIGNING_KEY`. The PAT makes the PRs trigger the required checks; the SSH signature satisfies `required_signatures`. `versioning: always-bump-minor` keeps every pre-1.0 release on `0.x.0`, including fixes. To approve 1.0, change the strategy to `default` in the same commit that contains `Release-As: 1.0.0`; that override is evaluated by the default strategy.
 - `.github/dependabot.yml` — covers all three npm manifests and GitHub Actions with a seven-day cooldown. Each `.npmrc` also sets `min-release-age=7`; Dependabot security updates are not delayed by its cooldown.
 - Biome checks source and configuration only; generated `*.bundled.mjs` files are covered by `verify:bundle`, not rewritten by the formatter.
 - Code review is handled via Codex.
 
 ### Release automation credentials
 
-`release-please.yml` authenticates as a GitHub App, which is what makes its commits signed and its pull requests start the required checks. The App needs repository permissions `Contents: read and write`, `Issues: read and write`, and `Pull requests: read and write`, and it must be installed on this repository. The token is requested with exactly those three permissions rather than inheriting every permission the installation holds, so the workflow's access stays visible in the workflow file. Two repository secrets hold its credentials:
+Two existing repository secrets cover the different parts of release automation:
 
-- `RELEASE_PLEASE_APP_CLIENT_ID` — the App's client ID.
-- `RELEASE_PLEASE_APP_PRIVATE_KEY` — the App's private key.
+- `RELEASE_PLEASE_TOKEN` — creates and updates the release PR and branch. A PAT is required here because pull requests created or updated with the default `GITHUB_TOKEN` leave their required checks waiting for manual approval.
+- `GIT_SIGNING_KEY` — signs the generated release commit. The committer is `Luis Arias <luis.arias@numerique.gouv.fr>`, whose email and SSH signing key are registered with GitHub. The key may be stored as raw PEM or base64-encoded PEM.
 
-Do not replace these with a personal access token. A PAT authenticates the commit as its owner, and GitHub only signs bot commits when the request carries no custom author or committer, so a PAT-authenticated release commit is left unsigned and is rejected by the `required_signatures` rule.
+The PAT alone is not enough: its API-generated commits have no signature and are rejected by `required_signatures`. After release-please updates the branch, the workflow checks that the branch head is exactly one commit on top of the `main` commit that triggered the run, amends that commit with the SSH signature, verifies it locally, and pushes it with `--force-with-lease`. It never rewrites `main` or an unexpected release-branch history, and it removes the private key when the step exits.
 
-`release-please-config.json` sets `"always-update": true`. By default release-please rewrites the release branch only when the generated release notes change, which is a problem here: the notes are stable for a given set of commits and a given day, so a release branch created under different credentials would keep its existing unsigned commit and never be repaired. Forcing the update makes every run rebuild the branch from `main` and push a fresh signed commit. Combined with the `force: true` branch update release-please applies by default, the branch is reset onto the current `main` rather than stacked on the previous commit.
+`release-please-config.json` sets `"always-update": true`. By default release-please leaves an existing release branch unchanged when the generated notes have not changed. Forcing the update rebuilds the branch from the current `main` on every run, giving the signing step a fresh commit with the expected parent. Combined with the `force: true` branch update release-please applies by default, the branch is reset onto `main` rather than stacked on the previous release commit.
 
 ## Per-package verification
 

@@ -12,33 +12,63 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      # A GitHub App installation token is required for two reasons the default
-      # GITHUB_TOKEN cannot satisfy:
-      #   1. Commits created through the Git Data API while authenticated as the
-      #      App are signed by GitHub, which is what `required_signatures` needs.
-      #   2. Events created with an App token start pull_request workflows
-      #      immediately, instead of leaving the required checks in the
-      #      "approval required" state a GITHUB_TOKEN-created PR produces.
-      # A user PAT cannot be used: GitHub only signs bot commits when the request
-      # carries no custom author or committer, and release-please sets neither,
-      # so the PAT identity leaked into the commit and left it unsigned.
-      - name: Mint the app installation token
-        id: app-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          # Scope the token explicitly instead of inheriting every permission
-          # the installation has been granted.
-          permission-contents: write
-          permission-issues: write
-          permission-pull-requests: write
+          # The PAT both lets checkout push the signed release branch and makes
+          # the resulting pull_request checks run without manual approval.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          fetch-depth: 0
       - name: Maintain the release PR
         id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+      - name: Sign the release PR commit
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          GIT_SIGNING_KEY: ${{ secrets.GIT_SIGNING_KEY }}
+          RELEASE_BRANCH: release-please--branches--main
+        run: |
+          set -euo pipefail
+          if [[ -z "$GIT_SIGNING_KEY" ]]; then
+            echo "GIT_SIGNING_KEY is required to sign the release commit" >&2
+            exit 1
+          fi
+
+          signing_key="$RUNNER_TEMP/release-signing-key"
+          allowed_signers="$RUNNER_TEMP/release-allowed-signers"
+          trap 'rm -f "$signing_key" "$signing_key.pub" "$allowed_signers"' EXIT
+          umask 077
+          if [[ "$GIT_SIGNING_KEY" == *"-----BEGIN"* ]]; then
+            printf '%s\n' "$GIT_SIGNING_KEY" > "$signing_key"
+          else
+            printf '%s' "$GIT_SIGNING_KEY" | tr -d '\n' | base64 --decode > "$signing_key"
+            printf '\n' >> "$signing_key"
+          fi
+          ssh-keygen -y -f "$signing_key" > "$signing_key.pub"
+
+          signing_email="luis.arias@numerique.gouv.fr"
+          git config user.name "Luis Arias"
+          git config user.email "$signing_email"
+          git config gpg.format ssh
+          git config user.signingkey "$signing_key"
+          git config commit.gpgsign true
+          git config gpg.ssh.allowedSignersFile "$allowed_signers"
+          printf '%s %s\n' "$signing_email" "$(< "$signing_key.pub")" > "$allowed_signers"
+
+          git fetch origin "+refs/heads/$RELEASE_BRANCH:refs/remotes/origin/$RELEASE_BRANCH"
+          git checkout --detach "origin/$RELEASE_BRANCH"
+
+          # Release-please must have produced exactly one new commit on top of
+          # the main commit that triggered this run. Never rewrite other history.
+          if [[ "$(git show -s --format=%P HEAD)" != "$GITHUB_SHA" ]]; then
+            echo "Refusing to sign: release commit is not a single commit on $GITHUB_SHA" >&2
+            exit 1
+          fi
+
+          original_commit="$(git rev-parse HEAD)"
+          git commit --amend --no-edit
+          git verify-commit HEAD
+          git push --force-with-lease="refs/heads/$RELEASE_BRANCH:$original_commit" origin "HEAD:refs/heads/$RELEASE_BRANCH"
