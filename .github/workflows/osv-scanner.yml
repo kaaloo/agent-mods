@@ -1,0 +1,36 @@
+# OSV-Scanner: dependency vulnerability scanning against the OSV database.
+# Pull requests fail only on newly introduced vulnerabilities. Scheduled and
+# main-branch scans report the full inventory without blocking on existing debt.
+name: OSV-Scanner
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "12 12 * * 1"
+
+permissions: {}
+
+jobs:
+  scan-scheduled:
+    if: ${{ github.event_name == 'push' || github.event_name == 'schedule' }}
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+    with:
+      fail-on-vuln: false
+
+  scan-pr:
+    if: ${{ github.event_name == 'pull_request' }}
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+    with:
+      fail-on-vuln: true
+      # Fork tokens cannot upload SARIF; findings still fail and appear in logs.
+      upload-sarif: ${{ github.event.pull_request.head.repo.full_name == github.repository }}

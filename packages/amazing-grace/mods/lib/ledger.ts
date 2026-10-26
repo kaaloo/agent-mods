@@ -9,10 +9,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { parseConfig } from "./ladder.ts";
 import type { GraceConfig } from "./ladder.ts";
-import { parseState } from "./state.ts";
+import { parseConfig } from "./ladder.ts";
 import type { AgentGraceState } from "./state.ts";
+import { parseState } from "./state.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -22,39 +22,50 @@ const LEDGER_DIR = "ledger";
 const CONFIG_FILE = "config.json";
 
 export interface MountInfo {
-  path: string;
-  available: boolean;
-  clonedByMod: boolean;
+	path: string;
+	available: boolean;
+	clonedByMod: boolean;
 }
 
 export function mountPath(memoryDir: string | null): string | null {
-  if (!memoryDir) return null;
-  return path.join(path.dirname(path.resolve(memoryDir)), REPO_NAME);
+	if (!memoryDir) return null;
+	return path.join(path.dirname(path.resolve(memoryDir)), REPO_NAME);
 }
 
 export function ledgerFile(mount: string, agentId: string): string {
-  return path.join(mount, MOD_DIR, LEDGER_DIR, `${agentId}.json`);
+	return path.join(mount, MOD_DIR, LEDGER_DIR, `${agentId}.json`);
 }
 
 export function configFile(mount: string): string {
-  return path.join(mount, MOD_DIR, CONFIG_FILE);
+	return path.join(mount, MOD_DIR, CONFIG_FILE);
 }
 
 function repositoryUrl(baseUrl: string, agentId: string): string {
-  return `${baseUrl.replace(/\/+$/, "")}/v1/git/${agentId}/repositories/${REPO_NAME}.git`;
+	return `${baseUrl.replace(/\/+$/, "")}/v1/git/${agentId}/repositories/${REPO_NAME}.git`;
 }
 
-async function git(cwd: string | null, args: string[], token?: string): Promise<{ ok: boolean; stderr: string }> {
-  try {
-    const options: { cwd?: string; maxBuffer?: number } = { maxBuffer: 10 * 1024 * 1024 };
-    if (cwd) options.cwd = cwd;
-    const finalArgs = token ? ["-c", `http.extraHeader=Authorization: Bearer ${token}`, ...args] : args;
-    await execFileAsync("git", finalArgs, options);
-    return { ok: true, stderr: "" };
-  } catch (error) {
-    const err = error as { stderr?: string; message?: string };
-    return { ok: false, stderr: (err.stderr || err.message || "git failed").slice(0, 500) };
-  }
+async function git(
+	cwd: string | null,
+	args: string[],
+	token?: string,
+): Promise<{ ok: boolean; stderr: string }> {
+	try {
+		const options: { cwd?: string; maxBuffer?: number } = {
+			maxBuffer: 10 * 1024 * 1024,
+		};
+		if (cwd) options.cwd = cwd;
+		const finalArgs = token
+			? ["-c", `http.extraHeader=Authorization: Bearer ${token}`, ...args]
+			: args;
+		await execFileAsync("git", finalArgs, options);
+		return { ok: true, stderr: "" };
+	} catch (error) {
+		const err = error as { stderr?: string; message?: string };
+		return {
+			ok: false,
+			stderr: (err.stderr || err.message || "git failed").slice(0, 500),
+		};
+	}
 }
 
 /**
@@ -62,94 +73,130 @@ async function git(cwd: string | null, args: string[], token?: string): Promise<
  * clones one otherwise. Returns available=false when neither works (offline,
  * no token) so callers fall back to defaults plus the local cache.
  */
-export async function ensureMount(memoryDir: string | null, agentId: string | null, baseUrl: string | null, token: string | null): Promise<MountInfo> {
-  const mount = mountPath(memoryDir);
-  if (!mount || !agentId) return { path: mount ?? REPO_NAME, available: false, clonedByMod: false };
-  if (existsSync(path.join(mount, ".git"))) {
-    return { path: mount, available: true, clonedByMod: false };
-  }
-  if (!baseUrl || !token) return { path: mount, available: false, clonedByMod: false };
-  mkdirSync(path.dirname(mount), { recursive: true });
-  const url = repositoryUrl(baseUrl, agentId);
-  const clone = await git(path.dirname(mount), ["clone", url, mount], token);
-  if (!clone.ok) return { path: mount, available: false, clonedByMod: false };
-  // Mirror the credential helper the CLI configures so future pulls/pushes
-  // work without the token being passed on every invocation.
-  await configureCredentialHelper(mount, baseUrl, token, agentId);
-  return { path: mount, available: true, clonedByMod: true };
+export async function ensureMount(
+	memoryDir: string | null,
+	agentId: string | null,
+	baseUrl: string | null,
+	token: string | null,
+): Promise<MountInfo> {
+	const mount = mountPath(memoryDir);
+	if (!mount || !agentId)
+		return { path: mount ?? REPO_NAME, available: false, clonedByMod: false };
+	if (existsSync(path.join(mount, ".git"))) {
+		return { path: mount, available: true, clonedByMod: false };
+	}
+	if (!baseUrl || !token)
+		return { path: mount, available: false, clonedByMod: false };
+	mkdirSync(path.dirname(mount), { recursive: true });
+	const url = repositoryUrl(baseUrl, agentId);
+	const clone = await git(path.dirname(mount), ["clone", url, mount], token);
+	if (!clone.ok) return { path: mount, available: false, clonedByMod: false };
+	// Mirror the credential helper the CLI configures so future pulls/pushes
+	// work without the token being passed on every invocation.
+	await configureCredentialHelper(mount, baseUrl, token, agentId);
+	return { path: mount, available: true, clonedByMod: true };
 }
 
-async function configureCredentialHelper(mount: string, baseUrl: string, token: string, agentId: string): Promise<void> {
-  const host = new URL(baseUrl).host;
-  await git(mount, ["config", `credential.https://${host}.helper`, ""]);
-  await git(mount, [
-    "config",
-    "--add",
-    `credential.https://${host}.helper`,
-    `!f() { echo "username=letta"; echo "password=${token}"; }; f`,
-  ]);
-  await git(mount, ["config", "letta.agentId", agentId]);
-  // Identity and signing for commits made by the mod on fresh clones; the
-  // CLI-configured mounts already carry these.
-  await git(mount, ["config", "user.email", `${agentId}@letta.com`]);
-  await git(mount, ["config", "user.name", "amazing-grace"]);
-  await git(mount, ["config", "commit.gpgsign", "false"]);
+async function configureCredentialHelper(
+	mount: string,
+	baseUrl: string,
+	token: string,
+	agentId: string,
+): Promise<void> {
+	const host = new URL(baseUrl).host;
+	await git(mount, ["config", `credential.https://${host}.helper`, ""]);
+	await git(mount, [
+		"config",
+		"--add",
+		`credential.https://${host}.helper`,
+		`!f() { echo "username=letta"; echo "password=${token}"; }; f`,
+	]);
+	await git(mount, ["config", "letta.agentId", agentId]);
+	// Identity and signing for commits made by the mod on fresh clones; the
+	// CLI-configured mounts already carry these.
+	await git(mount, ["config", "user.email", `${agentId}@letta.com`]);
+	await git(mount, ["config", "user.name", "amazing-grace"]);
+	await git(mount, ["config", "commit.gpgsign", "false"]);
 }
 
 export async function pullMount(mount: string): Promise<boolean> {
-  const result = await git(mount, ["pull", "--rebase", "--autostash", "origin", "main"]);
-  return result.ok;
+	const result = await git(mount, [
+		"pull",
+		"--rebase",
+		"--autostash",
+		"origin",
+		"main",
+	]);
+	return result.ok;
 }
 
 export interface PushResult {
-  committed: boolean;
-  pushed: boolean;
-  error?: string;
+	committed: boolean;
+	pushed: boolean;
+	error?: string;
 }
 
-export async function commitAndPush(mount: string, files: string[], message: string): Promise<PushResult> {
-  if (files.length === 0) return { committed: false, pushed: false };
-  const add = await git(mount, ["add", "--", ...files]);
-  if (!add.ok) return { committed: false, pushed: false, error: add.stderr };
-  // Only commit when there is something staged; otherwise this is a no-op.
-  const status = await git(mount, ["diff", "--cached", "--quiet"]);
-  if (status.ok) return { committed: false, pushed: false };
-  const commit = await git(mount, [
-    "commit",
-    "-m",
-    `${message}\n\n👾 Generated with [Letta Code](https://letta.com)\n\nCo-Authored-By: Letta Code <noreply@letta.com>`,
-  ]);
-  if (!commit.ok) return { committed: false, pushed: false, error: commit.stderr };
-  const push = await git(mount, ["push", "origin", "main"]);
-  if (push.ok) return { committed: true, pushed: true };
-  // Another agent pushed concurrently: rebase our commit on top and retry once.
-  const rebase = await git(mount, ["pull", "--rebase", "--autostash", "origin", "main"]);
-  if (!rebase.ok) return { committed: true, pushed: false, error: push.stderr };
-  const retry = await git(mount, ["push", "origin", "main"]);
-  return retry.ok
-    ? { committed: true, pushed: true }
-    : { committed: true, pushed: false, error: retry.stderr };
+export async function commitAndPush(
+	mount: string,
+	files: string[],
+	message: string,
+): Promise<PushResult> {
+	if (files.length === 0) return { committed: false, pushed: false };
+	const add = await git(mount, ["add", "--", ...files]);
+	if (!add.ok) return { committed: false, pushed: false, error: add.stderr };
+	// Only commit when there is something staged; otherwise this is a no-op.
+	const status = await git(mount, ["diff", "--cached", "--quiet"]);
+	if (status.ok) return { committed: false, pushed: false };
+	const commit = await git(mount, [
+		"commit",
+		"-m",
+		`${message}\n\n👾 Generated with [Letta Code](https://letta.com)\n\nCo-Authored-By: Letta Code <noreply@letta.com>`,
+	]);
+	if (!commit.ok)
+		return { committed: false, pushed: false, error: commit.stderr };
+	const push = await git(mount, ["push", "origin", "main"]);
+	if (push.ok) return { committed: true, pushed: true };
+	// Another agent pushed concurrently: rebase our commit on top and retry once.
+	const rebase = await git(mount, [
+		"pull",
+		"--rebase",
+		"--autostash",
+		"origin",
+		"main",
+	]);
+	if (!rebase.ok) return { committed: true, pushed: false, error: push.stderr };
+	const retry = await git(mount, ["push", "origin", "main"]);
+	return retry.ok
+		? { committed: true, pushed: true }
+		: { committed: true, pushed: false, error: retry.stderr };
 }
 
 export function readJsonFile(file: string): unknown {
-  try {
-    return JSON.parse(readFileSync(file, "utf8"));
-  } catch {
-    return null;
-  }
+	try {
+		return JSON.parse(readFileSync(file, "utf8"));
+	} catch {
+		return null;
+	}
 }
 
 export interface LoadedContext {
-  config: GraceConfig;
-  state: AgentGraceState;
-  source: "shared" | "cache" | "defaults";
-  mount: string | null;
+	config: GraceConfig;
+	state: AgentGraceState;
+	source: "shared" | "cache" | "defaults";
+	mount: string | null;
 }
 
 // Machine-local cache so a fresh session works when the shared repo is
 // unreachable. Deliberately outside MemFS: it is a transport cache, not memory.
 export function cacheFile(agentId: string): string {
-  return path.join(os.homedir(), ".letta", "mods", "state", "amazing-grace", `${agentId}.json`);
+	return path.join(
+		os.homedir(),
+		".letta",
+		"mods",
+		"state",
+		"amazing-grace",
+		`${agentId}.json`,
+	);
 }
 
 /**
@@ -159,58 +206,89 @@ export function cacheFile(agentId: string): string {
  * the key across cache refreshes.
  */
 export function statuslineRendersGrace(agentId: string): boolean {
-  try {
-    const cached = readJsonFile(cacheFile(agentId)) as Record<string, unknown> | null;
-    return cached?.renderedByStatusline === true;
-  } catch {
-    return false;
-  }
+	try {
+		const cached = readJsonFile(cacheFile(agentId)) as Record<
+			string,
+			unknown
+		> | null;
+		return cached?.renderedByStatusline === true;
+	} catch {
+		return false;
+	}
 }
 
-export async function loadContext(mountInfo: MountInfo, agentId: string): Promise<LoadedContext> {
-  if (mountInfo.available) {
-    await pullMount(mountInfo.path);
-  }
-  const sharedConfig = mountInfo.available ? readJsonFile(configFile(mountInfo.path)) : null;
-  const sharedState = mountInfo.available ? readJsonFile(ledgerFile(mountInfo.path, agentId)) : null;
-  if (mountInfo.available && sharedConfig) {
-    return {
-      config: parseConfig(sharedConfig),
-      state: parseState(sharedState, agentId),
-      source: "shared",
-      mount: mountInfo.path,
-    };
-  }
-  const cached = readJsonFile(cacheFile(agentId));
-  if (cached) {
-    return {
-      config: parseConfig((cached as Record<string, unknown>).config ?? null),
-      state: parseState((cached as Record<string, unknown>).state ?? null, agentId),
-      source: "cache",
-      mount: mountInfo.path,
-    };
-  }
-  return {
-    config: parseConfig(null),
-    state: parseState(null, agentId),
-    source: "defaults",
-    mount: mountInfo.path,
-  };
+export async function loadContext(
+	mountInfo: MountInfo,
+	agentId: string,
+): Promise<LoadedContext> {
+	if (mountInfo.available) {
+		await pullMount(mountInfo.path);
+	}
+	const sharedConfig = mountInfo.available
+		? readJsonFile(configFile(mountInfo.path))
+		: null;
+	const sharedState = mountInfo.available
+		? readJsonFile(ledgerFile(mountInfo.path, agentId))
+		: null;
+	if (mountInfo.available && sharedConfig) {
+		return {
+			config: parseConfig(sharedConfig),
+			state: parseState(sharedState, agentId),
+			source: "shared",
+			mount: mountInfo.path,
+		};
+	}
+	const cached = readJsonFile(cacheFile(agentId));
+	if (cached) {
+		return {
+			config: parseConfig((cached as Record<string, unknown>).config ?? null),
+			state: parseState(
+				(cached as Record<string, unknown>).state ?? null,
+				agentId,
+			),
+			source: "cache",
+			mount: mountInfo.path,
+		};
+	}
+	return {
+		config: parseConfig(null),
+		state: parseState(null, agentId),
+		source: "defaults",
+		mount: mountInfo.path,
+	};
 }
 
-export async function saveState(mountInfo: MountInfo, agentId: string, state: AgentGraceState, config: GraceConfig, eventSummary: string): Promise<PushResult> {
-  state.updatedAt = new Date().toISOString();
-  // Always refresh the local cache (state plus the config it was decided with).
-  // Merge over the existing cache so keys owned by other writers — notably the
-  // statusline marker `renderedByStatusline` — survive the refresh instead of
-  // being clobbered and briefly re-showing the fallback panel.
-  const cache = cacheFile(agentId);
-  mkdirSync(path.dirname(cache), { recursive: true });
-  const existing = (readJsonFile(cache) ?? {}) as Record<string, unknown>;
-  writeFileSync(cache, JSON.stringify({ ...existing, state, config, updatedAt: state.updatedAt }, null, 2));
-  if (!mountInfo.available) return { committed: false, pushed: false, error: "mount unavailable" };
-  const file = ledgerFile(mountInfo.path, agentId);
-  mkdirSync(path.dirname(file), { recursive: true });
-  writeFileSync(file, JSON.stringify(state, null, 2));
-  return commitAndPush(mountInfo.path, [path.relative(mountInfo.path, file)], `amazing-grace: ${eventSummary}`);
+export async function saveState(
+	mountInfo: MountInfo,
+	agentId: string,
+	state: AgentGraceState,
+	config: GraceConfig,
+	eventSummary: string,
+): Promise<PushResult> {
+	state.updatedAt = new Date().toISOString();
+	// Always refresh the local cache (state plus the config it was decided with).
+	// Merge over the existing cache so keys owned by other writers — notably the
+	// statusline marker `renderedByStatusline` — survive the refresh instead of
+	// being clobbered and briefly re-showing the fallback panel.
+	const cache = cacheFile(agentId);
+	mkdirSync(path.dirname(cache), { recursive: true });
+	const existing = (readJsonFile(cache) ?? {}) as Record<string, unknown>;
+	writeFileSync(
+		cache,
+		JSON.stringify(
+			{ ...existing, state, config, updatedAt: state.updatedAt },
+			null,
+			2,
+		),
+	);
+	if (!mountInfo.available)
+		return { committed: false, pushed: false, error: "mount unavailable" };
+	const file = ledgerFile(mountInfo.path, agentId);
+	mkdirSync(path.dirname(file), { recursive: true });
+	writeFileSync(file, JSON.stringify(state, null, 2));
+	return commitAndPush(
+		mountInfo.path,
+		[path.relative(mountInfo.path, file)],
+		`amazing-grace: ${eventSummary}`,
+	);
 }
