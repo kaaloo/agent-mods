@@ -1,6 +1,6 @@
 {
 	"name": "@kaaloo/okf",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "OKF trust-signal enforcement for Letta Code agent memory in MemFS. Validates provenance, verification, freshness, and lifecycle signals on memory writes via permission overlays.",
 	"author": "Luis Arias",
 	"license": "MIT",
