@@ -120,10 +120,19 @@ Hooks must not be bypassed without explicit approval from Luis. Prefer adding a 
 - `.github/workflows/gitleaks.yml` — full-history secret scan on push and pull request.
 - `.github/workflows/osv-scanner.yml` — PR differential vulnerability scan plus scheduled and main-branch reports to Code Scanning.
 - `.github/workflows/ci.yml` — installs the root tooling and each package, runs Biome, then verifies the bundle, typechecks, and tests both packages. Smoke tests import each committed bundle and exercise activation, OKF permission decisions, and Amazing Grace registration.
-- `.github/workflows/release-please.yml` — maintains release PRs for both publishable packages with a dedicated Actions token (`RELEASE_PLEASE_TOKEN`), so those PRs also trigger the required checks. `versioning: always-bump-minor` keeps every pre-1.0 release on `0.x.0`, including fixes. To approve 1.0, change the strategy to `default` in the same commit that contains `Release-As: 1.0.0`; that override is evaluated by the default strategy.
+- `.github/workflows/release-please.yml` — maintains release PRs for both publishable packages with a dedicated GitHub App installation token, so the release commits are signed by GitHub and those PRs trigger the required checks. `versioning: always-bump-minor` keeps every pre-1.0 release on `0.x.0`, including fixes. To approve 1.0, change the strategy to `default` in the same commit that contains `Release-As: 1.0.0`; that override is evaluated by the default strategy.
 - `.github/dependabot.yml` — covers all three npm manifests and GitHub Actions with a seven-day cooldown. Each `.npmrc` also sets `min-release-age=7`; Dependabot security updates are not delayed by its cooldown.
 - Biome checks source and configuration only; generated `*.bundled.mjs` files are covered by `verify:bundle`, not rewritten by the formatter.
 - Code review is handled via Codex.
+
+### Release automation credentials
+
+`release-please.yml` authenticates as a GitHub App, which is what makes its commits signed and its pull requests start the required checks. The App needs repository permissions `Contents: read and write`, `Issues: read and write`, and `Pull requests: read and write`, and it must be installed on this repository. Two repository secrets hold its credentials:
+
+- `RELEASE_PLEASE_APP_CLIENT_ID` — the App's client ID.
+- `RELEASE_PLEASE_APP_PRIVATE_KEY` — the App's private key.
+
+Do not replace these with a personal access token. A PAT authenticates the commit as its owner, and GitHub only signs bot commits when the request carries no custom author or committer, so a PAT-authenticated release commit is left unsigned and is rejected by the `required_signatures` rule.
 
 ## Per-package verification
 

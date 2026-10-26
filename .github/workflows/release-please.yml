@@ -5,20 +5,35 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+  contents: read
 
 jobs:
   release-please:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      # A GitHub App installation token is required for two reasons the default
+      # GITHUB_TOKEN cannot satisfy:
+      #   1. Commits created through the Git Data API while authenticated as the
+      #      App are signed by GitHub, which is what `required_signatures` needs.
+      #   2. Events created with an App token start pull_request workflows
+      #      immediately, instead of leaving the required checks in the
+      #      "approval required" state a GITHUB_TOKEN-created PR produces.
+      # A user PAT cannot be used: GitHub only signs bot commits when the request
+      # carries no custom author or committer, and release-please sets neither,
+      # so the PAT identity leaked into the commit and left it unsigned.
+      - name: Mint the app installation token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
       - name: Maintain the release PR
+        id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         with:
-          # A PAT creates release PRs that trigger the required CI checks;
-          # the default GITHUB_TOKEN cannot be used for that workflow.
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
