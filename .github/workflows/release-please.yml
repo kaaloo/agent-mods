@@ -4,21 +4,89 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: release-please-main
+  # Let the latest queued run repair the release PR after an earlier run;
+  # cancelling a run between the API update and signing could strand it unsigned.
+  cancel-in-progress: false
+
 permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+  contents: read
 
 jobs:
   release-please:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The PAT both lets checkout push the signed release branch and makes
+          # the resulting pull_request checks run without manual approval.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          fetch-depth: 0
+      - name: Check that this run still targets current main
+        id: current-main
+        run: |
+          set -euo pipefail
+          git fetch origin "+refs/heads/main:refs/remotes/origin/main"
+          if [[ "$(git rev-parse origin/main)" == "$GITHUB_SHA" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping stale run: main is $(git rev-parse origin/main), this run targets $GITHUB_SHA"
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Maintain the release PR
+        if: steps.current-main.outputs.current == 'true'
+        id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         with:
-          # A PAT creates release PRs that trigger the required CI checks;
-          # the default GITHUB_TOKEN cannot be used for that workflow.
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+      - name: Sign the release PR commit
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          GIT_SIGNING_KEY: ${{ secrets.GIT_SIGNING_KEY }}
+          RELEASE_BRANCH: release-please--branches--main
+        run: |
+          set -euo pipefail
+          if [[ -z "$GIT_SIGNING_KEY" ]]; then
+            echo "GIT_SIGNING_KEY is required to sign the release commit" >&2
+            exit 1
+          fi
+
+          signing_key="$RUNNER_TEMP/release-signing-key"
+          allowed_signers="$RUNNER_TEMP/release-allowed-signers"
+          trap 'rm -f "$signing_key" "$signing_key.pub" "$allowed_signers"' EXIT
+          umask 077
+          if [[ "$GIT_SIGNING_KEY" == *"-----BEGIN"* ]]; then
+            printf '%s\n' "$GIT_SIGNING_KEY" > "$signing_key"
+          else
+            printf '%s' "$GIT_SIGNING_KEY" | tr -d '\n' | base64 --decode > "$signing_key"
+            printf '\n' >> "$signing_key"
+          fi
+          ssh-keygen -y -f "$signing_key" > "$signing_key.pub"
+
+          signing_email="luis.arias@numerique.gouv.fr"
+          git config user.name "Luis Arias"
+          git config user.email "$signing_email"
+          git config gpg.format ssh
+          git config user.signingkey "$signing_key"
+          git config commit.gpgsign true
+          git config gpg.ssh.allowedSignersFile "$allowed_signers"
+          printf '%s %s\n' "$signing_email" "$(< "$signing_key.pub")" > "$allowed_signers"
+
+          git fetch origin "+refs/heads/$RELEASE_BRANCH:refs/remotes/origin/$RELEASE_BRANCH"
+          git checkout --detach "origin/$RELEASE_BRANCH"
+
+          # Release-please must have produced exactly one new commit on top of
+          # the main commit that triggered this run. Never rewrite other history.
+          if [[ "$(git show -s --format=%P HEAD)" != "$GITHUB_SHA" ]]; then
+            echo "Refusing to sign: release commit is not a single commit on $GITHUB_SHA" >&2
+            exit 1
+          fi
+
+          original_commit="$(git rev-parse HEAD)"
+          git commit --amend --no-edit
+          git verify-commit HEAD
+          git push --force-with-lease="refs/heads/$RELEASE_BRANCH:$original_commit" origin "HEAD:refs/heads/$RELEASE_BRANCH"

@@ -120,10 +120,23 @@ Hooks must not be bypassed without explicit approval from Luis. Prefer adding a 
 - `.github/workflows/gitleaks.yml` — full-history secret scan on push and pull request.
 - `.github/workflows/osv-scanner.yml` — PR differential vulnerability scan plus scheduled and main-branch reports to Code Scanning.
 - `.github/workflows/ci.yml` — installs the root tooling and each package, runs Biome, then verifies the bundle, typechecks, and tests both packages. Smoke tests import each committed bundle and exercise activation, OKF permission decisions, and Amazing Grace registration.
-- `.github/workflows/release-please.yml` — maintains release PRs for both publishable packages with a dedicated Actions token (`RELEASE_PLEASE_TOKEN`), so those PRs also trigger the required checks. `versioning: always-bump-minor` keeps every pre-1.0 release on `0.x.0`, including fixes. To approve 1.0, change the strategy to `default` in the same commit that contains `Release-As: 1.0.0`; that override is evaluated by the default strategy.
-- `.github/dependabot.yml` — covers all three npm manifests and GitHub Actions with a seven-day cooldown. Each `.npmrc` also sets `min-release-age=7`; Dependabot security updates are not delayed by its cooldown.
+- `.github/workflows/release-please.yml` — maintains release PRs for both publishable packages with a dedicated Actions token (`RELEASE_PLEASE_TOKEN`), then SSH-signs the generated commit with `GIT_SIGNING_KEY`. The PAT makes the PRs trigger the required checks; the SSH signature satisfies `required_signatures`. `versioning: always-bump-minor` keeps every pre-1.0 release on `0.x.0`, including fixes. To approve 1.0, change the strategy to `default` in the same commit that contains `Release-As: 1.0.0`; that override is evaluated by the default strategy.
+- `.github/dependabot.yml` — covers all three npm manifests and GitHub Actions with a seven-day cooldown. Routine minor and patch version updates are grouped by dependency type for each npm manifest and into one GitHub Actions group; major and security updates remain ungrouped. Each `.npmrc` also sets `min-release-age=7`; Dependabot security updates are not delayed by its cooldown.
 - Biome checks source and configuration only; generated `*.bundled.mjs` files are covered by `verify:bundle`, not rewritten by the formatter.
 - Code review is handled via Codex.
+
+### Release automation credentials
+
+Two existing repository secrets cover the different parts of release automation:
+
+- `RELEASE_PLEASE_TOKEN` — creates and updates the release PR and branch. A PAT is required here because pull requests created or updated with the default `GITHUB_TOKEN` leave their required checks waiting for manual approval.
+- `GIT_SIGNING_KEY` — signs the generated release commit. The committer is `Luis Arias <luis.arias@numerique.gouv.fr>`, whose email and SSH signing key are registered with GitHub. The key may be stored as raw PEM or base64-encoded PEM.
+
+The PAT alone is not enough: its API-generated commits have no signature and are rejected by `required_signatures`. After release-please updates the branch, the workflow checks that the branch head is exactly one commit on top of the `main` commit that triggered the run, amends that commit with the SSH signature, verifies it locally, and pushes it with `--force-with-lease`. It never rewrites `main` or an unexpected release-branch history, and it removes the private key when the step exits.
+
+Release runs are serialized without cancelling a run already in progress. Before invoking release-please, each run fetches `main` and skips every mutating step if its triggering commit is no longer current. This prevents a delayed run from replacing a newer signed release head with an unsigned API commit; the latest queued run handles the current `main` instead.
+
+`release-please-config.json` sets `"always-update": true`. By default release-please leaves an existing release branch unchanged when the generated notes have not changed. Forcing the update rebuilds the branch from the current `main` on every run, giving the signing step a fresh commit with the expected parent. Combined with the `force: true` branch update release-please applies by default, the branch is reset onto `main` rather than stacked on the previous release commit.
 
 ## Per-package verification
 
