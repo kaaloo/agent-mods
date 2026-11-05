@@ -73,7 +73,12 @@ function inputHasImages(input) {
     return false;
   return input.some((item) => messageHasImage(item));
 }
-var IMAGE_RESULT_TOOLS = new Set(["read", "read_file", "readfile", "open_files"]);
+var IMAGE_RESULT_TOOLS = new Set([
+  "read",
+  "read_file",
+  "readfile",
+  "open_files"
+]);
 function toolResultLikelyImage(toolName, args) {
   if (!toolName || !args)
     return false;
@@ -176,7 +181,9 @@ function canonicalizeBenchState(state, ladder) {
     delete state.cooldowns[handle];
     changed = true;
   }
-  const canonicalDead = [...new Set(state.dead.map((handle) => canonicalRungHandle(ladder, handle)))];
+  const canonicalDead = [
+    ...new Set(state.dead.map((handle) => canonicalRungHandle(ladder, handle)))
+  ];
   if (canonicalDead.length !== state.dead.length || canonicalDead.some((handle, index) => handle !== state.dead[index])) {
     state.dead = canonicalDead;
     changed = true;
@@ -359,7 +366,9 @@ function repositoryUrl(baseUrl, agentId) {
 }
 async function git(cwd, args, token) {
   try {
-    const options = { maxBuffer: 10 * 1024 * 1024 };
+    const options = {
+      maxBuffer: 10 * 1024 * 1024
+    };
     if (cwd)
       options.cwd = cwd;
     const finalArgs = token ? ["-c", `http.extraHeader=Authorization: Bearer ${token}`, ...args] : args;
@@ -367,7 +376,10 @@ async function git(cwd, args, token) {
     return { ok: true, stderr: "" };
   } catch (error) {
     const err = error;
-    return { ok: false, stderr: (err.stderr || err.message || "git failed").slice(0, 500) };
+    return {
+      ok: false,
+      stderr: (err.stderr || err.message || "git failed").slice(0, 500)
+    };
   }
 }
 async function ensureMount(memoryDir, agentId, baseUrl, token) {
@@ -402,7 +414,13 @@ async function configureCredentialHelper(mount, baseUrl, token, agentId) {
   await git(mount, ["config", "commit.gpgsign", "false"]);
 }
 async function pullMount(mount) {
-  const result = await git(mount, ["pull", "--rebase", "--autostash", "origin", "main"]);
+  const result = await git(mount, [
+    "pull",
+    "--rebase",
+    "--autostash",
+    "origin",
+    "main"
+  ]);
   return result.ok;
 }
 async function commitAndPush(mount, files, message) {
@@ -428,7 +446,13 @@ Co-Authored-By: Letta Code <noreply@letta.com>`
   const push = await git(mount, ["push", "origin", "main"]);
   if (push.ok)
     return { committed: true, pushed: true };
-  const rebase = await git(mount, ["pull", "--rebase", "--autostash", "origin", "main"]);
+  const rebase = await git(mount, [
+    "pull",
+    "--rebase",
+    "--autostash",
+    "origin",
+    "main"
+  ]);
   if (!rebase.ok)
     return { committed: true, pushed: false, error: push.stderr };
   const retry = await git(mount, ["push", "origin", "main"]);
@@ -535,7 +559,10 @@ async function probeRung(conversation, handle) {
       const type = record.message_type ?? record.type;
       if (type === "error_message" || type === "error") {
         const text = chunkErrorText(chunk);
-        return { result: classifyFailure(text), ...text ? { detail: text } : {} };
+        return {
+          result: classifyFailure(text),
+          ...text ? { detail: text } : {}
+        };
       }
       if (type === "assistant_message" || type === "message") {
         const content = record.content ?? record.message;
@@ -548,24 +575,27 @@ async function probeRung(conversation, handle) {
     }
     if (sawText || sawCompletion)
       return { result: "ok" };
-    return { result: "unavailable", detail: "stream ended without a completion event" };
+    return {
+      result: "unavailable",
+      detail: "stream ended without a completion event"
+    };
   } catch (error) {
     return { result: "unavailable", detail: errorText(error) };
   }
 }
 
-// mods/lib/provider-error.ts
-function providerErrorText(event) {
-  return [event.error?.message, event.error?.detail, event.detail].filter((value) => Boolean(value)).join(" ");
-}
-function canRetryProviderErrorWith(event, model) {
-  return Boolean(model && !(event.triedModels ?? []).some((attempted) => handlesMatch(attempted, model)));
-}
-
 // mods/lib/profiles.ts
 import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
 import { join } from "node:path";
-var REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+var REASONING_EFFORTS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max"
+];
 function isReasoningEffort(value) {
   return typeof value === "string" && REASONING_EFFORTS.includes(value);
 }
@@ -585,11 +615,11 @@ function profilesPath(memoryDir) {
 function readProfiles(memoryDir) {
   if (!memoryDir)
     return {};
-  const path2 = profilesPath(memoryDir);
-  if (!existsSync2(path2))
+  const path = profilesPath(memoryDir);
+  if (!existsSync2(path))
     return {};
   try {
-    const raw = JSON.parse(readFileSync2(path2, "utf8"));
+    const raw = JSON.parse(readFileSync2(path, "utf8"));
     if (typeof raw !== "object" || raw === null)
       return {};
     const profiles = raw.profiles;
@@ -619,6 +649,14 @@ function rungSettings(rung, profiles) {
   };
 }
 
+// mods/lib/provider-error.ts
+function providerErrorText(event) {
+  return [event.error?.message, event.error?.detail, event.detail].filter((value) => Boolean(value)).join(" ");
+}
+function canRetryProviderErrorWith(event, model) {
+  return Boolean(model && !(event.triedModels ?? []).some((attempted) => handlesMatch(attempted, model)));
+}
+
 // mods/index.ts
 var CONTINUE_MIN_INTERVAL_MS = 120000;
 function nowIso() {
@@ -629,14 +667,25 @@ function trim(text, max) {
 }
 function activate(letta) {
   const disposers = [];
-  letta.diagnostics?.report({ message: "amazing-grace: mod activated", severity: "warning" });
+  letta.diagnostics?.report({
+    message: "amazing-grace: mod activated",
+    severity: "warning"
+  });
   const rt = {
     initialized: false,
     initPromise: null,
     agentId: null,
     mount: { path: "squad-mods", available: false, clonedByMod: false },
     config: defaultConfig(),
-    state: { agentId: "?", updatedAt: nowIso(), paused: false, pinned: null, cooldowns: {}, dead: [], events: [] },
+    state: {
+      agentId: "?",
+      updatedAt: nowIso(),
+      paused: false,
+      pinned: null,
+      cooldowns: {},
+      dead: [],
+      events: []
+    },
     source: "defaults",
     llmEventsAvailable: false,
     turnFlags: new Map,
@@ -722,7 +771,11 @@ function activate(letta) {
     const scope = opts.conversationScope ? "conversation" : "agent";
     const settings = rungSettings(target, readProfiles(rt.memoryDir));
     try {
-      await ctx.conversation.updateLlmConfig?.({ model: target.handle, scope, ...settings });
+      await ctx.conversation.updateLlmConfig?.({
+        model: target.handle,
+        scope,
+        ...settings
+      });
     } catch {
       return null;
     }
@@ -785,18 +838,35 @@ function activate(letta) {
       await evaluateAndSwitch(ctx, { reason: "quota", detail: "probe" });
     } else if (result === "auth" || result === "invalid-model") {
       markDead(rt.state, handle);
-      appendEvent(rt.state, { ts: nowIso(), kind: "dead-mark", from: handle, to: null, reason: result, detail: "probe", conversationId: ctx.conversation?.id ?? null });
+      appendEvent(rt.state, {
+        ts: nowIso(),
+        kind: "dead-mark",
+        from: handle,
+        to: null,
+        reason: result,
+        detail: "probe",
+        conversationId: ctx.conversation?.id ?? null
+      });
       persist(`dead-mark ${handle} (${result}, probe)`);
       await evaluateAndSwitch(ctx, { reason: result, detail: "probe" });
     } else if (result === "image") {
-      await evaluateAndSwitch(ctx, { needsMultimodal: true, conversationScope: true, reason: "image-content", detail: "probe" });
+      await evaluateAndSwitch(ctx, {
+        needsMultimodal: true,
+        conversationScope: true,
+        reason: "image-content",
+        detail: "probe"
+      });
     }
   }
   if (letta.capabilities?.events?.lifecycle) {
     disposers.push(letta.events.on("conversation_open", async (event, ctx) => {
       await initialize(ctx);
       const cid = event.conversationId ?? "unknown";
-      rt.turnFlags.set(cid, { acted: false, switched: false, providerRetryRequested: false });
+      rt.turnFlags.set(cid, {
+        acted: false,
+        switched: false,
+        providerRetryRequested: false
+      });
       rt.appliedFor.add(cid);
       await recoverBenchedRungs(ctx);
       await evaluateAndSwitch(ctx, { reason: "conversation-open" });
@@ -806,7 +876,11 @@ function activate(letta) {
     disposers.push(letta.events.on("turn_start", async (event, ctx) => {
       await initialize(ctx);
       const cid = event.conversationId ?? "unknown";
-      rt.turnFlags.set(cid, { acted: false, switched: false, providerRetryRequested: false });
+      rt.turnFlags.set(cid, {
+        acted: false,
+        switched: false,
+        providerRetryRequested: false
+      });
       if (rt.state.paused)
         return;
       if (!rt.appliedFor.has(cid)) {
@@ -817,7 +891,11 @@ function activate(letta) {
         return;
       const index = findRung(rt.config.ladder, ctx.model?.id);
       if (index >= 0 && !rt.config.ladder[index].multimodal) {
-        await evaluateAndSwitch(ctx, { needsMultimodal: true, conversationScope: true, reason: "image-content" });
+        await evaluateAndSwitch(ctx, {
+          needsMultimodal: true,
+          conversationScope: true,
+          reason: "image-content"
+        });
       }
     }));
     disposers.push(letta.events.on("turn_end", async (event, ctx) => {
@@ -829,7 +907,12 @@ function activate(letta) {
       if (!flags?.acted) {
         const kind = classifyFailure(event.assistantMessage ?? "");
         if (kind === "image") {
-          await evaluateAndSwitch(ctx, { needsMultimodal: true, conversationScope: true, reason: "image-content", detail: trim(event.assistantMessage ?? "", 200) });
+          await evaluateAndSwitch(ctx, {
+            needsMultimodal: true,
+            conversationScope: true,
+            reason: "image-content",
+            detail: trim(event.assistantMessage ?? "", 200)
+          });
         } else if (!rt.llmEventsAvailable) {
           const current = ctx.model?.id ?? null;
           if (current && rt.config.probeEnabled) {
@@ -907,7 +990,12 @@ function activate(letta) {
       if (kind === "transient")
         return;
       if (kind === "image") {
-        await evaluateAndSwitch(ctx, { needsMultimodal: true, conversationScope: true, reason: "image-content", detail: trim(text, 200) });
+        await evaluateAndSwitch(ctx, {
+          needsMultimodal: true,
+          conversationScope: true,
+          reason: "image-content",
+          detail: trim(text, 200)
+        });
         return;
       }
       flagsFor(ctx.conversation?.id ?? "unknown").acted = true;
@@ -926,11 +1014,26 @@ function activate(letta) {
         continue;
       const outcome = await probeRung(ctx.conversation, rung.handle);
       const { result } = outcome;
-      appendEvent(rt.state, { ts: nowIso(), kind: "probe", from: rung.handle, to: null, reason: result, detail: outcome.detail ? `recovery: ${trim(outcome.detail, 160)}` : "recovery", conversationId: ctx.conversation?.id ?? null });
+      appendEvent(rt.state, {
+        ts: nowIso(),
+        kind: "probe",
+        from: rung.handle,
+        to: null,
+        reason: result,
+        detail: outcome.detail ? `recovery: ${trim(outcome.detail, 160)}` : "recovery",
+        conversationId: ctx.conversation?.id ?? null
+      });
       changed = true;
       if (result === "ok") {
         if (revive(rt.state, rung.handle)) {
-          appendEvent(rt.state, { ts: nowIso(), kind: "recover", from: rung.handle, to: null, reason: "probe-ok", conversationId: ctx.conversation?.id ?? null });
+          appendEvent(rt.state, {
+            ts: nowIso(),
+            kind: "recover",
+            from: rung.handle,
+            to: null,
+            reason: "probe-ok",
+            conversationId: ctx.conversation?.id ?? null
+          });
         }
       } else if (result === "quota") {
         markCooldown(rt.state, rung.handle, rt.config.cooldownMinutes, now);
@@ -968,23 +1071,37 @@ function activate(letta) {
           case "pause": {
             rt.state.paused = true;
             persist("pause");
-            return { type: "output", output: "amazing-grace paused. Switching is suspended until /amazing-grace resume." };
+            return {
+              type: "output",
+              output: "amazing-grace paused. Switching is suspended until /amazing-grace resume."
+            };
           }
           case "resume": {
             rt.state.paused = false;
             persist("resume");
-            const outcome = await evaluateAndSwitch(ctx, { reason: "resume" });
-            return { type: "output", output: `amazing-grace resumed.${outcome?.changed ? ` Switched to ${outcome.to}.` : ""}` };
+            const outcome = await evaluateAndSwitch(ctx, {
+              reason: "resume"
+            });
+            return {
+              type: "output",
+              output: `amazing-grace resumed.${outcome?.changed ? ` Switched to ${outcome.to}.` : ""}`
+            };
           }
           case "pin": {
             if (!arg || arg === "off") {
               rt.state.pinned = null;
               persist("pin off");
-              return { type: "output", output: "Pin cleared. Ladder evaluation governs again." };
+              return {
+                type: "output",
+                output: "Pin cleared. Ladder evaluation governs again."
+              };
             }
             rt.state.pinned = arg;
             persist(`pin ${arg}`);
-            return { type: "output", output: `Pinned to ${arg}. Run /amazing-grace pin off to release.` };
+            return {
+              type: "output",
+              output: `Pinned to ${arg}. Run /amazing-grace pin off to release.`
+            };
           }
           case "sync": {
             const loaded = await loadContext(rt.mount, rt.agentId ?? "?");
@@ -994,7 +1111,9 @@ function activate(letta) {
             if (canonicalizeBenchState(rt.state, rt.config.ladder)) {
               persist("canonicalize persisted bench handles");
             }
-            const outcome = await evaluateAndSwitch(ctx, { reason: "manual-sync" });
+            const outcome = await evaluateAndSwitch(ctx, {
+              reason: "manual-sync"
+            });
             return {
               type: "output",
               output: `Synced from ${rt.source}.${outcome?.changed ? ` Switched to ${outcome.to}.` : " No switch needed."}`
@@ -1014,7 +1133,10 @@ function activate(letta) {
 `) };
           }
           default:
-            return { type: "output", output: `Unknown subcommand: ${sub}. Use status, pause, resume, pin, sync, or probe.` };
+            return {
+              type: "output",
+              output: `Unknown subcommand: ${sub}. Use status, pause, resume, pin, sync, or probe.`
+            };
         }
       }
     }));

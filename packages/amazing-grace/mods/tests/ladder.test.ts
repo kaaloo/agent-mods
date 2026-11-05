@@ -1,142 +1,182 @@
 import { describe, expect, it } from "vitest";
-import { canonicalizeBenchState, canonicalRungHandle, DEFAULT_LADDER, defaultConfig, findRung, handlesMatch, parseConfig, targetRung } from "../lib/ladder.ts";
+import {
+	canonicalizeBenchState,
+	canonicalRungHandle,
+	DEFAULT_LADDER,
+	defaultConfig,
+	findRung,
+	handlesMatch,
+	parseConfig,
+	targetRung,
+} from "../lib/ladder.ts";
 import { emptyState } from "../lib/state.ts";
 
 const NOW = 1_700_000_000_000;
 
 describe("parseConfig", () => {
-  it("returns defaults for null input", () => {
-    const config = parseConfig(null);
-    expect(config.ladder).toEqual(DEFAULT_LADDER);
-    expect(config.cooldownMinutes).toBe(60);
-    expect(config.autoContinue).toBe(true);
-    expect(config.enforceLadder).toBe(true);
-  });
+	it("returns defaults for null input", () => {
+		const config = parseConfig(null);
+		expect(config.ladder).toEqual(DEFAULT_LADDER);
+		expect(config.cooldownMinutes).toBe(60);
+		expect(config.autoContinue).toBe(true);
+		expect(config.enforceLadder).toBe(true);
+	});
 
-  it("accepts a full shared config", () => {
-    const config = parseConfig({
-      ladder: [{ handle: "a/b" }, { handle: "c/d", multimodal: false }],
-      cooldownMinutes: 30,
-      autoContinue: false,
-      probeEnabled: false,
-      enforceLadder: false,
-    });
-    expect(config.ladder).toEqual([
-      { handle: "a/b", multimodal: true },
-      { handle: "c/d", multimodal: false },
-    ]);
-    expect(config.cooldownMinutes).toBe(30);
-    expect(config.autoContinue).toBe(false);
-    expect(config.enforceLadder).toBe(false);
-  });
+	it("accepts a full shared config", () => {
+		const config = parseConfig({
+			ladder: [{ handle: "a/b" }, { handle: "c/d", multimodal: false }],
+			cooldownMinutes: 30,
+			autoContinue: false,
+			probeEnabled: false,
+			enforceLadder: false,
+		});
+		expect(config.ladder).toEqual([
+			{ handle: "a/b", multimodal: true },
+			{ handle: "c/d", multimodal: false },
+		]);
+		expect(config.cooldownMinutes).toBe(30);
+		expect(config.autoContinue).toBe(false);
+		expect(config.enforceLadder).toBe(false);
+	});
 
-  it("falls back to the default ladder for malformed ladders", () => {
-    const config = parseConfig({ ladder: [{ handle: "" }, "nope", 3] });
-    expect(config.ladder).toEqual(DEFAULT_LADDER);
-  });
+	it("falls back to the default ladder for malformed ladders", () => {
+		const config = parseConfig({ ladder: [{ handle: "" }, "nope", 3] });
+		expect(config.ladder).toEqual(DEFAULT_LADDER);
+	});
 
-  it("accepts optional rung contextWindow and reasoningEffort fields", () => {
-    const config = parseConfig({
-      ladder: [
-        { handle: "a/b", contextWindow: 1048576, reasoningEffort: "high" },
-        { handle: "c/d", multimodal: false },
-      ],
-    });
-    expect(config.ladder).toEqual([
-      { handle: "a/b", multimodal: true, contextWindow: 1048576, reasoningEffort: "high" },
-      { handle: "c/d", multimodal: false },
-    ]);
-  });
+	it("accepts optional rung contextWindow and reasoningEffort fields", () => {
+		const config = parseConfig({
+			ladder: [
+				{ handle: "a/b", contextWindow: 1048576, reasoningEffort: "high" },
+				{ handle: "c/d", multimodal: false },
+			],
+		});
+		expect(config.ladder).toEqual([
+			{
+				handle: "a/b",
+				multimodal: true,
+				contextWindow: 1048576,
+				reasoningEffort: "high",
+			},
+			{ handle: "c/d", multimodal: false },
+		]);
+	});
 
-  it("drops invalid rung contextWindow and reasoningEffort fields", () => {
-    const config = parseConfig({
-      ladder: [{ handle: "a/b", contextWindow: 0, reasoningEffort: "" }],
-    });
-    expect(config.ladder).toEqual([{ handle: "a/b", multimodal: true }]);
-  });
+	it("drops invalid rung contextWindow and reasoningEffort fields", () => {
+		const config = parseConfig({
+			ladder: [{ handle: "a/b", contextWindow: 0, reasoningEffort: "" }],
+		});
+		expect(config.ladder).toEqual([{ handle: "a/b", multimodal: true }]);
+	});
 
-  it("rejects non-positive cooldown values", () => {
-    expect(parseConfig({ cooldownMinutes: 0 }).cooldownMinutes).toBe(60);
-    expect(parseConfig({ cooldownMinutes: -5 }).cooldownMinutes).toBe(60);
-  });
+	it("rejects non-positive cooldown values", () => {
+		expect(parseConfig({ cooldownMinutes: 0 }).cooldownMinutes).toBe(60);
+		expect(parseConfig({ cooldownMinutes: -5 }).cooldownMinutes).toBe(60);
+	});
 });
 
 describe("findRung", () => {
-  it("finds by handle and returns -1 for unknown or null", () => {
-    const ladder = defaultConfig().ladder;
-    expect(findRung(ladder, "lc-zai-coding/glm-5.3")).toBe(0);
-    expect(findRung(ladder, "lc-kimi-code/k3")).toBe(4);
-    expect(findRung(ladder, "letta/auto")).toBe(-1);
-    expect(findRung(ladder, null)).toBe(-1);
-  });
+	it("finds by handle and returns -1 for unknown or null", () => {
+		const ladder = defaultConfig().ladder;
+		expect(findRung(ladder, "lc-zai-coding/glm-5.3")).toBe(0);
+		expect(findRung(ladder, "lc-kimi-code/k3")).toBe(4);
+		expect(findRung(ladder, "letta/auto")).toBe(-1);
+		expect(findRung(ladder, null)).toBe(-1);
+	});
 
-  it("matches the host auto id to the canonical letta/auto handle", () => {
-    const ladder = [{ handle: "letta/auto", multimodal: true }];
-    expect(findRung(ladder, "auto")).toBe(0);
-    expect(handlesMatch("auto", "letta/auto")).toBe(true);
-    expect(handlesMatch("lc-codex/auto", "letta/auto")).toBe(false);
-    expect(canonicalRungHandle(ladder, "auto")).toBe("letta/auto");
-    expect(canonicalRungHandle(ladder, "custom/model")).toBe("custom/model");
-  });
+	it("matches the host auto id to the canonical letta/auto handle", () => {
+		const ladder = [{ handle: "letta/auto", multimodal: true }];
+		expect(findRung(ladder, "auto")).toBe(0);
+		expect(handlesMatch("auto", "letta/auto")).toBe(true);
+		expect(handlesMatch("lc-codex/auto", "letta/auto")).toBe(false);
+		expect(canonicalRungHandle(ladder, "auto")).toBe("letta/auto");
+		expect(canonicalRungHandle(ladder, "custom/model")).toBe("custom/model");
+	});
 });
 
 describe("canonicalizeBenchState", () => {
-  it("migrates persisted alias keys and deduplicates dead rungs", () => {
-    const ladder = [{ handle: "letta/auto", multimodal: true }];
-    const state = emptyState("agent-x");
-    state.cooldowns.auto = new Date(NOW + 120_000).toISOString();
-    state.cooldowns["letta/auto"] = new Date(NOW + 60_000).toISOString();
-    state.dead = ["auto", "letta/auto", "custom/model"];
+	it("migrates persisted alias keys and deduplicates dead rungs", () => {
+		const ladder = [{ handle: "letta/auto", multimodal: true }];
+		const state = emptyState("agent-x");
+		state.cooldowns.auto = new Date(NOW + 120_000).toISOString();
+		state.cooldowns["letta/auto"] = new Date(NOW + 60_000).toISOString();
+		state.dead = ["auto", "letta/auto", "custom/model"];
 
-    expect(canonicalizeBenchState(state, ladder)).toBe(true);
-    expect(state.cooldowns).toEqual({ "letta/auto": new Date(NOW + 120_000).toISOString() });
-    expect(state.dead).toEqual(["letta/auto", "custom/model"]);
-    expect(canonicalizeBenchState(state, ladder)).toBe(false);
-  });
+		expect(canonicalizeBenchState(state, ladder)).toBe(true);
+		expect(state.cooldowns).toEqual({
+			"letta/auto": new Date(NOW + 120_000).toISOString(),
+		});
+		expect(state.dead).toEqual(["letta/auto", "custom/model"]);
+		expect(canonicalizeBenchState(state, ladder)).toBe(false);
+	});
 });
 
 describe("targetRung", () => {
-  it("returns the top rung when nothing is benched", () => {
-    const config = defaultConfig();
-    expect(targetRung(config, {}, [], NOW, false)?.handle).toBe("lc-zai-coding/glm-5.3");
-  });
+	it("returns the top rung when nothing is benched", () => {
+		const config = defaultConfig();
+		expect(targetRung(config, {}, [], NOW, false)?.handle).toBe(
+			"lc-zai-coding/glm-5.3",
+		);
+	});
 
-  it("skips rungs that are cooling down", () => {
-    const config = defaultConfig();
-    const cooldowns = { "lc-zai-coding/glm-5.3": NOW + 60_000 };
-    expect(targetRung(config, cooldowns, [], NOW, false)?.handle).toBe("lc-qwen-code/qwen3.8-max");
-  });
+	it("skips rungs that are cooling down", () => {
+		const config = defaultConfig();
+		const cooldowns = { "lc-zai-coding/glm-5.3": NOW + 60_000 };
+		expect(targetRung(config, cooldowns, [], NOW, false)?.handle).toBe(
+			"lc-qwen-code/qwen3.8-max",
+		);
+	});
 
-  it("treats expired cooldowns as eligible", () => {
-    const config = defaultConfig();
-    const cooldowns = { "lc-zai-coding/glm-5.3": NOW - 1 };
-    expect(targetRung(config, cooldowns, [], NOW, false)?.handle).toBe("lc-zai-coding/glm-5.3");
-  });
+	it("treats expired cooldowns as eligible", () => {
+		const config = defaultConfig();
+		const cooldowns = { "lc-zai-coding/glm-5.3": NOW - 1 };
+		expect(targetRung(config, cooldowns, [], NOW, false)?.handle).toBe(
+			"lc-zai-coding/glm-5.3",
+		);
+	});
 
-  it("skips dead rungs", () => {
-    const config = defaultConfig();
-    expect(targetRung(config, {}, ["lc-zai-coding/glm-5.3"], NOW, false)?.handle).toBe("lc-qwen-code/qwen3.8-max");
-  });
+	it("skips dead rungs", () => {
+		const config = defaultConfig();
+		expect(
+			targetRung(config, {}, ["lc-zai-coding/glm-5.3"], NOW, false)?.handle,
+		).toBe("lc-qwen-code/qwen3.8-max");
+	});
 
-  it("falls back to the last rung when everything is benched", () => {
-    const config = defaultConfig();
-    const dead = config.ladder.map((r) => r.handle).slice(0, -1);
-    expect(targetRung(config, {}, dead, NOW, false)?.handle).toBe("lc-kimi-code/k3");
-  });
+	it("falls back to the last rung when everything is benched", () => {
+		const config = defaultConfig();
+		const dead = config.ladder.map((r) => r.handle).slice(0, -1);
+		expect(targetRung(config, {}, dead, NOW, false)?.handle).toBe(
+			"lc-kimi-code/k3",
+		);
+	});
 
-  it("advances to the first multimodal rung for image turns", () => {
-    const config = defaultConfig();
-    expect(targetRung(config, {}, [], NOW, true)?.handle).toBe("lc-qwen-code/qwen3.8-max");
-  });
+	it("advances to the first multimodal rung for image turns", () => {
+		const config = defaultConfig();
+		expect(targetRung(config, {}, [], NOW, true)?.handle).toBe(
+			"lc-qwen-code/qwen3.8-max",
+		);
+	});
 
-  it("keeps position when already multimodal", () => {
-    const config = defaultConfig();
-    const cooldowns = { "lc-zai-coding/glm-5.3": NOW + 60_000, "lc-qwen-code/qwen3.8-max": NOW + 60_000 };
-    expect(targetRung(config, cooldowns, [], NOW, true)?.handle).toBe("lc-codex/gpt-5.6-sol");
-  });
+	it("keeps position when already multimodal", () => {
+		const config = defaultConfig();
+		const cooldowns = {
+			"lc-zai-coding/glm-5.3": NOW + 60_000,
+			"lc-qwen-code/qwen3.8-max": NOW + 60_000,
+		};
+		expect(targetRung(config, cooldowns, [], NOW, true)?.handle).toBe(
+			"lc-codex/gpt-5.6-sol",
+		);
+	});
 
-  it("never goes below the selected position for images", () => {
-    const config = parseConfig({ ladder: [{ handle: "text-only", multimodal: false }, { handle: "vision", multimodal: true }] });
-    expect(targetRung(config, { "text-only": NOW + 60_000 }, [], NOW, true)?.handle).toBe("vision");
-  });
+	it("never goes below the selected position for images", () => {
+		const config = parseConfig({
+			ladder: [
+				{ handle: "text-only", multimodal: false },
+				{ handle: "vision", multimodal: true },
+			],
+		});
+		expect(
+			targetRung(config, { "text-only": NOW + 60_000 }, [], NOW, true)?.handle,
+		).toBe("vision");
+	});
 });
