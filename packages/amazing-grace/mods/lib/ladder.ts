@@ -5,113 +5,140 @@
 import type { AgentGraceState } from "./state.ts";
 
 export interface LadderRung {
-  handle: string;
-  multimodal: boolean;
-  /** Optional rung overrides; win over the model-profiles file. */
-  contextWindow?: number;
-  reasoningEffort?: string;
+	handle: string;
+	multimodal: boolean;
+	/** Optional rung overrides; win over the model-profiles file. */
+	contextWindow?: number;
+	reasoningEffort?: string;
 }
 
 export interface GraceConfig {
-  ladder: LadderRung[];
-  cooldownMinutes: number;
-  autoContinue: boolean;
-  probeEnabled: boolean;
-  enforceLadder: boolean;
+	ladder: LadderRung[];
+	cooldownMinutes: number;
+	autoContinue: boolean;
+	probeEnabled: boolean;
+	enforceLadder: boolean;
 }
 
 export const DEFAULT_LADDER: LadderRung[] = [
-  { handle: "lc-zai-coding/glm-5.3", multimodal: false },
-  { handle: "lc-qwen-code/qwen3.8-max", multimodal: true },
-  { handle: "lc-codex/gpt-5.6-sol", multimodal: true },
-  { handle: "lc-minimax/MiniMax-M3", multimodal: true },
-  { handle: "lc-kimi-code/k3", multimodal: true },
+	{ handle: "lc-zai-coding/glm-5.3", multimodal: false },
+	{ handle: "lc-qwen-code/qwen3.8-max", multimodal: true },
+	{ handle: "lc-codex/gpt-5.6-sol", multimodal: true },
+	{ handle: "lc-minimax/MiniMax-M3", multimodal: true },
+	{ handle: "lc-kimi-code/k3", multimodal: true },
 ];
 
 export function defaultConfig(): GraceConfig {
-  return {
-    ladder: DEFAULT_LADDER.map((r) => ({ ...r })),
-    cooldownMinutes: 60,
-    autoContinue: true,
-    probeEnabled: true,
-    enforceLadder: true,
-  };
+	return {
+		ladder: DEFAULT_LADDER.map((r) => ({ ...r })),
+		cooldownMinutes: 60,
+		autoContinue: true,
+		probeEnabled: true,
+		enforceLadder: true,
+	};
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseLadder(raw: unknown): LadderRung[] | null {
-  if (!Array.isArray(raw) || raw.length === 0) return null;
-  const rungs: LadderRung[] = [];
-  for (const item of raw) {
-    if (!isRecord(item)) return null;
-    const handle = item.handle;
-    if (typeof handle !== "string" || !handle.trim()) return null;
-    const contextWindow = item.contextWindow;
-    const reasoningEffort = item.reasoningEffort;
-    rungs.push({
-      handle: handle.trim(),
-      multimodal: item.multimodal !== false,
-      ...(typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0
-        ? { contextWindow: Math.floor(contextWindow) }
-        : {}),
-      ...(typeof reasoningEffort === "string" && reasoningEffort.trim() ? { reasoningEffort: reasoningEffort.trim() } : {}),
-    });
-  }
-  return rungs;
+	if (!Array.isArray(raw) || raw.length === 0) return null;
+	const rungs: LadderRung[] = [];
+	for (const item of raw) {
+		if (!isRecord(item)) return null;
+		const handle = item.handle;
+		if (typeof handle !== "string" || !handle.trim()) return null;
+		const contextWindow = item.contextWindow;
+		const reasoningEffort = item.reasoningEffort;
+		rungs.push({
+			handle: handle.trim(),
+			multimodal: item.multimodal !== false,
+			...(typeof contextWindow === "number" &&
+			Number.isFinite(contextWindow) &&
+			contextWindow > 0
+				? { contextWindow: Math.floor(contextWindow) }
+				: {}),
+			...(typeof reasoningEffort === "string" && reasoningEffort.trim()
+				? { reasoningEffort: reasoningEffort.trim() }
+				: {}),
+		});
+	}
+	return rungs;
 }
 
 export function parseConfig(raw: unknown): GraceConfig {
-  const config = defaultConfig();
-  if (!isRecord(raw)) return config;
-  const ladder = parseLadder(raw.ladder);
-  if (ladder) config.ladder = ladder;
-  if (typeof raw.cooldownMinutes === "number" && raw.cooldownMinutes > 0) {
-    config.cooldownMinutes = raw.cooldownMinutes;
-  }
-  if (typeof raw.autoContinue === "boolean") config.autoContinue = raw.autoContinue;
-  if (typeof raw.probeEnabled === "boolean") config.probeEnabled = raw.probeEnabled;
-  if (typeof raw.enforceLadder === "boolean") config.enforceLadder = raw.enforceLadder;
-  return config;
+	const config = defaultConfig();
+	if (!isRecord(raw)) return config;
+	const ladder = parseLadder(raw.ladder);
+	if (ladder) config.ladder = ladder;
+	if (typeof raw.cooldownMinutes === "number" && raw.cooldownMinutes > 0) {
+		config.cooldownMinutes = raw.cooldownMinutes;
+	}
+	if (typeof raw.autoContinue === "boolean")
+		config.autoContinue = raw.autoContinue;
+	if (typeof raw.probeEnabled === "boolean")
+		config.probeEnabled = raw.probeEnabled;
+	if (typeof raw.enforceLadder === "boolean")
+		config.enforceLadder = raw.enforceLadder;
+	return config;
 }
 
-export function findRung(ladder: LadderRung[], handle: string | null | undefined): number {
-  if (!handle) return -1;
-  return ladder.findIndex((r) => handlesMatch(r.handle, handle));
+export function findRung(
+	ladder: LadderRung[],
+	handle: string | null | undefined,
+): number {
+	if (!handle) return -1;
+	return ladder.findIndex((r) => handlesMatch(r.handle, handle));
 }
 
-export function handlesMatch(left: string | null | undefined, right: string | null | undefined): boolean {
-  if (!left || !right) return false;
-  if (left === right) return true;
-  return (left === "auto" && right === "letta/auto") || (left === "letta/auto" && right === "auto");
+export function handlesMatch(
+	left: string | null | undefined,
+	right: string | null | undefined,
+): boolean {
+	if (!left || !right) return false;
+	if (left === right) return true;
+	return (
+		(left === "auto" && right === "letta/auto") ||
+		(left === "letta/auto" && right === "auto")
+	);
 }
 
-export function canonicalRungHandle(ladder: LadderRung[], handle: string): string {
-  const index = findRung(ladder, handle);
-  return index >= 0 ? ladder[index].handle : handle;
+export function canonicalRungHandle(
+	ladder: LadderRung[],
+	handle: string,
+): string {
+	const index = findRung(ladder, handle);
+	return index >= 0 ? ladder[index].handle : handle;
 }
 
-export function canonicalizeBenchState(state: AgentGraceState, ladder: LadderRung[]): boolean {
-  let changed = false;
-  for (const [handle, until] of Object.entries(state.cooldowns)) {
-    const canonical = canonicalRungHandle(ladder, handle);
-    if (canonical === handle) continue;
-    const existing = state.cooldowns[canonical];
-    if (!existing || Date.parse(until) > Date.parse(existing)) {
-      state.cooldowns[canonical] = until;
-    }
-    delete state.cooldowns[handle];
-    changed = true;
-  }
+export function canonicalizeBenchState(
+	state: AgentGraceState,
+	ladder: LadderRung[],
+): boolean {
+	let changed = false;
+	for (const [handle, until] of Object.entries(state.cooldowns)) {
+		const canonical = canonicalRungHandle(ladder, handle);
+		if (canonical === handle) continue;
+		const existing = state.cooldowns[canonical];
+		if (!existing || Date.parse(until) > Date.parse(existing)) {
+			state.cooldowns[canonical] = until;
+		}
+		delete state.cooldowns[handle];
+		changed = true;
+	}
 
-  const canonicalDead = [...new Set(state.dead.map((handle) => canonicalRungHandle(ladder, handle)))];
-  if (canonicalDead.length !== state.dead.length || canonicalDead.some((handle, index) => handle !== state.dead[index])) {
-    state.dead = canonicalDead;
-    changed = true;
-  }
-  return changed;
+	const canonicalDead = [
+		...new Set(state.dead.map((handle) => canonicalRungHandle(ladder, handle))),
+	];
+	if (
+		canonicalDead.length !== state.dead.length ||
+		canonicalDead.some((handle, index) => handle !== state.dead[index])
+	) {
+		state.dead = canonicalDead;
+		changed = true;
+	}
+	return changed;
 }
 
 /**
@@ -123,34 +150,34 @@ export function canonicalizeBenchState(state: AgentGraceState, ladder: LadderRun
  * rung at or below the selected position.
  */
 export function targetRung(
-  config: GraceConfig,
-  cooldowns: Record<string, number>,
-  dead: string[],
-  now: number,
-  needsMultimodal: boolean,
+	config: GraceConfig,
+	cooldowns: Record<string, number>,
+	dead: string[],
+	now: number,
+	needsMultimodal: boolean,
 ): LadderRung | null {
-  const ladder = config.ladder;
-  if (ladder.length === 0) return null;
-  let i = 0;
-  while (i < ladder.length) {
-    const handle = ladder[i].handle;
-    if (dead.includes(handle)) {
-      i += 1;
-      continue;
-    }
-    const until = cooldowns[handle];
-    if (typeof until === "number" && until > now) {
-      i += 1;
-      continue;
-    }
-    break;
-  }
-  if (i >= ladder.length) i = ladder.length - 1;
-  if (needsMultimodal) {
-    let j = i;
-    while (j < ladder.length && !ladder[j].multimodal) j += 1;
-    if (j < ladder.length) return ladder[j];
-    return ladder[i];
-  }
-  return ladder[i];
+	const ladder = config.ladder;
+	if (ladder.length === 0) return null;
+	let i = 0;
+	while (i < ladder.length) {
+		const handle = ladder[i].handle;
+		if (dead.includes(handle)) {
+			i += 1;
+			continue;
+		}
+		const until = cooldowns[handle];
+		if (typeof until === "number" && until > now) {
+			i += 1;
+			continue;
+		}
+		break;
+	}
+	if (i >= ladder.length) i = ladder.length - 1;
+	if (needsMultimodal) {
+		let j = i;
+		while (j < ladder.length && !ladder[j].multimodal) j += 1;
+		if (j < ladder.length) return ladder[j];
+		return ladder[i];
+	}
+	return ladder[i];
 }
