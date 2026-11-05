@@ -1,0 +1,19 @@
+{
+	"$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+	"versioning": "always-bump-minor",
+	"always-update": true,
+	"packages": {
+		"packages/okf": {
+			"release-type": "node",
+			"initial-version": "0.1.0",
+			"changelog-path": "CHANGELOG.md",
+			"component": "okf"
+		},
+		"packages/amazing-grace": {
+			"release-type": "node",
+			"initial-version": "0.1.0",
+			"changelog-path": "CHANGELOG.md",
+			"component": "amazing-grace"
+		}
+	}
+}
