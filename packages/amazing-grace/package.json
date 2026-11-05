@@ -1,6 +1,6 @@
 {
 	"name": "@kaaloo/amazing-grace",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Graceful model degradation for Letta Code: steps an agent down a usage-plan model ladder on provider failures (quota, invalid key, text-only rungs receiving images) and back up after recovery. Squad config and event ledger live in the squad-mods shared memory repository.",
 	"author": "Luis Arias",
 	"license": "MIT",
