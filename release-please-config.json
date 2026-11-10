@@ -8,12 +8,6 @@
 			"initial-version": "0.1.0",
 			"changelog-path": "CHANGELOG.md",
 			"component": "okf"
-		},
-		"packages/amazing-grace": {
-			"release-type": "node",
-			"initial-version": "0.1.0",
-			"changelog-path": "CHANGELOG.md",
-			"component": "amazing-grace"
 		}
 	}
 }

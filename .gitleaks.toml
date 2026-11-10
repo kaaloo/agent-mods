@@ -30,7 +30,6 @@ paths = [
   '''\.vite/''',
   '''\.letta/''',
   '''packages/okf/mods/.*\.bundled\.mjs$''',
-  '''packages/amazing-grace/mods/.*\.bundled\.mjs$''',
 ]
 
 # Test fixtures: scan them, but allow specific patterns when an
