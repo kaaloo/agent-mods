@@ -29,13 +29,13 @@
 		"test": "vitest run",
 		"typecheck": "tsc --noEmit",
 		"check": "npm run build && npm run typecheck && npm run test",
-		"verify:bundle": "bun build mods/index.ts --target node --outfile /tmp/okf-bundle-drift-check.mjs && cmp -s /tmp/okf-bundle-drift-check.mjs mods/index.bundled.mjs && echo 'bundle matches source' || (echo 'BUNDLE DRIFT: mods/index.bundled.mjs does not match source — run npm run build and commit the bundle' && exit 1)",
+		"verify:bundle": "bun build mods/index.ts --target node --outfile /tmp/okf-bundle-drift-check.mjs && cmp -s /tmp/okf-bundle-drift-check.mjs mods/index.bundled.mjs && echo 'bundle matches source' || (echo 'BUNDLE DRIFT: mods/index.bundled.mjs does not match source \u2014 run npm run build and commit the bundle' && exit 1)",
 		"verify": "npm run verify:bundle && npm run typecheck && npm run test"
 	},
 	"devDependencies": {
 		"@types/node": "^26.6.6",
 		"typescript": "^7.0.2",
-		"vitest": "^4.1.11"
+		"vitest": "^5.1.0"
 	},
 	"letta": {
 		"manifestVersion": 1,
