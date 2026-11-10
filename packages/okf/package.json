@@ -1,6 +1,6 @@
 {
 	"name": "@kaaloo/okf",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "OKF trust-signal enforcement for Letta Code agent memory in MemFS. Validates provenance, verification, freshness, and lifecycle signals on memory writes via permission overlays.",
 	"author": "Luis Arias",
 	"license": "MIT",
@@ -29,7 +29,7 @@
 		"test": "vitest run",
 		"typecheck": "tsc --noEmit",
 		"check": "npm run build && npm run typecheck && npm run test",
-		"verify:bundle": "bun build mods/index.ts --target node --outfile /tmp/okf-bundle-drift-check.mjs && cmp -s /tmp/okf-bundle-drift-check.mjs mods/index.bundled.mjs && echo 'bundle matches source' || (echo 'BUNDLE DRIFT: mods/index.bundled.mjs does not match source \u2014 run npm run build and commit the bundle' && exit 1)",
+		"verify:bundle": "bun build mods/index.ts --target node --outfile /tmp/okf-bundle-drift-check.mjs && cmp -s /tmp/okf-bundle-drift-check.mjs mods/index.bundled.mjs && echo 'bundle matches source' || (echo 'BUNDLE DRIFT: mods/index.bundled.mjs does not match source — run npm run build and commit the bundle' && exit 1)",
 		"verify": "npm run verify:bundle && npm run typecheck && npm run test"
 	},
 	"devDependencies": {
