@@ -7,7 +7,9 @@ Monorepo for trusted [Letta Code](https://github.com/letta-ai/letta-code) mods m
 | Package | Description |
 | --- | --- |
 | [`@kaaloo/okf`](packages/okf) | OKF trust-signal enforcement for agent memory in MemFS. Validates provenance, verification, freshness, and lifecycle on memory writes via permission overlays. |
-| [`@kaaloo/amazing-grace`](packages/amazing-grace) | Graceful model degradation. Steps an agent down a usage-plan model ladder on provider failures (quota, invalid key, images on text-only rungs) and back up after recovery, logging every switch to shared memory. |
+
+`@kaaloo/amazing-grace` was retired on 2026-11-10; see
+[Retired packages](#retired-packages).
 
 New packages land under `packages/*` with their own `package.json`, `README.md`, and (where applicable) `MOD.md`.
 
@@ -62,13 +64,36 @@ effect.
 
 See each package's README for package-specific usage.
 
+## Retired packages
+
+| Package | Retired | Why |
+| --- | --- | --- |
+| `@kaaloo/amazing-grace` | 2026-11-10 | Its recovery paths never fired, and the runtime no longer supports them. See below. |
+
+`amazing-grace` was designed to step an agent down a model ladder when a
+provider failed. In practice it recorded 24 events over three months and **not
+one** was a rescue: every recorded switch was either `conversation_open`
+enforcement or `turn_start` bookkeeping. The recovery design depended on a
+first-class `provider_error` mod event that Letta Code never shipped, so it fell
+back to `llm_end`, which the cloud listener disables along with
+`events.lifecycle` — leaving no hook that fires before a turn fails. Its one
+still-useful behaviour, restoring a conversation's context window after a model
+switch, is covered by `@letta-ai/model-profiles`.
+
+Environments that installed this repository through the git channel before the
+removal keep the old mod active, including its `conversation_open` ladder
+enforcement, which will keep overriding model choices. Remove it with
+`letta mods remove` (or by deleting the installed directory under
+`~/.letta/mods/`) and restart the session. The squad-shared config and event
+ledger under `squad-mods/amazing-grace/` were archived separately over the same
+change.
+
 ## Repository layout
 
 ```
 .
 ├── packages/
-│   ├── okf/              # @kaaloo/okf mod (TypeScript source, bundled JS, tests)
-│   └── amazing-grace/    # @kaaloo/amazing-grace mod (TypeScript source, bundled JS, tests)
+│   └── okf/              # @kaaloo/okf mod (TypeScript source, bundled JS, tests)
 ├── docs/                 # Design notes and implementation plans
 ├── .github/
 │   ├── prompts/          # System prompts used by the CI agent

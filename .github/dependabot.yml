@@ -32,22 +32,6 @@ updates:
         applies-to: "version-updates"
         dependency-type: "production"
         update-types: ["minor", "patch"]
-  - package-ecosystem: "npm"
-    directory: "/packages/amazing-grace"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
-    open-pull-requests-limit: 5
-    groups:
-      development-dependencies:
-        applies-to: "version-updates"
-        dependency-type: "development"
-        update-types: ["minor", "patch"]
-      production-dependencies:
-        applies-to: "version-updates"
-        dependency-type: "production"
-        update-types: ["minor", "patch"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
