@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { appendFile } from "node:fs/promises";
+import { appendFile, rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { type GitResult, type GitRunner, runGit, runShell } from "./git.ts";
 
@@ -145,10 +145,22 @@ export class MemfsSync {
 		const cfg = await this.loadConfig();
 		if (!cfg.enabled) return { status: "disabled" };
 
-		const blocked = await this.blockedReason(cfg);
-		if (blocked) return { status: "skipped", reason: blocked };
-
 		for (let attempt = 1; attempt <= cfg.maxAttempts; attempt++) {
+			const blocked = await this.blockedReason(cfg);
+			if (blocked) return { status: "skipped", reason: blocked };
+			// Pin the commit being synced. Everything below works from this sha, not
+			// from whatever HEAD happens to be after a network wait, so a tool that
+			// switches branches or commits meanwhile cannot leak into the push.
+			const localHead = (
+				await this.git(this.dir, [
+					"rev-parse",
+					"--verify",
+					"--quiet",
+					`refs/heads/${cfg.branch}`,
+				])
+			).stdout.trim();
+			if (!localHead) return { status: "skipped", reason: "no commits yet" };
+
 			const fetched = await this.git(this.dir, [
 				"fetch",
 				"--quiet",
@@ -172,7 +184,7 @@ export class MemfsSync {
 				"rev-list",
 				"--left-right",
 				"--count",
-				`HEAD...${remoteHead}`,
+				`${localHead}...${remoteHead}`,
 			]);
 			if (counts.code !== 0) {
 				return {
@@ -185,37 +197,29 @@ export class MemfsSync {
 
 			if (ahead === 0) {
 				if (behind === 0) return { status: "up-to-date" };
-				const ff = await this.git(this.dir, [
-					"merge",
-					"--ff-only",
-					"--quiet",
-					remoteHead,
-				]);
-				if (ff.code !== 0) {
-					return {
-						status: "error",
-						reason: `fast-forward to ${upstream} failed`,
-						detail: ff.stderr.trim(),
-					};
-				}
+				const moved = await this.advanceCheckout(cfg, localHead, remoteHead);
+				if (moved === "raced") continue;
+				if (moved !== "ok") return moved;
 				return { status: "fast-forwarded", commits: behind };
 			}
 
-			// Local commits exist: replay them on the remote tip (re-signing them),
-			// regenerate indexes, then push without force.
-			const rebased = await this.rebase(cfg, remoteHead);
-			if (rebased) return rebased;
-
-			const indexCommitted = await this.regenerateIndex(cfg);
-			if (typeof indexCommitted !== "boolean") return indexCommitted;
+			// Local commits exist. Rebase, re-sign and index them in a private
+			// worktree so concurrent memory writes in the checkout are never touched,
+			// then push the resulting commit without force.
+			const prepared = await this.prepareInWorktree(cfg, localHead, remoteHead);
+			if (prepared.status) return prepared.status;
+			const { newHead, indexCommitted } = prepared;
 
 			const pushed = await this.git(this.dir, [
 				"push",
 				"--quiet",
 				cfg.remote,
-				`HEAD:refs/heads/${cfg.branch}`,
+				`${newHead}:refs/heads/${cfg.branch}`,
 			]);
 			if (pushed.code === 0) {
+				// Best effort: the remote is already correct. If the checkout moved
+				// meanwhile, the next run rebases the new commits onto the pushed tip.
+				await this.advanceCheckout(cfg, localHead, newHead);
 				const total = ahead + (indexCommitted ? 1 : 0);
 				return { status: "pushed", commits: total, indexCommitted };
 			}
@@ -234,6 +238,190 @@ export class MemfsSync {
 			// The remote moved between fetch and push: loop to fetch and rebase again.
 		}
 		return { status: "error", reason: "sync attempts exhausted" };
+	}
+
+	/**
+	 * Move the configured branch from `from` to `to` with a compare-and-swap, so
+	 * a commit made meanwhile is never dropped. When the branch is checked out,
+	 * the working tree follows through a two-tree `read-tree -m -u`, which keeps
+	 * unrelated local edits and refuses to overwrite conflicting or untracked
+	 * files; on refusal the ref is swapped back. Returns "raced" when the branch
+	 * moved under us.
+	 */
+	private async advanceCheckout(
+		cfg: SyncConfig,
+		from: string,
+		to: string,
+	): Promise<"ok" | "raced" | SyncOutcome> {
+		const ref = `refs/heads/${cfg.branch}`;
+		const swapped = await this.git(this.dir, [
+			"update-ref",
+			"-m",
+			"memfs-sync",
+			ref,
+			to,
+			from,
+		]);
+		if (swapped.code !== 0) return "raced";
+		const checkedOut = (
+			await this.git(this.dir, ["symbolic-ref", "--quiet", "HEAD"])
+		).stdout.trim();
+		if (checkedOut !== ref) return "ok";
+		const updated = await this.git(this.dir, [
+			"read-tree",
+			"-m",
+			"-u",
+			from,
+			to,
+		]);
+		if (updated.code === 0) return "ok";
+		await this.git(this.dir, [
+			"update-ref",
+			"-m",
+			"memfs-sync revert",
+			ref,
+			from,
+			to,
+		]);
+		return {
+			status: "error",
+			reason: `could not update the checkout to ${cfg.remote}/${cfg.branch} without overwriting local files`,
+			detail: updated.stderr.trim(),
+		};
+	}
+
+	private async worktreePath(): Promise<string> {
+		const common = (
+			await this.git(this.dir, [
+				"rev-parse",
+				"--path-format=absolute",
+				"--git-common-dir",
+			])
+		).stdout.trim();
+		return join(common, "memfs-sync", "worktree");
+	}
+
+	/** Detached private worktree at `commit`, created on first use and reset after. */
+	private async freshWorktree(commit: string): Promise<string | SyncOutcome> {
+		const path = await this.worktreePath();
+		if (existsSync(join(path, ".git"))) {
+			await this.git(path, ["rebase", "--abort"]);
+			const reset = await this.git(path, [
+				"checkout",
+				"--quiet",
+				"--force",
+				"--detach",
+				commit,
+			]);
+			await this.git(path, ["clean", "--quiet", "-fdx"]);
+			if (reset.code === 0) return path;
+		}
+		await this.git(this.dir, ["worktree", "prune"]);
+		await rm(path, { recursive: true, force: true });
+		const added = await this.git(this.dir, [
+			"worktree",
+			"add",
+			"--quiet",
+			"--force",
+			"--detach",
+			path,
+			commit,
+		]);
+		if (added.code !== 0) {
+			return {
+				status: "error",
+				reason: "could not create the private sync worktree",
+				detail: added.stderr.trim(),
+			};
+		}
+		return path;
+	}
+
+	private async prepareInWorktree(
+		cfg: SyncConfig,
+		localHead: string,
+		remoteHead: string,
+	): Promise<
+		| { status: SyncOutcome; newHead?: undefined; indexCommitted?: undefined }
+		| { status: null; newHead: string; indexCommitted: boolean }
+	> {
+		const worktree = await this.freshWorktree(localHead);
+		if (typeof worktree !== "string") return { status: worktree };
+
+		const rebased = await this.git(
+			worktree,
+			[
+				...this.signingArgs(cfg),
+				"rebase",
+				"--quiet",
+				"--no-autostash",
+				// Rewrite every unpushed commit, even when the remote has not moved, so
+				// each one gets the sync committer identity and signature.
+				"--force-rebase",
+				cfg.sign ? "--gpg-sign" : "--no-gpg-sign",
+				remoteHead,
+			],
+			{ env: this.committerEnv(cfg) },
+		);
+		if (rebased.code !== 0) {
+			await this.git(worktree, ["rebase", "--abort"]);
+			const conflict = /conflict/i.test(rebased.stdout + rebased.stderr);
+			return {
+				status: {
+					status: "error",
+					reason: conflict
+						? `rebase onto ${cfg.remote}/${cfg.branch} hit a conflict; local commits were left unchanged`
+						: `rebase onto ${cfg.remote}/${cfg.branch} failed; local commits were left unchanged`,
+					detail: (rebased.stderr || rebased.stdout).trim(),
+				},
+			};
+		}
+
+		let indexCommitted = false;
+		if (cfg.indexCommand) {
+			const ran = await this.shell(worktree, cfg.indexCommand);
+			if (ran.code !== 0) {
+				return {
+					status: {
+						status: "error",
+						reason: "index command failed; nothing was pushed",
+						detail: (ran.stderr || ran.stdout).trim(),
+					},
+				};
+			}
+			const status = await this.git(worktree, ["status", "--porcelain"]);
+			if (status.stdout.trim()) {
+				// The worktree is private and started clean, so every change is the
+				// index command's own output.
+				await this.git(worktree, ["add", "--all"]);
+				const commit = await this.git(
+					worktree,
+					[
+						...this.signingArgs(cfg),
+						"commit",
+						"--quiet",
+						cfg.sign ? "--gpg-sign" : "--no-gpg-sign",
+						"-m",
+						INDEX_COMMIT_MESSAGE,
+					],
+					{ env: this.committerEnv(cfg) },
+				);
+				if (commit.code !== 0) {
+					return {
+						status: {
+							status: "error",
+							reason: "index commit was rejected; nothing was pushed",
+							detail: (commit.stderr || commit.stdout).trim(),
+						},
+					};
+				}
+				indexCommitted = true;
+			}
+		}
+		const newHead = (
+			await this.git(worktree, ["rev-parse", "--verify", "HEAD"])
+		).stdout.trim();
+		return { status: null, newHead, indexCommitted };
 	}
 
 	private async blockedReason(cfg: SyncConfig): Promise<string | null> {
@@ -275,120 +463,6 @@ export class MemfsSync {
 		if (cfg.committerName) env.GIT_COMMITTER_NAME = cfg.committerName;
 		if (cfg.committerEmail) env.GIT_COMMITTER_EMAIL = cfg.committerEmail;
 		return env;
-	}
-
-	private async rebase(
-		cfg: SyncConfig,
-		onto: string,
-	): Promise<SyncOutcome | null> {
-		const args = [
-			...this.signingArgs(cfg),
-			"rebase",
-			"--quiet",
-			"--no-autostash",
-			// Rewrite every unpushed commit, even when the remote has not moved, so
-			// each one gets the sync committer identity and signature.
-			"--force-rebase",
-			cfg.sign ? "--gpg-sign" : "--no-gpg-sign",
-			onto,
-		];
-		const result = await this.git(this.dir, args, {
-			env: this.committerEnv(cfg),
-		});
-		if (result.code === 0) return null;
-		await this.git(this.dir, ["rebase", "--abort"]);
-		const conflict = /conflict/i.test(result.stdout + result.stderr);
-		return {
-			status: "error",
-			reason: conflict
-				? `rebase onto ${cfg.remote}/${cfg.branch} hit a conflict; local commits were left unchanged`
-				: `rebase onto ${cfg.remote}/${cfg.branch} failed; local commits were left unchanged`,
-			detail: (result.stderr || result.stdout).trim(),
-		};
-	}
-
-	/** Returns whether an index commit was created, or an error outcome. */
-	private async regenerateIndex(
-		cfg: SyncConfig,
-	): Promise<boolean | SyncOutcome> {
-		if (!cfg.indexCommand) return false;
-		// Tracked files are clean (checked before syncing), but untracked files may
-		// already exist. Only touch paths the index command itself changed.
-		const before = await this.dirtyPaths();
-		const ran = await this.shell(this.dir, cfg.indexCommand);
-		const changed = [...(await this.dirtyPaths())].filter(
-			(path) => !before.has(path),
-		);
-		if (ran.code !== 0) {
-			await this.discardPaths(changed);
-			return {
-				status: "error",
-				reason: "index command failed; nothing was pushed",
-				detail: (ran.stderr || ran.stdout).trim(),
-			};
-		}
-		if (changed.length === 0) return false;
-		await this.git(this.dir, ["add", "--all", "--", ...changed]);
-		const commit = await this.git(
-			this.dir,
-			[
-				...this.signingArgs(cfg),
-				"commit",
-				"--quiet",
-				cfg.sign ? "--gpg-sign" : "--no-gpg-sign",
-				"-m",
-				INDEX_COMMIT_MESSAGE,
-			],
-			{ env: this.committerEnv(cfg) },
-		);
-		if (commit.code !== 0) {
-			await this.git(this.dir, ["reset", "--quiet", "--", ...changed]);
-			await this.discardPaths(changed);
-			return {
-				status: "error",
-				reason: "index commit was rejected; nothing was pushed",
-				detail: (commit.stderr || commit.stdout).trim(),
-			};
-		}
-		return true;
-	}
-
-	/** Paths with any working-tree or index change, untracked files included. */
-	private async dirtyPaths(): Promise<Set<string>> {
-		const status = await this.git(this.dir, [
-			"status",
-			"--porcelain",
-			"-z",
-			"--untracked-files=all",
-		]);
-		const paths = new Set<string>();
-		const entries = status.stdout.split("\0");
-		for (let i = 0; i < entries.length; i++) {
-			const entry = entries[i];
-			if (entry.length < 4) continue;
-			paths.add(entry.slice(3));
-			// Renames/copies carry the original path as the next NUL-separated field.
-			if (entry[0] === "R" || entry[0] === "C") i++;
-		}
-		return paths;
-	}
-
-	/** Restore tracked paths and delete untracked ones created by the index command. */
-	private async discardPaths(paths: string[]): Promise<void> {
-		if (paths.length === 0) return;
-		const tracked = new Set(
-			(await this.git(this.dir, ["ls-files", "-z", "--", ...paths])).stdout
-				.split("\0")
-				.filter(Boolean),
-		);
-		const restore = paths.filter((path) => tracked.has(path));
-		const remove = paths.filter((path) => !tracked.has(path));
-		if (restore.length > 0) {
-			await this.git(this.dir, ["checkout", "--quiet", "--", ...restore]);
-		}
-		if (remove.length > 0) {
-			await this.git(this.dir, ["clean", "--quiet", "-f", "--", ...remove]);
-		}
 	}
 
 	private async log(outcome: SyncOutcome): Promise<void> {

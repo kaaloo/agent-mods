@@ -6,9 +6,10 @@ This mod keeps a MemFS checkout in step with a shared Git remote. It does three 
 
 1. **Pulls at turn start.** A `turn_start` handler (and `conversation_open`, when lifecycle events exist) fetches `memfsSync.remote`/`memfsSync.branch`. It fast-forwards when the checkout is clean and strictly behind. It never cancels or rewrites the turn.
 2. **Pushes after commits.** A `tool_end` handler runs after a successful `Bash`/`Shell`/`memory` tool. When `HEAD` has moved since the last sync, it runs a background sync:
-   1. `git rebase --force-rebase --gpg-sign <remote tip>`;
-   2. the optional index command, whose changes are committed and signed;
-   3. `git push <remote> HEAD:refs/heads/<branch>`.
+   1. pins the configured branch's commit;
+   2. in a private detached worktree under the git common dir, runs `git rebase --force-rebase --gpg-sign <remote tip>` and the optional index command, and commits the index command's output, signed;
+   3. runs `git push <remote> <pinned result>:refs/heads/<branch>`;
+   4. moves the local branch to the pushed commit with a compare-and-swap.
 
    A rejected push triggers a re-fetch, a rebase and another push, up to `memfsSync.maxAttempts` times.
 3. **Provides a `/memfs-sync [status]` command** for manual runs and inspection.
@@ -16,8 +17,10 @@ This mod keeps a MemFS checkout in step with a shared Git remote. It does three 
 ## Safety properties
 
 - **No force-push**, ever. The push is a plain fast-forward push.
-- A conflicting or failed rebase is aborted with `git rebase --abort`, so local commits and the working tree stay as they were.
-- If the index command fails, only the paths it changed are reverted. Pre-existing untracked files are never touched.
+- Rebases and index regeneration never run in the agent's checkout. They run in a private worktree, so a memory write made during a sync can neither land in the index commit nor be reverted.
+- Everything is computed from the branch commit pinned before the fetch, never from a later `HEAD`. If a tool switches to a reflection branch or commits during a network wait, that work is not published.
+- The local branch only moves through a compare-and-swap. A commit made during the push is kept, and the next run rebases it. A checked-out branch's working tree follows through a two-tree `read-tree -m -u`, which keeps unrelated local files and refuses to overwrite conflicting ones.
+- A conflicting or failed rebase is aborted inside the private worktree, so local commits, the working tree and the remote stay as they were.
 - Runs are serialized per checkout. Triggers that arrive during a run coalesce into a single follow-up run.
 - Git runs through `execFile` without a shell, with `GIT_TERMINAL_PROMPT=0`. Only `memfsSync.indexCommand`, which you configure explicitly, runs through a shell.
 
@@ -35,7 +38,7 @@ packages/memfs-sync/
 │   ├── types.ts              # Typings for the mod runtime surface used here
 │   ├── lib/
 │   │   ├── git.ts            # execFile wrappers for git and the index command
-│   │   └── sync.ts           # Config parsing and the sync state machine
+│   │   └── sync.ts           # Config parsing and the sync state machine (private worktree, CAS)
 │   └── tests/
 │       ├── sync.test.ts          # Real-git integration tests (bare remote, SSH signing)
 │       └── bundle-smoke.test.ts  # Activates the committed bundle

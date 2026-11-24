@@ -1,6 +1,6 @@
 // mods/lib/sync.ts
 import { existsSync } from "node:fs";
-import { appendFile } from "node:fs/promises";
+import { appendFile, rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 
 // mods/lib/git.ts
@@ -131,10 +131,18 @@ class MemfsSync {
     const cfg = await this.loadConfig();
     if (!cfg.enabled)
       return { status: "disabled" };
-    const blocked = await this.blockedReason(cfg);
-    if (blocked)
-      return { status: "skipped", reason: blocked };
     for (let attempt = 1;attempt <= cfg.maxAttempts; attempt++) {
+      const blocked = await this.blockedReason(cfg);
+      if (blocked)
+        return { status: "skipped", reason: blocked };
+      const localHead = (await this.git(this.dir, [
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        `refs/heads/${cfg.branch}`
+      ])).stdout.trim();
+      if (!localHead)
+        return { status: "skipped", reason: "no commits yet" };
       const fetched = await this.git(this.dir, [
         "fetch",
         "--quiet",
@@ -155,7 +163,7 @@ class MemfsSync {
         "rev-list",
         "--left-right",
         "--count",
-        `HEAD...${remoteHead}`
+        `${localHead}...${remoteHead}`
       ]);
       if (counts.code !== 0) {
         return {
@@ -168,34 +176,25 @@ class MemfsSync {
       if (ahead === 0) {
         if (behind === 0)
           return { status: "up-to-date" };
-        const ff = await this.git(this.dir, [
-          "merge",
-          "--ff-only",
-          "--quiet",
-          remoteHead
-        ]);
-        if (ff.code !== 0) {
-          return {
-            status: "error",
-            reason: `fast-forward to ${upstream} failed`,
-            detail: ff.stderr.trim()
-          };
-        }
+        const moved = await this.advanceCheckout(cfg, localHead, remoteHead);
+        if (moved === "raced")
+          continue;
+        if (moved !== "ok")
+          return moved;
         return { status: "fast-forwarded", commits: behind };
       }
-      const rebased = await this.rebase(cfg, remoteHead);
-      if (rebased)
-        return rebased;
-      const indexCommitted = await this.regenerateIndex(cfg);
-      if (typeof indexCommitted !== "boolean")
-        return indexCommitted;
+      const prepared = await this.prepareInWorktree(cfg, localHead, remoteHead);
+      if (prepared.status)
+        return prepared.status;
+      const { newHead, indexCommitted } = prepared;
       const pushed = await this.git(this.dir, [
         "push",
         "--quiet",
         cfg.remote,
-        `HEAD:refs/heads/${cfg.branch}`
+        `${newHead}:refs/heads/${cfg.branch}`
       ]);
       if (pushed.code === 0) {
+        await this.advanceCheckout(cfg, localHead, newHead);
         const total = ahead + (indexCommitted ? 1 : 0);
         return { status: "pushed", commits: total, indexCommitted };
       }
@@ -209,6 +208,149 @@ class MemfsSync {
       }
     }
     return { status: "error", reason: "sync attempts exhausted" };
+  }
+  async advanceCheckout(cfg, from, to) {
+    const ref = `refs/heads/${cfg.branch}`;
+    const swapped = await this.git(this.dir, [
+      "update-ref",
+      "-m",
+      "memfs-sync",
+      ref,
+      to,
+      from
+    ]);
+    if (swapped.code !== 0)
+      return "raced";
+    const checkedOut = (await this.git(this.dir, ["symbolic-ref", "--quiet", "HEAD"])).stdout.trim();
+    if (checkedOut !== ref)
+      return "ok";
+    const updated = await this.git(this.dir, [
+      "read-tree",
+      "-m",
+      "-u",
+      from,
+      to
+    ]);
+    if (updated.code === 0)
+      return "ok";
+    await this.git(this.dir, [
+      "update-ref",
+      "-m",
+      "memfs-sync revert",
+      ref,
+      from,
+      to
+    ]);
+    return {
+      status: "error",
+      reason: `could not update the checkout to ${cfg.remote}/${cfg.branch} without overwriting local files`,
+      detail: updated.stderr.trim()
+    };
+  }
+  async worktreePath() {
+    const common = (await this.git(this.dir, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-common-dir"
+    ])).stdout.trim();
+    return join(common, "memfs-sync", "worktree");
+  }
+  async freshWorktree(commit) {
+    const path = await this.worktreePath();
+    if (existsSync(join(path, ".git"))) {
+      await this.git(path, ["rebase", "--abort"]);
+      const reset = await this.git(path, [
+        "checkout",
+        "--quiet",
+        "--force",
+        "--detach",
+        commit
+      ]);
+      await this.git(path, ["clean", "--quiet", "-fdx"]);
+      if (reset.code === 0)
+        return path;
+    }
+    await this.git(this.dir, ["worktree", "prune"]);
+    await rm(path, { recursive: true, force: true });
+    const added = await this.git(this.dir, [
+      "worktree",
+      "add",
+      "--quiet",
+      "--force",
+      "--detach",
+      path,
+      commit
+    ]);
+    if (added.code !== 0) {
+      return {
+        status: "error",
+        reason: "could not create the private sync worktree",
+        detail: added.stderr.trim()
+      };
+    }
+    return path;
+  }
+  async prepareInWorktree(cfg, localHead, remoteHead) {
+    const worktree = await this.freshWorktree(localHead);
+    if (typeof worktree !== "string")
+      return { status: worktree };
+    const rebased = await this.git(worktree, [
+      ...this.signingArgs(cfg),
+      "rebase",
+      "--quiet",
+      "--no-autostash",
+      "--force-rebase",
+      cfg.sign ? "--gpg-sign" : "--no-gpg-sign",
+      remoteHead
+    ], { env: this.committerEnv(cfg) });
+    if (rebased.code !== 0) {
+      await this.git(worktree, ["rebase", "--abort"]);
+      const conflict = /conflict/i.test(rebased.stdout + rebased.stderr);
+      return {
+        status: {
+          status: "error",
+          reason: conflict ? `rebase onto ${cfg.remote}/${cfg.branch} hit a conflict; local commits were left unchanged` : `rebase onto ${cfg.remote}/${cfg.branch} failed; local commits were left unchanged`,
+          detail: (rebased.stderr || rebased.stdout).trim()
+        }
+      };
+    }
+    let indexCommitted = false;
+    if (cfg.indexCommand) {
+      const ran = await this.shell(worktree, cfg.indexCommand);
+      if (ran.code !== 0) {
+        return {
+          status: {
+            status: "error",
+            reason: "index command failed; nothing was pushed",
+            detail: (ran.stderr || ran.stdout).trim()
+          }
+        };
+      }
+      const status = await this.git(worktree, ["status", "--porcelain"]);
+      if (status.stdout.trim()) {
+        await this.git(worktree, ["add", "--all"]);
+        const commit = await this.git(worktree, [
+          ...this.signingArgs(cfg),
+          "commit",
+          "--quiet",
+          cfg.sign ? "--gpg-sign" : "--no-gpg-sign",
+          "-m",
+          INDEX_COMMIT_MESSAGE
+        ], { env: this.committerEnv(cfg) });
+        if (commit.code !== 0) {
+          return {
+            status: {
+              status: "error",
+              reason: "index commit was rejected; nothing was pushed",
+              detail: (commit.stderr || commit.stdout).trim()
+            }
+          };
+        }
+        indexCommitted = true;
+      }
+    }
+    const newHead = (await this.git(worktree, ["rev-parse", "--verify", "HEAD"])).stdout.trim();
+    return { status: null, newHead, indexCommitted };
   }
   async blockedReason(cfg) {
     const gitDir = (await this.git(this.dir, ["rev-parse", "--absolute-git-dir"])).stdout.trim();
@@ -247,97 +389,6 @@ class MemfsSync {
     if (cfg.committerEmail)
       env.GIT_COMMITTER_EMAIL = cfg.committerEmail;
     return env;
-  }
-  async rebase(cfg, onto) {
-    const args = [
-      ...this.signingArgs(cfg),
-      "rebase",
-      "--quiet",
-      "--no-autostash",
-      "--force-rebase",
-      cfg.sign ? "--gpg-sign" : "--no-gpg-sign",
-      onto
-    ];
-    const result = await this.git(this.dir, args, {
-      env: this.committerEnv(cfg)
-    });
-    if (result.code === 0)
-      return null;
-    await this.git(this.dir, ["rebase", "--abort"]);
-    const conflict = /conflict/i.test(result.stdout + result.stderr);
-    return {
-      status: "error",
-      reason: conflict ? `rebase onto ${cfg.remote}/${cfg.branch} hit a conflict; local commits were left unchanged` : `rebase onto ${cfg.remote}/${cfg.branch} failed; local commits were left unchanged`,
-      detail: (result.stderr || result.stdout).trim()
-    };
-  }
-  async regenerateIndex(cfg) {
-    if (!cfg.indexCommand)
-      return false;
-    const before = await this.dirtyPaths();
-    const ran = await this.shell(this.dir, cfg.indexCommand);
-    const changed = [...await this.dirtyPaths()].filter((path) => !before.has(path));
-    if (ran.code !== 0) {
-      await this.discardPaths(changed);
-      return {
-        status: "error",
-        reason: "index command failed; nothing was pushed",
-        detail: (ran.stderr || ran.stdout).trim()
-      };
-    }
-    if (changed.length === 0)
-      return false;
-    await this.git(this.dir, ["add", "--all", "--", ...changed]);
-    const commit = await this.git(this.dir, [
-      ...this.signingArgs(cfg),
-      "commit",
-      "--quiet",
-      cfg.sign ? "--gpg-sign" : "--no-gpg-sign",
-      "-m",
-      INDEX_COMMIT_MESSAGE
-    ], { env: this.committerEnv(cfg) });
-    if (commit.code !== 0) {
-      await this.git(this.dir, ["reset", "--quiet", "--", ...changed]);
-      await this.discardPaths(changed);
-      return {
-        status: "error",
-        reason: "index commit was rejected; nothing was pushed",
-        detail: (commit.stderr || commit.stdout).trim()
-      };
-    }
-    return true;
-  }
-  async dirtyPaths() {
-    const status = await this.git(this.dir, [
-      "status",
-      "--porcelain",
-      "-z",
-      "--untracked-files=all"
-    ]);
-    const paths = new Set;
-    const entries = status.stdout.split("\x00");
-    for (let i = 0;i < entries.length; i++) {
-      const entry = entries[i];
-      if (entry.length < 4)
-        continue;
-      paths.add(entry.slice(3));
-      if (entry[0] === "R" || entry[0] === "C")
-        i++;
-    }
-    return paths;
-  }
-  async discardPaths(paths) {
-    if (paths.length === 0)
-      return;
-    const tracked = new Set((await this.git(this.dir, ["ls-files", "-z", "--", ...paths])).stdout.split("\x00").filter(Boolean));
-    const restore = paths.filter((path) => tracked.has(path));
-    const remove = paths.filter((path) => !tracked.has(path));
-    if (restore.length > 0) {
-      await this.git(this.dir, ["checkout", "--quiet", "--", ...restore]);
-    }
-    if (remove.length > 0) {
-      await this.git(this.dir, ["clean", "--quiet", "-f", "--", ...remove]);
-    }
   }
   async log(outcome) {
     const gitDir = (await this.git(this.dir, ["rev-parse", "--absolute-git-dir"])).stdout.trim();

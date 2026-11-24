@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { runGit, runShell } from "../lib/git.ts";
 import { describeOutcome, MemfsSync, parseConfig } from "../lib/sync.ts";
 
 const EMAIL = "agent@example.test";
@@ -216,7 +217,7 @@ describe("MemfsSync against a real git remote", () => {
 		expect(git(fx.local, "log", "-1", "--format=%G?")).toBe("G");
 	});
 
-	it("pushes nothing when the index command fails, and reverts its edits", async () => {
+	it("pushes nothing and leaves the checkout clean when the index command fails", async () => {
 		git(
 			fx.local,
 			"config",
@@ -247,6 +248,105 @@ describe("MemfsSync against a real git remote", () => {
 		expect(git(fx.remote, "rev-list", "--count", "main")).toBe("2");
 		const log = readFileSync(join(fx.local, ".git", "memfs-sync.log"), "utf8");
 		expect(log).toContain('"status":"pushed"');
+	});
+
+	it("never publishes a branch switched to while the fetch was in flight", async () => {
+		commitFile(fx.local, "c.md", "c\n", "local memory");
+		const syncer = new MemfsSync(fx.local, {
+			git: async (cwd, args, options) => {
+				const result = await runGit(cwd, args, options);
+				if (args[0] === "fetch" && cwd === fx.local) {
+					git(fx.local, "switch", "--quiet", "-c", "reflection");
+					commitFile(fx.local, "reflection.md", "private\n", "reflection only");
+				}
+				return result;
+			},
+		});
+		await syncer.sync();
+		const published = git(fx.remote, "log", "--format=%s", "main").split("\n");
+		expect(published).not.toContain("reflection only");
+		expect(git(fx.remote, "ls-tree", "--name-only", "main")).not.toContain(
+			"reflection.md",
+		);
+		// The reflection checkout is left exactly as the tool made it.
+		expect(git(fx.local, "symbolic-ref", "--short", "HEAD")).toBe("reflection");
+		expect(git(fx.local, "log", "-1", "--format=%s")).toBe("reflection only");
+	});
+
+	it("keeps memory written during index regeneration out of the index commit", async () => {
+		git(fx.local, "config", "memfsSync.indexCommand", "true");
+		commitFile(fx.local, "c.md", "c\n", "local memory");
+		const syncer = new MemfsSync(fx.local, {
+			shell: async (cwd, command) => {
+				// Another tool writes memory in the checkout while the index runs.
+				writeFileSync(join(fx.local, "concurrent.md"), "in flight\n");
+				writeFileSync(join(cwd, "MEMORY.md"), "# Memory\n- [c](c.md)\n");
+				return runShell(cwd, command);
+			},
+		});
+		expect(await syncer.sync()).toMatchObject({
+			status: "pushed",
+			indexCommitted: true,
+		});
+		expect(git(fx.remote, "ls-tree", "--name-only", "main")).not.toContain(
+			"concurrent.md",
+		);
+		expect(readFileSync(join(fx.local, "concurrent.md"), "utf8")).toBe(
+			"in flight\n",
+		);
+		expect(git(fx.local, "rev-parse", "HEAD")).toBe(
+			git(fx.remote, "rev-parse", "main"),
+		);
+	});
+
+	it("keeps memory written while a failing index command runs", async () => {
+		git(fx.local, "config", "memfsSync.indexCommand", "exit 3");
+		commitFile(fx.local, "c.md", "c\n", "local memory");
+		const syncer = new MemfsSync(fx.local, {
+			shell: async (cwd, command) => {
+				writeFileSync(join(fx.local, "concurrent.md"), "in flight\n");
+				return runShell(cwd, command);
+			},
+		});
+		expect((await syncer.sync()).status).toBe("error");
+		expect(readFileSync(join(fx.local, "concurrent.md"), "utf8")).toBe(
+			"in flight\n",
+		);
+		expect(git(fx.remote, "rev-list", "--count", "main")).toBe("1");
+	});
+
+	it("does not drop a commit made in the checkout during the push", async () => {
+		commitFile(fx.local, "c.md", "c\n", "first");
+		const syncer = new MemfsSync(fx.local, {
+			git: async (cwd, args, options) => {
+				const result = await runGit(cwd, args, options);
+				if (args[0] === "push") commitFile(fx.local, "d.md", "d\n", "second");
+				return result;
+			},
+		});
+		expect((await syncer.sync()).status).toBe("pushed");
+		expect(git(fx.local, "log", "-1", "--format=%s")).toBe("second");
+		// The next run rebases the late commit onto what was just pushed.
+		expect((await new MemfsSync(fx.local).sync()).status).toBe("pushed");
+		expect(git(fx.remote, "log", "--format=%s", "main").split("\n")).toEqual([
+			"second",
+			"first",
+			"init",
+		]);
+	});
+
+	it("fast-forwards without discarding unrelated uncommitted files", async () => {
+		writeFileSync(join(fx.local, "draft.md"), "untracked draft\n");
+		commitFile(fx.other, "b.md", "b\n", "from other agent");
+		git(fx.other, "push", "--quiet", "origin", "HEAD:main");
+		expect((await new MemfsSync(fx.local).sync()).status).toBe(
+			"fast-forwarded",
+		);
+		expect(readFileSync(join(fx.local, "draft.md"), "utf8")).toBe(
+			"untracked draft\n",
+		);
+		expect(readFileSync(join(fx.local, "b.md"), "utf8")).toBe("b\n");
+		expect(git(fx.local, "status", "--porcelain")).toBe("?? draft.md");
 	});
 
 	it("reports a fetch failure without changing anything", async () => {
