@@ -1,14 +1,6 @@
 import { describeOutcome, MemfsSync, type SyncOutcome } from "./lib/sync.ts";
 import type { MemfsSyncModContext, ModCallbackContext } from "./types.ts";
 
-/** Tools whose successful run can create a commit in the memory checkout. */
-const COMMIT_CAPABLE_TOOLS = new Set([
-	"Bash",
-	"Shell",
-	"memory",
-	"ShellCommand",
-]);
-
 export function memoryDirFromContext(
 	ctx: ModCallbackContext | undefined,
 ): string | null {
@@ -23,7 +15,6 @@ export function memoryDirFromContext(
 export default function activate(letta: MemfsSyncModContext): () => void {
 	const disposers: Array<() => void> = [];
 	const syncers = new Map<string, MemfsSync>();
-	const lastHeads = new Map<string, string | null>();
 
 	const syncerFor = (dir: string): MemfsSync => {
 		let syncer = syncers.get(dir);
@@ -47,47 +38,21 @@ export default function activate(letta: MemfsSyncModContext): () => void {
 	const runSync = async (dir: string): Promise<SyncOutcome> => {
 		const syncer = syncerFor(dir);
 		const outcome = await syncer.sync();
-		lastHeads.set(dir, await syncer.head());
 		report(outcome);
 		return outcome;
 	};
 
-	/** Sync only when HEAD moved since we last looked (a new local commit). */
-	const syncIfHeadMoved = async (dir: string): Promise<void> => {
-		const head = await syncerFor(dir).head();
-		if (lastHeads.has(dir) && lastHeads.get(dir) === head) return;
-		await runSync(dir);
-	};
-
+	// The only automatic sync point is the start of a turn, before the agent's
+	// tools run. A sync rebases, re-signs and resets the checkout, which must not
+	// overlap a tool that writes memory. Tool-driven background syncs are not
+	// safe for that reason. Local commits therefore reach the shared repository
+	// at the start of the next turn. Never cancel or rewrite the turn: a failed
+	// sync is reported and the turn proceeds on the local checkout.
 	if (letta.capabilities?.events?.turns) {
-		// Pull before the model sees memory. Never cancel or rewrite the turn: a
-		// failed sync is reported and the turn proceeds on the local checkout.
 		disposers.push(
 			letta.events.on("turn_start", async (_event, ctx) => {
 				const dir = memoryDirFromContext(ctx);
 				if (dir) await runSync(dir);
-			}),
-		);
-	}
-
-	if (letta.capabilities?.events?.lifecycle) {
-		disposers.push(
-			letta.events.on("conversation_open", (_event, ctx) => {
-				const dir = memoryDirFromContext(ctx);
-				if (dir) void runSync(dir);
-			}),
-		);
-	}
-
-	if (letta.capabilities?.events?.tools) {
-		// Push memory commits as soon as the tool that made them finishes. Runs in
-		// the background so the tool result is not delayed by network round-trips.
-		disposers.push(
-			letta.events.on("tool_end", (event, ctx) => {
-				if (event.status !== "success") return;
-				if (!COMMIT_CAPABLE_TOOLS.has(event.toolName ?? "")) return;
-				const dir = memoryDirFromContext(ctx);
-				if (dir) void syncIfHeadMoved(dir);
 			}),
 		);
 	}
@@ -124,7 +89,6 @@ export default function activate(letta: MemfsSyncModContext): () => void {
 						};
 					}
 					const outcome = await syncer.sync();
-					lastHeads.set(dir, await syncer.head());
 					return {
 						type: "output",
 						output:

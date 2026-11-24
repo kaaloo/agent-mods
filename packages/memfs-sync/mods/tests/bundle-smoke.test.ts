@@ -11,7 +11,7 @@ describe("committed memfs-sync bundle", () => {
 		const context: MemfsSyncModContext = {
 			capabilities: {
 				commands: true,
-				events: { turns: true, tools: true, lifecycle: true },
+				events: { turns: true, tools: false, lifecycle: false },
 			},
 			events: {
 				on: (event: string) => {
@@ -28,11 +28,9 @@ describe("committed memfs-sync bundle", () => {
 		};
 
 		const cleanup = activate(context);
-		expect(events.sort()).toEqual([
-			"conversation_open",
-			"tool_end",
-			"turn_start",
-		]);
+		// Only turn_start may trigger a sync: no tool or lifecycle hook may overlap
+		// a rebase or checkout reset.
+		expect(events).toEqual(["turn_start"]);
 		expect(command?.id).toBe("memfs-sync");
 
 		const saved = { ...process.env };
@@ -49,7 +47,7 @@ describe("committed memfs-sync bundle", () => {
 		}
 
 		cleanup();
-		expect(dispose).toHaveBeenCalledTimes(4);
+		expect(dispose).toHaveBeenCalledTimes(2);
 	});
 
 	it("registers nothing when no capability is available", () => {

@@ -418,12 +418,6 @@ function describeOutcome(outcome) {
 }
 
 // mods/index.ts
-var COMMIT_CAPABLE_TOOLS = new Set([
-  "Bash",
-  "Shell",
-  "memory",
-  "ShellCommand"
-]);
 function memoryDirFromContext(ctx) {
   const memfs = ctx?.memfs;
   if (memfs && memfs.enabled !== false && typeof memfs.memoryDir === "string") {
@@ -435,7 +429,6 @@ function memoryDirFromContext(ctx) {
 function activate(letta) {
   const disposers = [];
   const syncers = new Map;
-  const lastHeads = new Map;
   const syncerFor = (dir) => {
     let syncer = syncers.get(dir);
     if (!syncer) {
@@ -457,39 +450,14 @@ function activate(letta) {
   const runSync = async (dir) => {
     const syncer = syncerFor(dir);
     const outcome = await syncer.sync();
-    lastHeads.set(dir, await syncer.head());
     report(outcome);
     return outcome;
-  };
-  const syncIfHeadMoved = async (dir) => {
-    const head = await syncerFor(dir).head();
-    if (lastHeads.has(dir) && lastHeads.get(dir) === head)
-      return;
-    await runSync(dir);
   };
   if (letta.capabilities?.events?.turns) {
     disposers.push(letta.events.on("turn_start", async (_event, ctx) => {
       const dir = memoryDirFromContext(ctx);
       if (dir)
         await runSync(dir);
-    }));
-  }
-  if (letta.capabilities?.events?.lifecycle) {
-    disposers.push(letta.events.on("conversation_open", (_event, ctx) => {
-      const dir = memoryDirFromContext(ctx);
-      if (dir)
-        runSync(dir);
-    }));
-  }
-  if (letta.capabilities?.events?.tools) {
-    disposers.push(letta.events.on("tool_end", (event, ctx) => {
-      if (event.status !== "success")
-        return;
-      if (!COMMIT_CAPABLE_TOOLS.has(event.toolName ?? ""))
-        return;
-      const dir = memoryDirFromContext(ctx);
-      if (dir)
-        syncIfHeadMoved(dir);
     }));
   }
   if (letta.capabilities?.commands && letta.commands) {
@@ -521,7 +489,6 @@ function activate(letta) {
           };
         }
         const outcome = await syncer.sync();
-        lastHeads.set(dir, await syncer.head());
         return {
           type: "output",
           output: describeOutcome(outcome) ?? `memfs-sync: ${outcome.status}${"reason" in outcome ? ` (${outcome.reason})` : ""}.`
