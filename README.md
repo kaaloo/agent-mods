@@ -7,6 +7,7 @@ Monorepo for trusted [Letta Code](https://github.com/letta-ai/letta-code) mods m
 | Package | Description |
 | --- | --- |
 | [`@kaaloo/okf`](packages/okf) | OKF trust-signal enforcement for agent memory in MemFS. Validates provenance, verification, freshness, and lifecycle on memory writes via permission overlays. |
+| [`@kaaloo/memfs-sync`](packages/memfs-sync) | Two-way sync between a MemFS checkout and a shared GitHub memory repository: fast-forward at turn start, then rebase, re-sign, regenerate indexes and push local memory commits, never force-pushing. |
 
 `@kaaloo/amazing-grace` was retired on 2026-11-10; see
 [Retired packages](#retired-packages).
@@ -165,7 +166,7 @@ Release runs are serialized without cancelling a run already in progress. Before
 
 ## Per-package verification
 
-Each mod defines its own quality gate. For `@kaaloo/okf`:
+Each mod defines its own quality gate. For example, for `@kaaloo/okf` (run the same scripts in `packages/memfs-sync`):
 
 ```bash
 cd packages/okf

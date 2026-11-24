@@ -10,7 +10,7 @@
 		"format": "biome check --write .",
 		"security:scan:secrets": "gitleaks detect --redact --no-banner",
 		"security:scan:secrets:staged": "gitleaks protect --staged --redact --no-banner",
-		"security:scan:js": "cve-lite packages/okf --fail-on high"
+		"security:scan:js": "cve-lite packages/okf --fail-on high && cve-lite packages/memfs-sync --fail-on high"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.6.4",
@@ -21,14 +21,19 @@
 	"letta": {
 		"manifestVersion": 1,
 		"mods": [
-			"./packages/okf/mods/index.bundled.mjs"
+			"./packages/okf/mods/index.bundled.mjs",
+			"./packages/memfs-sync/mods/index.bundled.mjs"
 		],
 		"capabilities": [
 			"permissions",
-			"events.tools"
+			"events.tools",
+			"commands",
+			"events.turns",
+			"events.lifecycle",
+			"ui.panels"
 		],
 		"engines": {
-			"lettaCodeCli": ">=0.28.4"
+			"lettaCodeCli": ">=0.34.0"
 		}
 	},
 	"allowScripts": {

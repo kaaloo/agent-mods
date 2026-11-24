@@ -23,7 +23,7 @@ else
   exit 1
 fi
 
-for pkg in packages/okf; do
+for pkg in packages/okf packages/memfs-sync; do
   echo "pre-push: scanning $pkg"
   $CVE_LITE "$pkg" --fail-on high || exit 1
 done
