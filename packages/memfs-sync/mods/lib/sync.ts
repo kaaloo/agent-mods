@@ -241,12 +241,17 @@ export class MemfsSync {
 	}
 
 	/**
-	 * Move the configured branch from `from` to `to` with a compare-and-swap, so
-	 * a commit made meanwhile is never dropped. When the branch is checked out,
-	 * the working tree follows through a two-tree `read-tree -m -u`, which keeps
-	 * unrelated local edits and refuses to overwrite conflicting or untracked
-	 * files; on refusal the ref is swapped back. Returns "raced" when the branch
-	 * moved under us.
+	 * Move the configured branch from `from` to `to` (a descendant of `from`).
+	 *
+	 * - When the branch is checked out, `git merge --ff-only` does the whole move
+	 *   under git's own index and ref locks. It only advances when `HEAD` is still
+	 *   an ancestor of `to`, so a commit made meanwhile makes it refuse instead of
+	 *   leaving the ref and the working tree out of step. Unrelated local files are
+	 *   kept, and conflicting or untracked files are never overwritten.
+	 * - When another branch is checked out, the ref alone moves, with a
+	 *   compare-and-swap that leaves the working tree untouched.
+	 *
+	 * Returns "raced" when the branch moved under us; the caller retries.
 	 */
 	private async advanceCheckout(
 		cfg: SyncConfig,
@@ -254,6 +259,37 @@ export class MemfsSync {
 		to: string,
 	): Promise<"ok" | "raced" | SyncOutcome> {
 		const ref = `refs/heads/${cfg.branch}`;
+		const checkedOut = (
+			await this.git(this.dir, ["symbolic-ref", "--quiet", "HEAD"])
+		).stdout.trim();
+		if (checkedOut === ref) {
+			const merged = await this.git(this.dir, [
+				"merge",
+				"--ff-only",
+				"--quiet",
+				to,
+			]);
+			if (merged.code === 0) return "ok";
+			if ((await this.head()) !== from) return "raced";
+			// Not a fast-forward from `from` (the pushed commit was rebased). Move
+			// the branch with a guarded reset: it refuses to overwrite local edits,
+			// and the HEAD check right before it catches a commit made meanwhile.
+			if ((await this.head()) === from) {
+				const reset = await this.git(this.dir, [
+					"reset",
+					"--keep",
+					"--quiet",
+					to,
+				]);
+				if (reset.code === 0) return "ok";
+			}
+			if ((await this.head()) !== from) return "raced";
+			return {
+				status: "error",
+				reason: `could not update the checkout to ${cfg.remote}/${cfg.branch} without overwriting local files`,
+				detail: merged.stderr.trim(),
+			};
+		}
 		const swapped = await this.git(this.dir, [
 			"update-ref",
 			"-m",
@@ -262,32 +298,7 @@ export class MemfsSync {
 			to,
 			from,
 		]);
-		if (swapped.code !== 0) return "raced";
-		const checkedOut = (
-			await this.git(this.dir, ["symbolic-ref", "--quiet", "HEAD"])
-		).stdout.trim();
-		if (checkedOut !== ref) return "ok";
-		const updated = await this.git(this.dir, [
-			"read-tree",
-			"-m",
-			"-u",
-			from,
-			to,
-		]);
-		if (updated.code === 0) return "ok";
-		await this.git(this.dir, [
-			"update-ref",
-			"-m",
-			"memfs-sync revert",
-			ref,
-			from,
-			to,
-		]);
-		return {
-			status: "error",
-			reason: `could not update the checkout to ${cfg.remote}/${cfg.branch} without overwriting local files`,
-			detail: updated.stderr.trim(),
-		};
+		return swapped.code === 0 ? "ok" : "raced";
 	}
 
 	private async worktreePath(): Promise<string> {

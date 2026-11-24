@@ -349,6 +349,33 @@ describe("MemfsSync against a real git remote", () => {
 		expect(git(fx.local, "status", "--porcelain")).toBe("?? draft.md");
 	});
 
+	it("retries instead of losing a commit a tool makes during the fast-forward", async () => {
+		commitFile(fx.other, "b.md", "b\n", "from other agent");
+		git(fx.other, "push", "--quiet", "origin", "HEAD:main");
+		let lateDone = false;
+		const syncer = new MemfsSync(fx.local, {
+			git: async (cwd, args, options) => {
+				// A tool commits after the remote was fetched but before the checkout
+				// fast-forwards. git holds its index lock during merge, so the commit
+				// has to land first; the merge must then refuse rather than rewind it.
+				if (args[0] === "merge" && cwd === fx.local && !lateDone) {
+					lateDone = true;
+					commitFile(fx.local, "late.md", "late\n", "late memory");
+				}
+				return runGit(cwd, args, options);
+			},
+		});
+		expect((await syncer.sync()).status).toBe("pushed");
+		expect(git(fx.remote, "log", "--format=%s", "main").split("\n")).toEqual([
+			"late memory",
+			"from other agent",
+			"init",
+		]);
+		expect(git(fx.local, "rev-parse", "HEAD")).toBe(
+			git(fx.remote, "rev-parse", "main"),
+		);
+	});
+
 	it("reports a fetch failure without changing anything", async () => {
 		git(fx.local, "config", "memfsSync.remote", "missing");
 		const outcome = await new MemfsSync(fx.local).sync();

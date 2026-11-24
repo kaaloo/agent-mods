@@ -211,6 +211,36 @@ class MemfsSync {
   }
   async advanceCheckout(cfg, from, to) {
     const ref = `refs/heads/${cfg.branch}`;
+    const checkedOut = (await this.git(this.dir, ["symbolic-ref", "--quiet", "HEAD"])).stdout.trim();
+    if (checkedOut === ref) {
+      const merged = await this.git(this.dir, [
+        "merge",
+        "--ff-only",
+        "--quiet",
+        to
+      ]);
+      if (merged.code === 0)
+        return "ok";
+      if (await this.head() !== from)
+        return "raced";
+      if (await this.head() === from) {
+        const reset = await this.git(this.dir, [
+          "reset",
+          "--keep",
+          "--quiet",
+          to
+        ]);
+        if (reset.code === 0)
+          return "ok";
+      }
+      if (await this.head() !== from)
+        return "raced";
+      return {
+        status: "error",
+        reason: `could not update the checkout to ${cfg.remote}/${cfg.branch} without overwriting local files`,
+        detail: merged.stderr.trim()
+      };
+    }
     const swapped = await this.git(this.dir, [
       "update-ref",
       "-m",
@@ -219,33 +249,7 @@ class MemfsSync {
       to,
       from
     ]);
-    if (swapped.code !== 0)
-      return "raced";
-    const checkedOut = (await this.git(this.dir, ["symbolic-ref", "--quiet", "HEAD"])).stdout.trim();
-    if (checkedOut !== ref)
-      return "ok";
-    const updated = await this.git(this.dir, [
-      "read-tree",
-      "-m",
-      "-u",
-      from,
-      to
-    ]);
-    if (updated.code === 0)
-      return "ok";
-    await this.git(this.dir, [
-      "update-ref",
-      "-m",
-      "memfs-sync revert",
-      ref,
-      from,
-      to
-    ]);
-    return {
-      status: "error",
-      reason: `could not update the checkout to ${cfg.remote}/${cfg.branch} without overwriting local files`,
-      detail: updated.stderr.trim()
-    };
+    return swapped.code === 0 ? "ok" : "raced";
   }
   async worktreePath() {
     const common = (await this.git(this.dir, [
