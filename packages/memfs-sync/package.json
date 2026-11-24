@@ -1,0 +1,55 @@
+{
+	"name": "@kaaloo/memfs-sync",
+	"version": "0.0.0",
+	"description": "Two-way sync between a Letta Code MemFS checkout and a shared GitHub memory repository: fast-forward at turn start, then rebase, re-sign, regenerate indexes and push local memory commits, never force-pushing.",
+	"author": "Luis Arias",
+	"license": "MIT",
+	"type": "module",
+	"keywords": [
+		"letta-package",
+		"letta-mod",
+		"letta-code",
+		"memfs",
+		"git",
+		"sync"
+	],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/kaaloo/agent-mods.git",
+		"directory": "packages/memfs-sync"
+	},
+	"files": [
+		"README.md",
+		"MOD.md",
+		"mods"
+	],
+	"scripts": {
+		"build": "bun build mods/index.ts --target node --outfile mods/index.bundled.mjs",
+		"test": "vitest run",
+		"typecheck": "tsc --noEmit",
+		"check": "npm run build && npm run typecheck && npm run test",
+		"verify:bundle": "bun build mods/index.ts --target node --outfile /tmp/memfs-sync-bundle-drift-check.mjs && cmp -s /tmp/memfs-sync-bundle-drift-check.mjs mods/index.bundled.mjs && echo 'bundle matches source' || (echo 'BUNDLE DRIFT: mods/index.bundled.mjs does not match source — run npm run build and commit the bundle' && exit 1)",
+		"verify": "npm run verify:bundle && npm run typecheck && npm run test"
+	},
+	"devDependencies": {
+		"@types/node": "^26.6.6",
+		"typescript": "^7.0.2",
+		"vitest": "^5.1.0"
+	},
+	"letta": {
+		"manifestVersion": 1,
+		"mods": [
+			"./mods/index.bundled.mjs"
+		],
+		"capabilities": [
+			"commands",
+			"events.turns",
+			"events.tools",
+			"events.lifecycle",
+			"ui.panels"
+		],
+		"engines": {
+			"lettaCodeCli": ">=0.34.0"
+		}
+	}
+}

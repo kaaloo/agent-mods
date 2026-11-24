@@ -8,6 +8,12 @@
 			"initial-version": "0.1.0",
 			"changelog-path": "CHANGELOG.md",
 			"component": "okf"
+		},
+		"packages/memfs-sync": {
+			"release-type": "node",
+			"initial-version": "0.1.0",
+			"changelog-path": "CHANGELOG.md",
+			"component": "memfs-sync"
 		}
 	}
 }
